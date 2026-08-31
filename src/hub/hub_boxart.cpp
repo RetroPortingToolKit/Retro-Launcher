@@ -195,6 +195,22 @@ std::vector<std::string> boxart_name_candidates(const Title& title, const fs::pa
     for (const auto& fn : title.rom_identity.filenames) push(fn);
     if (!rom_path.empty()) push(rom_path.stem().string());
     push(title.name);
+
+    // Libretro's sets are named No-Intro/Redump style, which almost always
+    // carries a region: "Mortal Kombat 4 (USA).png" exists, "Mortal Kombat
+    // 4.png" does not. Catalog names are the bare title, and a title with no
+    // local ROM and only placeholder filenames (disc1.cue) has nothing else to
+    // offer — so it missed outright.
+    //
+    // Only the catalog name gets region variants. Filenames that lack a region
+    // are placeholders in practice, and suffixing those just burns requests.
+    // These land last, so a title that already resolves never reaches them and
+    // pays nothing; only an otherwise-certain miss does the extra lookups.
+    const std::string base = strip_ext(title.name);
+    if (!base.empty() && base.find('(') == std::string::npos) {
+        for (const char* region : {" (USA)", " (Europe)", " (Japan)", " (World)"})
+            push(base + region);
+    }
     return names;
 }
 
