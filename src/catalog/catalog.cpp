@@ -9,6 +9,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace retcomm {
 namespace {
@@ -390,13 +391,14 @@ Catalog load_catalog(const fs::path& catalog_dir) {
     cat.release_tag = index.value("release_tag", "");
     const auto platform_bios = parse_platform_bios_defaults(index);
 
-    if (!index.contains("titles") || !index.at("titles").is_array())
-        throw std::runtime_error("index.json missing titles[]");
-
-    for (const auto& idj : index.at("titles")) {
-        if (!idj.is_string()) continue;
-        const std::string id = idj.get<std::string>();
-        const fs::path tip = catalog_dir / "titles" / (id + ".json");
+    // Catalog schema 2 groups manifests by platform: index.json carries
+    // platforms.<p>.dir + platforms.<p>.titles and the file lives at
+    // <dir>/<id>.json. Schema 1 listed ids only, under titles/<id>.json. The
+    // flat titles[] list is published in both, so it is the fallback for any
+    // id the platform map does not cover.
+    std::unordered_set<std::string> loaded;
+    auto load_one = [&](const std::string& id, const fs::path& tip) {
+        if (loaded.count(id)) return;
         std::ifstream tin(tip);
         if (!tin) throw std::runtime_error("missing title manifest: " + tip.string());
         json tj;
@@ -410,7 +412,32 @@ Catalog load_catalog(const fs::path& catalog_dir) {
             auto it = platform_bios.find(t.platform);
             if (it != platform_bios.end()) t.bios_identity = it->second;
         }
+        loaded.insert(id);
         cat.titles.push_back(std::move(t));
+    };
+
+    if (index.contains("platforms") && index.at("platforms").is_object()) {
+        for (const auto& [platform, entry] : index.at("platforms").items()) {
+            if (!entry.is_object()) continue;
+            const std::string dir = entry.value("dir", "titles/" + platform);
+            if (!entry.contains("titles") || !entry.at("titles").is_array()) continue;
+            for (const auto& idj : entry.at("titles")) {
+                if (!idj.is_string()) continue;
+                const std::string id = idj.get<std::string>();
+                load_one(id, catalog_dir / fs::path(dir) / (id + ".json"));
+            }
+        }
+    }
+
+    if (!index.contains("titles") || !index.at("titles").is_array()) {
+        if (loaded.empty()) throw std::runtime_error("index.json missing titles[]");
+        return cat;
+    }
+    for (const auto& idj : index.at("titles")) {
+        if (!idj.is_string()) continue;
+        const std::string id = idj.get<std::string>();
+        if (loaded.count(id)) continue;
+        load_one(id, catalog_dir / "titles" / (id + ".json"));
     }
     return cat;
 }
