@@ -1,4 +1,5 @@
 #include "retcomm/build.hpp"
+#include "retcomm/asset_arch.hpp"
 #include "retcomm/cache_gc.hpp"
 #include "retcomm/config.hpp"
 #include "retcomm/hash.hpp"
@@ -369,11 +370,8 @@ const GhAsset* pick_asset(const GhRelease& rel, const std::string& glob) {
         int score = 0;
         const std::string n = to_lower(a.name);
         if (ends_with_ci(n, ".zip")) score += 3;
-        if (n.find("x64") != std::string::npos || n.find("amd64") != std::string::npos ||
-            n.find("x86_64") != std::string::npos || n.find("win64") != std::string::npos)
-            score += 2;
-        if (n.find("arm64") != std::string::npos || n.find("aarch64") != std::string::npos)
-            score += 1;
+        // Host arch first, other arch as a fallback (asset_arch.hpp).
+        score += asset_arch_score(n);
         if (!glob_wants_tools && n.find("tools") != std::string::npos) score -= 10;
         if (score > best_score) {
             best_score = score;

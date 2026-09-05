@@ -1,5 +1,6 @@
 #include "retcomm/install.hpp"
 #include "retcomm/app_state.hpp"
+#include "retcomm/asset_arch.hpp"
 #include "retcomm/bios_index.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/library_index.hpp"
@@ -1133,11 +1134,8 @@ const GhAsset* pick_asset(const GhRelease& rel, const std::string& glob) {
         int score = 0;
         const std::string n = to_lower(a.name);
         if (ends_with_ci(n, ".zip")) score += 3;
-        if (n.find("x64") != std::string::npos || n.find("amd64") != std::string::npos ||
-            n.find("x86_64") != std::string::npos || n.find("win64") != std::string::npos)
-            score += 2;
-        if (n.find("arm64") != std::string::npos || n.find("aarch64") != std::string::npos)
-            score += 1; // still acceptable
+        // Host arch first, other arch as a fallback (asset_arch.hpp).
+        score += asset_arch_score(n);
         // Prefer an exact family hit on the primary glob slightly.
         if (match_glob(glob, a.name)) score += 1;
         // Game releases often ship companion *-tools-* zips on the same tag.
