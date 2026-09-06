@@ -3591,14 +3591,25 @@ bool stage_build_output(const fs::path& src_root, const fs::path& build_dir,
     // the release zip carried it, the build produced it, and only this copy
     // list was missing it.
     //
-    // Only packages/ is copied. mods/state.toml is per-machine enable/disable
-    // state: the build tree's copy is the BUILDER's selections, and the
-    // staging tree's is the player's, restored from preserved/ or written on
-    // first run. Copying the directory wholesale would let one overwrite the
-    // other.
-    if (!copy_tree_if_exists(exe_dir / "mods" / "packages", staging / "mods" / "packages",
-                             error))
-        return false;
+    // Only packages/ is copied. The state.toml beside it is per-machine
+    // enable/disable state: the build tree's copy is the BUILDER's selections,
+    // and the staging tree's is the player's, restored from preserved/ or
+    // written on first run. Copying the directory wholesale would let one
+    // overwrite the other.
+    //
+    // Each framework names its own catalog root and the game resolves that
+    // exact path beside its executable, so staging has to follow the layout
+    // the build actually produced rather than one spelling. psxrecomp stages
+    // mods/packages; snesrecomp stages mods/preloaded/packages
+    // (SNESRECOMP_MOD_CATALOG_DEST). Hardcoding the PSX spelling is what left
+    // every launcher-installed SNES title with an empty Mods page while the
+    // same build run standalone showed the catalog. Copy whichever exist:
+    // a title has one, and a new framework adds a row here.
+    for (const fs::path& catalog_rel : {fs::path("mods") / "packages",
+                                        fs::path("mods") / "preloaded" / "packages"}) {
+        if (!copy_tree_if_exists(exe_dir / catalog_rel, staging / catalog_rel, error))
+            return false;
+    }
     // Prefer compile-time lobby pin stamp over source VERSION (avoids shipping
     // a bumped VERSION file next to a binary still built as an older pin).
     {
