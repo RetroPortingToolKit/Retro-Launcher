@@ -3610,6 +3610,15 @@ bool stage_build_output(const fs::path& src_root, const fs::path& build_dir,
         if (!copy_tree_if_exists(exe_dir / catalog_rel, staging / catalog_rel, error))
             return false;
     }
+    // Translation tables, staged beside the executable by the framework's
+    // stage-dir helper (snesrecomp_target_stage_dir). Endless Duel's
+    // localization package carries its own copy of the table it needs, so a
+    // missing translations/ does not break that mod -- but it is the
+    // executable-relative fallback the host still resolves, and a port that
+    // ships tables without wrapping them in a package has nothing else. Absent
+    // for titles that stage none, which copy_tree_if_exists treats as success.
+    if (!copy_tree_if_exists(exe_dir / "translations", staging / "translations", error))
+        return false;
     // Prefer compile-time lobby pin stamp over source VERSION (avoids shipping
     // a bumped VERSION file next to a binary still built as an older pin).
     {
