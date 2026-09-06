@@ -47,6 +47,13 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Hub self-update exits before setup runs; avoid Inno trying to kill the process.
 CloseApplications=no
 RestartApplications=no
+; Authenticode: package.ps1 passes /S<name>=<signtool command> and
+; /DSignToolName=<name> only when a certificate is configured, so an unsigned
+; local build compiles this script unchanged.
+#ifdef SignToolName
+SignTool={#SignToolName}
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

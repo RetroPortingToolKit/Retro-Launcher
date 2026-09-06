@@ -29,6 +29,8 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include "portable_trailer.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -46,7 +48,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr char kMagic[4] = {'R', 'C', 'M', '1'};
+// Trailer magic / layout: portable_trailer.hpp (shared with the hub's self-update).
 
 void fail(const std::wstring& msg) {
     MessageBoxW(nullptr, msg.c_str(), L"RetComM Launcher", MB_OK | MB_ICONERROR);
@@ -175,17 +177,9 @@ bool read_trailer(const fs::path& self, uint64_t* payload_size, uint64_t* payloa
     if (!in) return false;
     in.seekg(0, std::ios::end);
     const auto file_size = static_cast<uint64_t>(in.tellg());
-    if (file_size < 12) return false;
-    in.seekg(static_cast<std::streamoff>(file_size - 12));
-    uint64_t size = 0;
-    char magic[4]{};
-    in.read(reinterpret_cast<char*>(&size), 8);
-    in.read(magic, 4);
-    if (!in || std::memcmp(magic, kMagic, 4) != 0) return false;
-    if (size == 0 || size + 12 > file_size) return false;
-    *payload_size = size;
-    *payload_offset = file_size - 12 - size;
-    return true;
+    // The trailer is at the end of the file, or -- once the release is
+    // Authenticode-signed -- just before the appended certificate table.
+    return retcomm_portable::find_payload(in, file_size, payload_size, payload_offset);
 }
 
 fs::path system_directory() {

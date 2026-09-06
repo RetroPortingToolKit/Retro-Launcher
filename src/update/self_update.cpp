@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../portable/portable_trailer.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -700,7 +702,9 @@ bool schedule_powershell(const fs::path& script_path, const std::string& utf8_bo
     return true;
 }
 
-/* Trailer: uint64 LE payload size + "RCM1" (see win_portable_main.cpp). */
+/* Trailer: uint64 LE payload size + "RCM1" (see win_portable_main.cpp). A
+ * signed stub carries it before the Authenticode certificate table rather
+ * than at the very end; the shared reader handles both. */
 bool looks_like_retcomm_portable_stub(const fs::path& p) {
     std::error_code ec;
     if (!fs::is_regular_file(p, ec)) return false;
@@ -708,11 +712,7 @@ bool looks_like_retcomm_portable_stub(const fs::path& p) {
     if (ec || sz < 12) return false;
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;
-    in.seekg(static_cast<std::streamoff>(sz - 12));
-    unsigned char buf[12]{};
-    in.read(reinterpret_cast<char*>(buf), 12);
-    if (in.gcount() != 12) return false;
-    return buf[8] == 'R' && buf[9] == 'C' && buf[10] == 'M' && buf[11] == '1';
+    return retcomm_portable::find_payload(in, static_cast<uint64_t>(sz), nullptr, nullptr);
 }
 
 bool schedule_replace_portable_and_restart(const fs::path& new_portable, const fs::path& dest_portable,

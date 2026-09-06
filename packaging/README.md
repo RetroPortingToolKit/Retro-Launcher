@@ -127,6 +127,28 @@ Produces under `dist/`:
 | `RetComM-Launcher-portable-windows.zip` | Release zip; root entry is `RetComM Launcher.exe` (no nested folder) |
 | `RetComM-Launcher-windows-x64-setup.exe` | Per-user Inno Setup installer (Start Menu / desktop) |
 
+### Code signing
+
+Windows 11 Smart App Control blocks any executable that is neither signed nor
+already known by hash, so a fresh unsigned release cannot be run on such a
+machine. `package.ps1` signs when a certificate is in the environment and
+otherwise packages unsigned with a notice:
+
+| Variable | Meaning |
+|---|---|
+| `WINDOWS_SIGN_PFX_BASE64` | PKCS#12 certificate, base64 (`base64 -w0 cert.pfx`); a repo Actions secret in CI |
+| `WINDOWS_SIGN_PFX_PASSWORD` | its password (omit for a passwordless .pfx) |
+| `WINDOWS_SIGN_TIMESTAMP_URL` | optional RFC 3161 server (default DigiCert) |
+| `WINDOWS_SIGN_DESCRIPTION` | optional text for the file properties / UAC prompt |
+
+Signed: `retcomm.exe`, `retcomm-hub.exe`, every staged DLL, the combined
+`RetComM Launcher.exe` (after its payload is appended; the stub finds the
+RCM1 trailer before the certificate table), `retcomm-hub`'s uninstaller and
+the Inno Setup installer. The certificate is imported into the user store for
+the run and used by thumbprint, so the password never reaches a command line.
+Signing needs `signtool.exe` (Windows SDK; the CI runner has it). A configured
+certificate that fails to sign stops the package.
+
 Portable usage (after unzipping the release zip):
 
 ```text

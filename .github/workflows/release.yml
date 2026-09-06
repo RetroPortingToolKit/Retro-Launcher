@@ -266,6 +266,12 @@ jobs:
 
       - name: Package portable + installer
         shell: pwsh
+        # Code signing: package.ps1 signs the exes, DLLs, portable exe and the
+        # installer when these secrets exist, and skips signing (with a notice)
+        # when they do not. See packaging/README.md, "Code signing".
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
           # Manifest-mode vcpkg installs under build/vcpkg_installed/…, not the
           # classic $RETCOMM_VCPKG/installed/… tree. zlib may be zlib1.dll or z.dll.
