@@ -1438,6 +1438,14 @@ PackEnsureResult harvest_embedded_sdk(const Paths& paths, const Title& title,
     copy_rel_file(eng, dest, "retcomm-sdk.json", ec);
     copy_rel_tree(eng, dest, "tools", ec);
     copy_rel_tree(eng, dest, "docs", ec);
+    if (engine == "snesrecomp") {
+        // snesrecomp_cli.py puts <root>/recompiler on sys.path and imports
+        // snes65816 / snes_cycles / v2 from there (scripts/package_snesrecomp_tools.sh
+        // copies the same tree). Pure Python, ~1 MB; without it generate dies with
+        // ModuleNotFoundError before the first ROM byte is read.
+        copy_rel_tree(eng, dest, "recompiler", ec);
+        copy_rel_tree(eng, dest, "lib", ec);
+    }
     if (engine == "psxrecomp") {
         for (const char* name : {"psxrecomp-game", "psxrecomp-game.exe", "psxrecomp-bios",
                                  "psxrecomp-bios.exe"}) {

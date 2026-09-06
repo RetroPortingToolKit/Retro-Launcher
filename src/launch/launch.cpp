@@ -6,6 +6,7 @@
 #include "retcomm/process_env.hpp"
 #include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_platform_settings.hpp"
+#include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/texture_packs.hpp"
 #include "retcomm/romm_saves.hpp"
 
@@ -137,6 +138,11 @@ std::string save_arg_for_plan(const LaunchPlan& plan) {
 
 void append_save_path_argv(LaunchPlan& plan, const Title& title) {
     if (plan.save_path.empty() || is_disc_platform(title.platform)) return;
+    // snesrecomp hosts take no --save-path: SRAM is always <exe dir>/saves/save.srm
+    // (bound by bind_recomp_save_paths), and the runner's ROM resolver treats the
+    // first non-flag argv as the ROM, so the flag's value would be booted as the
+    // cartridge and the first-run wizard would demand a ROM named *.srm.
+    if (is_snes_platform(title.platform)) return;
     const std::string arg = save_arg_for_plan(plan);
     if (arg.empty()) return;
     plan.argv.emplace_back("--save-path");
@@ -828,9 +834,11 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
             << "          guest: " << path_for_guest(lp.media_path, lp.use_wine) << "\n";
     else
         oss << "  media:  (none — game launcher can browse/prompt)\n";
-    if (!lp.save_path.empty())
-        oss << "  save:   " << lp.save_path.string() << "\n"
-            << "          argv:  " << save_arg_for_plan(lp) << "\n";
+    if (!lp.save_path.empty()) {
+        oss << "  save:   " << lp.save_path.string() << "\n";
+        if (!is_snes_platform(title.platform))
+            oss << "          argv:  " << save_arg_for_plan(lp) << "\n";
+    }
     if (!lp.staged_bios_cfg.empty()) {
         oss << "  stage:  " << lp.staged_bios_cfg.string();
         if (lp.use_openbios) oss << " (empty = OpenBIOS)";
