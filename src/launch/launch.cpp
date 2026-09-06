@@ -4,6 +4,7 @@
 #include "retcomm/install.hpp"
 #include "retcomm/library_index.hpp"
 #include "retcomm/process_env.hpp"
+#include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_platform_settings.hpp"
 #include "retcomm/texture_packs.hpp"
 #include "retcomm/romm_saves.hpp"
@@ -986,10 +987,11 @@ LaunchResult launch_title(const Paths& paths, const Title& title, const LaunchOp
             result.plan.message += "  textures: " + pack_id + "\n";
     }
 
-    // Global PlayStation Configure prefs → install settings.toml / config.ini.
-    if (is_psx_platform(title.platform) && !result.plan.cwd.empty()) {
+    // Global platform Configure prefs (PSX settings.toml / config.ini, SNES
+    // config.ini / keybinds.ini) → the install cwd.
+    if (platform_has_config_section(title.platform) && !result.plan.cwd.empty()) {
         const AppState st = load_app_state(paths.state_path);
-        auto applied = apply_psx_platform_defaults(paths, st, title, result.plan.cwd);
+        auto applied = apply_platform_defaults(paths, st, title, result.plan.cwd);
         if (!applied.message.empty()) {
             if (applied.ok && !applied.skipped)
                 result.plan.message += "  platform: " + applied.message + "\n";

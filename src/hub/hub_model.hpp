@@ -10,6 +10,7 @@
 #include "retcomm/library_index.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/psx_platform_settings.hpp"
+#include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_fetch.hpp"
 #include "retcomm/self_update.hpp"
 #include "retcomm/texture_packs.hpp"
@@ -372,6 +373,16 @@ struct PsxSettingsDraft {
     char rename_buf[64]{};
 };
 
+struct SnesSettingsDraft {
+    SnesPlatformSettings settings;
+    bool dirty = false;
+    // Hotkey rebind: index into SnesPlatformSettings::hotkeys, or -1.
+    int capturing_hotkey = -1;
+    // Keyboard bind capture: seat + button, or -1 when idle.
+    int capturing_player = -1;
+    int capturing_bind = -1;
+};
+
 // Target buffer for an in-flight SDL folder dialog (callback may be off-thread).
 enum class FolderPickTarget : int {
     None = 0,
@@ -426,6 +437,7 @@ struct HubModel {
     bool show_settings = false;
     bool show_romm_settings = false;
     bool show_psx_settings = false; // global PlayStation Configure page
+    bool show_snes_settings = false; // global Super Nintendo Configure page
     bool show_setup = false; // first-time library/BIOS/RomM wizard
     SetupPath setup_path = SetupPath::Chooser;
     // Advanced wizard: 0 = RetComM data folder, 1 = library roots (+ optional
@@ -456,6 +468,7 @@ struct HubModel {
     SettingsDraft settings;
     RommSettingsDraft romm_settings;
     PsxSettingsDraft psx_settings;
+    SnesSettingsDraft snes_settings;
     NetplayLobbyState netplay;
 
     mutable std::mutex mu;
@@ -703,6 +716,8 @@ struct HubModel {
 
     void open_psx_settings();
     bool save_psx_settings(std::string* error = nullptr);
+    void open_snes_settings();
+    bool save_snes_settings(std::string* error = nullptr);
     // Manage Game Data: blacklist title from global platform Configure merge.
     bool set_title_exclude_platform_config(const std::string& title_id, bool exclude,
                                            std::string* error = nullptr);

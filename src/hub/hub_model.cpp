@@ -3,6 +3,7 @@
 
 #include "retcomm/build.hpp"
 #include "retcomm/cache_gc.hpp"
+#include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_platform_settings.hpp"
 #include "retcomm/psx_input_profiles.hpp"
 #include "retcomm/romm_fetch.hpp"
@@ -30,6 +31,17 @@
 #endif
 
 namespace retcomm::hub {
+
+namespace {
+// Where a platform Configure merge belongs: next to the resolved exe, which is
+// also the cwd Play uses. Release zips that wrap everything in one folder put
+// the exe a level below current/, so the release dir alone is the wrong place.
+fs::path platform_apply_cwd(const InstallPlan& plan) {
+    if (!plan.binary_path.empty()) return plan.binary_path.parent_path();
+    const fs::path cwd = resolve_current_release_dir(plan.install_root);
+    return cwd.empty() ? plan.install_root : cwd;
+}
+} // namespace
 using namespace retcomm;
 
 namespace {
@@ -1369,10 +1381,9 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     auto ensured = ensure_canonical_save(paths, cfg, *t, rom, true);
                     if (!ensured.message.empty()) append_log(ensured.message);
                     app_state = load_app_state(paths.state_path);
-                    if (is_psx_platform(t->platform)) {
-                        const fs::path cwd = resolve_current_release_dir(r.plan.install_root);
-                        const fs::path apply_cwd = cwd.empty() ? r.plan.install_root : cwd;
-                        auto ar = apply_psx_platform_defaults(paths, app_state, *t, apply_cwd);
+                    if (platform_has_config_section(t->platform)) {
+                        auto ar = apply_platform_defaults(paths, app_state, *t,
+                                                          platform_apply_cwd(r.plan));
                         if (!ar.message.empty()) append_log(ar.message);
                     }
                 }
@@ -1420,11 +1431,10 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                                               noted);
                         cache.save_if_dirty();
                     }
-                    if (is_psx_platform(t->platform)) {
+                    if (platform_has_config_section(t->platform)) {
                         app_state = load_app_state(paths.state_path);
-                        const fs::path cwd = resolve_current_release_dir(r.plan.install_root);
-                        const fs::path apply_cwd = cwd.empty() ? r.plan.install_root : cwd;
-                        auto ar = apply_psx_platform_defaults(paths, app_state, *t, apply_cwd);
+                        auto ar = apply_platform_defaults(paths, app_state, *t,
+                                                          platform_apply_cwd(r.plan));
                         if (!ar.message.empty()) append_log(ar.message);
                     }
                 }
@@ -1472,12 +1482,11 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                            " (+ OpenBIOS regen)");
                 auto r = build_title(paths, *t, bopts);
                 append_log(r.message);
-                if (r.ok && is_psx_platform(t->platform)) {
+                if (r.ok && platform_has_config_section(t->platform)) {
                     app_state = load_app_state(paths.state_path);
                     const InstallPlan plan = inspect_install_any(paths, cfg, *t);
-                    const fs::path cwd = resolve_current_release_dir(plan.install_root);
-                    const fs::path apply_cwd = cwd.empty() ? plan.install_root : cwd;
-                    auto ar = apply_psx_platform_defaults(paths, app_state, *t, apply_cwd);
+                    auto ar = apply_platform_defaults(paths, app_state, *t,
+                                                      platform_apply_cwd(plan));
                     if (!ar.message.empty()) append_log(ar.message);
                 }
                 set_status(r.ok ? ("Reinstalled with BIOS: " + title_id)
@@ -2460,6 +2469,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     show_settings = false;
                     show_romm_settings = false;
                     show_psx_settings = false;
+    show_snes_settings = false;
                     settings.dirty = false;
                     romm_settings.dirty = false;
                 }
@@ -2777,6 +2787,7 @@ void HubModel::open_settings() {
     settings.dirty = false;
     show_romm_settings = false;
     show_psx_settings = false;
+    show_snes_settings = false;
     show_setup = false;
     show_settings = true;
 }
@@ -3437,6 +3448,7 @@ void HubModel::open_romm_settings() {
     romm_settings.dirty = false;
     show_settings = false;
     show_psx_settings = false;
+    show_snes_settings = false;
     show_romm_settings = true;
 }
 
@@ -3459,6 +3471,32 @@ void HubModel::open_psx_settings() {
     show_romm_settings = false;
     show_setup = false;
     show_psx_settings = true;
+}
+
+void HubModel::open_snes_settings() {
+    snes_settings.settings = load_snes_platform_settings(paths);
+    snes_settings.dirty = false;
+    snes_settings.capturing_hotkey = -1;
+    snes_settings.capturing_player = -1;
+    snes_settings.capturing_bind = -1;
+    show_settings = false;
+    show_romm_settings = false;
+    show_setup = false;
+    show_psx_settings = false;
+    show_snes_settings = true;
+}
+
+bool HubModel::save_snes_settings(std::string* error) {
+    snes_settings.settings.apply_defaults_if_unset();
+    if (!save_snes_platform_settings(paths, snes_settings.settings, error)) return false;
+    snes_settings.dirty = false;
+    snes_settings.capturing_hotkey = -1;
+    snes_settings.capturing_player = -1;
+    snes_settings.capturing_bind = -1;
+    set_status("Saved Super Nintendo settings");
+    append_log("Wrote Super Nintendo platform settings to " +
+               snes_platform_settings_dir(paths).string());
+    return true;
 }
 
 bool HubModel::save_psx_settings(std::string* error) {

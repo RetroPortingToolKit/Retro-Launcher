@@ -60,6 +60,11 @@ int psx_keybinds_get_scancode(const Paths& paths, int player, int b);
 void psx_keybinds_set_scancode(const Paths& paths, int player, int b, int scancode);
 void psx_keybinds_reset_player(const Paths& paths, int player);
 
+// SDL scancode <-> keybinds.ini key-name table (shared with the SNES section,
+// whose keybinds.ini uses the same SDL names). 0 / "None" = unbound.
+const char* sdl_scancode_name(int scancode);
+int sdl_scancode_from_name(const char* name);
+
 // Copy global input.ini + keybinds.ini into a game install cwd (best-effort).
 bool apply_psx_input_files(const Paths& paths, const fs::path& game_cwd, std::string* error = nullptr);
 

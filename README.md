@@ -130,10 +130,17 @@ automatic boxart (Libretro by default; optional RomM covers or local art),
 uninstall with keep-saves, and deeper options under **Menu** (library roots,
 exclude dirs, update checks, etc.).
 
+**Platform Config** — one global settings page per platform, opened from the
+library header (**PSXrecomp Config**, **SNESrecomp Config**): Display, Audio,
+Input seats, keyboard binds, and Hotkeys, stored under `platform/<slug>/` in the
+data folder and merged into each title's own config files (PSX
+`settings.toml` + `config.ini`, SNES `config.ini` + `keybinds.ini`) on install,
+update, and launch. Per-game keys the platform page does not own are left as the
+port shipped them, and any title can opt out via **Manage Game Data → Exclude
+from platform config**.
+
 ## Coming soon
 
-- **Centralized per-platform config** — preferred render/controller/hotkey defaults
-  applied at launch, with optional per-game blacklist for power users
 - **Mod management** and optional launcher bypass when RetComM owns configuration
 - **Centralized netplay lobby** — stay in one lobby, hot-swap titles after a match,
   filter by player count / shared library, backwards compatible with each game’s

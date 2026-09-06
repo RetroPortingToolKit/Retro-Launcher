@@ -6,7 +6,9 @@
 #include "retcomm/config.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
+#include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_input_profiles.hpp"
+#include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_saves.hpp"
 #include "retcomm/self_update.hpp"
 
@@ -817,7 +819,8 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
     constexpr float kMenuH = 36.f;
     constexpr float kBtnGap = 8.f;
     const bool in_settings =
-        hub.show_settings || hub.show_romm_settings || hub.show_psx_settings;
+        hub.show_settings || hub.show_romm_settings || hub.show_psx_settings ||
+        hub.show_snes_settings;
     const char* btn_label = in_settings ? "Back to Library" : "Menu";
     const char* library_label = "Add/Scan Files";
     const char* updates_label = "Check for Updates";
@@ -846,10 +849,15 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
             hub.show_settings = false;
             hub.show_romm_settings = false;
             hub.show_psx_settings = false;
+            hub.show_snes_settings = false;
             hub.settings.dirty = false;
             hub.romm_settings.dirty = false;
             hub.psx_settings.dirty = false;
             hub.psx_settings.capturing_hotkey = -1;
+            hub.snes_settings.dirty = false;
+            hub.snes_settings.capturing_hotkey = -1;
+            hub.snes_settings.capturing_player = -1;
+            hub.snes_settings.capturing_bind = -1;
         } else {
             hub.pending_open_menu = true;
         }
@@ -1186,22 +1194,27 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
 
         if (show_back) {
             const bool show_configure =
-                retcomm::is_psx_platform(hub.library_platform);
+                retcomm::platform_has_config_section(hub.library_platform);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kBackPadX, kBackPadY));
             float right_x = content_right - back_w;
             if (show_configure) {
-                const char* cfg_label = "PSXrecomp Config";
+                const bool snes = retcomm::is_snes_platform(hub.library_platform);
+                const char* cfg_label =
+                    retcomm::platform_config_button_label(hub.library_platform);
                 const ImVec2 cfg_txt = ImGui::CalcTextSize(cfg_label);
                 const float cfg_w = cfg_txt.x + kBackPadX * 2.f;
                 constexpr float kCfgGap = 8.f;
                 ImGui::SetCursorScreenPos(
                     ImVec2(right_x - kCfgGap - cfg_w, row0.y + (row_h - back_h) * 0.5f));
-                if (accent_button(cfg_label, th, ImVec2(cfg_w, back_h)))
-                    hub.open_psx_settings();
+                if (accent_button(cfg_label, th, ImVec2(cfg_w, back_h))) {
+                    if (snes) hub.open_snes_settings();
+                    else hub.open_psx_settings();
+                }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                     ImGui::SetTooltip(
-                        "Global PlayStation settings (Display, Audio, Input, Hotkeys).\n"
-                        "Applied to titles on install, update, and launch unless excluded.");
+                        "Global %s settings (Display, Audio, Input, Hotkeys).\n"
+                        "Applied to titles on install, update, and launch unless excluded.",
+                        snes ? "Super Nintendo" : "PlayStation");
                 }
             }
             ImGui::SetCursorScreenPos(
@@ -1867,7 +1880,7 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
         }
     }
 
-    if (retcomm::is_psx_platform(row.platform)) {
+    if (retcomm::platform_has_config_section(row.platform)) {
         ImGui::Dummy(ImVec2(0, 6));
         bool exclude = retcomm::title_excludes_platform_config(hub.app_state, row.id);
         if (ImGui::Checkbox("Exclude from platform config", &exclude)) {
@@ -4152,16 +4165,11 @@ void poll_psx_pad_hotkey_capture(HubModel& hub) {
     draft.pad_hotkey_mask = 0;
 }
 
-void poll_psx_hotkey_capture(HubModel& hub) {
-    auto& draft = hub.psx_settings;
-    if (draft.capturing_hotkey < 0 ||
-        draft.capturing_hotkey >= retcomm::PsxPlatformSettings::kHotkeyCount)
-        return;
-    // Escape cancels.
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        draft.capturing_hotkey = -1;
-        return;
-    }
+// One frame of keyboard hotkey capture, in the recomp-ui / host_keymap name
+// vocabulary ("Ctrl+Alt+Shift+Key"). Returns 1 with `out` filled when a key was
+// pressed, -1 when Escape cancelled, 0 while still waiting.
+int poll_hotkey_capture_key(std::string& out) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) return -1;
     for (ImGuiKey key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_NamedKey_END;
          key = (ImGuiKey)(key + 1)) {
         if (key == ImGuiKey_LeftCtrl || key == ImGuiKey_RightCtrl || key == ImGuiKey_LeftShift ||
@@ -4184,10 +4192,27 @@ void poll_psx_hotkey_capture(HubModel& hub) {
         } else {
             name += kn;
         }
+        out = name;
+        return 1;
+    }
+    return 0;
+}
+
+void poll_psx_hotkey_capture(HubModel& hub) {
+    auto& draft = hub.psx_settings;
+    if (draft.capturing_hotkey < 0 ||
+        draft.capturing_hotkey >= retcomm::PsxPlatformSettings::kHotkeyCount)
+        return;
+    std::string name;
+    const int r = poll_hotkey_capture_key(name);
+    if (r < 0) {
+        draft.capturing_hotkey = -1;
+        return;
+    }
+    if (r > 0) {
         draft.settings.hotkeys[static_cast<size_t>(draft.capturing_hotkey)] = name;
         draft.dirty = true;
         draft.capturing_hotkey = -1;
-        return;
     }
 }
 
@@ -5890,6 +5915,400 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
     ImGui::EndChild();
 }
 
+// ---------------------------------------------------------------------------
+// Super Nintendo Configure page (global snesrecomp prefs). Mirrors the
+// PlayStation page above, but the runner keeps everything in config.ini +
+// keybinds.ini and has no per-device gamepad identity yet, so seats, gamepad
+// button maps, and keyboard binds are all per player on one page.
+// ---------------------------------------------------------------------------
+
+void poll_snes_hotkey_capture(HubModel& hub) {
+    auto& d = hub.snes_settings;
+    if (d.capturing_hotkey < 0 ||
+        d.capturing_hotkey >= retcomm::SnesPlatformSettings::kHotkeyCount)
+        return;
+    std::string name;
+    const int r = poll_hotkey_capture_key(name);
+    if (r < 0) {
+        d.capturing_hotkey = -1;
+        return;
+    }
+    if (r > 0) {
+        d.settings.hotkeys[static_cast<size_t>(d.capturing_hotkey)] = name;
+        d.dirty = true;
+        d.capturing_hotkey = -1;
+    }
+}
+
+void cancel_snes_bind_capture(HubModel& hub) {
+    hub.snes_settings.capturing_player = -1;
+    hub.snes_settings.capturing_bind = -1;
+}
+
+// Keyboard bind capture for the SNES page: one SDL scancode per button.
+// Returns true when the event was consumed by the capture.
+bool poll_snes_bind_capture(HubModel& hub, const SDL_Event& e) {
+    auto& d = hub.snes_settings;
+    if (!hub.show_snes_settings || d.capturing_player < 0 || d.capturing_bind < 0) return false;
+    if (e.type != SDL_EVENT_KEY_DOWN) return false;
+    if (e.key.repeat) return true;
+    if (e.key.key == SDLK_ESCAPE) {
+        cancel_snes_bind_capture(hub);
+        return true;
+    }
+    const auto p = static_cast<size_t>(d.capturing_player);
+    const auto b = static_cast<size_t>(d.capturing_bind);
+    if (p < retcomm::SnesPlatformSettings::kMaxPlayers &&
+        b < retcomm::SnesPlatformSettings::kButtonCount) {
+        d.settings.kb_scancode[p][b] = static_cast<int>(e.key.scancode);
+        d.dirty = true;
+    }
+    cancel_snes_bind_capture(hub);
+    return true;
+}
+
+// Live pads plus any GUID a seat still points at (shown as disconnected).
+void collect_snes_gamepads(HubModel& hub, std::vector<HubGamepadOpt>& out) {
+    out.clear();
+    auto push = [&](const char* guid, const char* name, bool live, SDL_JoystickID id) {
+        if (!guid || !guid[0]) return;
+        for (const auto& o : out)
+            if (guid_eq_ci(o.guid, guid)) return;
+        HubGamepadOpt o;
+        std::snprintf(o.guid, sizeof(o.guid), "%s", guid);
+        const char* nm = (name && name[0] && std::strcmp(name, "Gamepad") != 0) ? name : "Controller";
+        std::snprintf(o.name, sizeof(o.name), "%s", nm);
+        o.live = live;
+        o.id = id;
+        out.push_back(o);
+    };
+    int n = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&n)) {
+        for (int i = 0; i < n; ++i) {
+            char guid_str[64]{};
+            SDL_GUIDToString(SDL_GetGamepadGUIDForID(ids[i]), guid_str,
+                             static_cast<int>(sizeof(guid_str)));
+            push(guid_str, SDL_GetGamepadNameForID(ids[i]), true, ids[i]);
+        }
+        SDL_free(ids);
+    }
+    const auto& s = hub.snes_settings.settings;
+    for (int p = 0; p < retcomm::SnesPlatformSettings::kMaxPlayers; ++p) {
+        if (s.player_src[static_cast<size_t>(p)] != 2) continue;
+        push(s.player_guid[static_cast<size_t>(p)].c_str(), "Controller", false, 0);
+    }
+}
+
+void draw_snes_player_source_combo(HubModel& hub, int p, const std::vector<HubGamepadOpt>& pads) {
+    auto& s = hub.snes_settings.settings;
+    const auto pi = static_cast<size_t>(p);
+    const int src = std::clamp(s.player_src[pi], 0, 2);
+    const char* preview = src == 0 ? "None" : (src == 1 ? "Keyboard" : "Gamepad");
+    if (src == 2) {
+        for (const auto& pad : pads)
+            if (s.player_guid[pi] == pad.guid) preview = pad.name;
+    }
+    ImGui::SetNextItemWidth(-1.f);
+    if (!ImGui::BeginCombo("##src", preview)) return;
+    auto assign = [&](int new_src, const char* guid) {
+        s.player_src[pi] = new_src;
+        s.player_guid[pi] = (new_src == 2 && guid) ? guid : "";
+        hub.snes_settings.dirty = true;
+    };
+    if (ImGui::Selectable("None", src == 0)) assign(0, nullptr);
+    if (ImGui::Selectable("Keyboard", src == 1)) assign(1, nullptr);
+    if (pads.empty()) {
+        ImGui::BeginDisabled();
+        ImGui::Selectable("(no gamepad connected)");
+        ImGui::EndDisabled();
+    }
+    for (const auto& pad : pads) {
+        bool claimed = false;
+        for (int o = 0; o < retcomm::SnesPlatformSettings::kMaxPlayers; ++o) {
+            if (o == p) continue;
+            if (s.player_src[static_cast<size_t>(o)] == 2 &&
+                s.player_guid[static_cast<size_t>(o)] == pad.guid)
+                claimed = true;
+        }
+        char label[96];
+        std::snprintf(label, sizeof(label), pad.live ? "%s" : "%s (disconnected)", pad.name);
+        const bool sel = src == 2 && s.player_guid[pi] == pad.guid;
+        if (claimed) ImGui::BeginDisabled();
+        if (ImGui::Selectable(label, sel) && !claimed) assign(2, pad.guid);
+        if (claimed) ImGui::EndDisabled();
+    }
+    ImGui::EndCombo();
+}
+
+void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
+    using retcomm::SnesPlatformSettings;
+    poll_snes_hotkey_capture(hub);
+    auto& d = hub.snes_settings;
+    auto& s = d.settings;
+    auto mark = [&] { d.dirty = true; };
+
+    ImGui::BeginChild("snes_settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextUnformatted("SUPER NINTENDO SETTINGS");
+    ImGui::PopStyleColor();
+    ImGui::TextWrapped(
+        "Global Display, Audio, Input, and Hotkeys for Super Nintendo titles. Saved prefs "
+        "are merged into each game's config.ini / keybinds.ini on install, update, and "
+        "launch (unless excluded in Manage Game Data). Per-game keys such as Widescreen "
+        "and Shader are left untouched.");
+    ImGui::Separator();
+
+    constexpr float kCol = 200.f;
+    auto cycle_btn = [&](const char* id, const char* label, float w = 160.f) -> bool {
+        ImGui::PushID(id);
+        const bool hit = ImGui::Button(label, ImVec2(w, 0));
+        ImGui::PopID();
+        return hit;
+    };
+
+    const float footer_h = ImGui::GetFrameHeight() + 24.f;
+    const float gap = 12.f;
+    const float avail_x = ImGui::GetContentRegionAvail().x;
+    const float col_w = std::max(240.f, (avail_x - gap) * 0.42f);
+    const float panel_h = std::max(120.f, ImGui::GetContentRegionAvail().y - footer_h);
+
+    ImGui::BeginChild("snes_display_audio", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders);
+    ImGui::TextColored(th.text_muted, "DISPLAY");
+    ImGui::Separator();
+    {
+        psx_settings_row_label("Window scale", th, kCol);
+        char lbl[16];
+        std::snprintf(lbl, sizeof(lbl), "%dx", std::clamp(s.window_scale, 1, 6));
+        if (cycle_btn("ws", lbl, 80.f)) {
+            s.window_scale = std::clamp(s.window_scale, 1, 6) % 6 + 1;
+            mark();
+        }
+        psx_settings_row_label("Fullscreen", th, kCol);
+        if (ImGui::Checkbox("##fs", &s.fullscreen)) mark();
+
+        psx_settings_row_label("Aspect", th, kCol);
+        static const char* kAspect[] = {"4:3 (CRT)", "8:7 (Square pixels)", "1:1 (Square frame)"};
+        if (cycle_btn("asp", kAspect[std::clamp(s.display_aspect, 0, 2)], 170.f)) {
+            s.display_aspect = (std::clamp(s.display_aspect, 0, 2) + 1) % 3;
+            mark();
+        }
+        psx_settings_row_label("Output", th, kCol);
+        static const char* kOut[] = {"SDL", "SDL (software)", "OpenGL"};
+        if (cycle_btn("out", kOut[std::clamp(s.output_method, 0, 2)], 140.f)) {
+            s.output_method = (std::clamp(s.output_method, 0, 2) + 1) % 3;
+            mark();
+        }
+        psx_settings_row_label("Linear filtering", th, kCol);
+        if (ImGui::Checkbox("##lf", &s.linear_filtering)) mark();
+        psx_settings_row_label("New PPU renderer", th, kCol);
+        if (ImGui::Checkbox("##nr", &s.new_renderer)) mark();
+        psx_settings_row_label("No sprite limits", th, kCol);
+        if (ImGui::Checkbox("##nsl", &s.no_sprite_limits)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Lift the per-scanline sprite limit (removes flicker; not faithful).");
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::TextColored(th.text_muted, "AUDIO");
+        psx_settings_row_label("Enable audio", th, kCol);
+        if (ImGui::Checkbox("##ea", &s.enable_audio)) mark();
+        psx_settings_row_label("Sample rate", th, kCol);
+        {
+            static const int kFreq[] = {32040, 32000, 44100, 48000};
+            int idx = 0;
+            for (int i = 0; i < 4; ++i)
+                if (kFreq[i] == s.audio_freq) { idx = i; break; }
+            if (cycle_btn("freq", (std::to_string(kFreq[idx]) + " Hz").c_str(), 120.f)) {
+                s.audio_freq = kFreq[(idx + 1) % 4];
+                mark();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("32040 Hz is the SPC's native rate (no resampling).");
+        }
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::TextColored(th.text_muted, "HOTKEYS");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("Click a binding, then press a key (Esc cancels).");
+        ImGui::PopStyleColor();
+        float label_w = 0.f;
+        for (int i = 0; i < SnesPlatformSettings::kHotkeyCount; ++i)
+            label_w = std::max(label_w,
+                               ImGui::CalcTextSize(SnesPlatformSettings::hotkey_label(i)).x);
+        label_w += 16.f;
+        for (int i = 0; i < SnesPlatformSettings::kHotkeyCount; ++i) {
+            ImGui::PushID(200 + i);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::hotkey_label(i));
+            ImGui::SameLine(0.f, label_w - ImGui::CalcTextSize(SnesPlatformSettings::hotkey_label(i)).x);
+            const bool cap = d.capturing_hotkey == i;
+            const std::string& cur = s.hotkeys[static_cast<size_t>(i)];
+            const char* bl = cap ? "[ press... ]"
+                                 : (cur.empty() ? SnesPlatformSettings::hotkey_default(i) : cur.c_str());
+            if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
+            if (ImGui::Button(bl, ImVec2(140.f, 0))) d.capturing_hotkey = i;
+            if (cap) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.f, gap);
+    ImGui::BeginChild("snes_input", ImVec2(0, panel_h), ImGuiChildFlags_Borders);
+    ImGui::TextColored(th.text_muted, "INPUT");
+    ImGui::Separator();
+    {
+        std::vector<HubGamepadOpt> pads;
+        collect_snes_gamepads(hub, pads);
+
+        const float cw = ImGui::GetContentRegionAvail().x;
+        const float half = (cw - th.spacing_sm) * 0.5f;
+        for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
+            if (p) ImGui::SameLine(0, th.spacing_sm);
+            ImGui::PushID(p);
+            ImGui::BeginChild("seat", ImVec2(half, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+            ImGui::TextColored(th.text_muted, "PLAYER %d", p + 1);
+            draw_snes_player_source_combo(hub, p, pads);
+            bool en = s.enable_gamepad[static_cast<size_t>(p)];
+            if (ImGui::Checkbox("Open gamepad slot", &en)) {
+                s.enable_gamepad[static_cast<size_t>(p)] = en;
+                mark();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("[GamepadMap] EnableGamepad%d — let the runner open a pad for this seat.", p + 1);
+            ImGui::EndChild();
+            ImGui::PopID();
+        }
+
+        psx_settings_row_label("Stick deadzone", th, kCol);
+        int pct = std::clamp((s.gamepad_deadzone * 100 + 16383) / 32767, 1, 100);
+        ImGui::SetNextItemWidth(160.f);
+        if (ImGui::SliderInt("##dz", &pct, 1, 100, "%d%%")) {
+            s.gamepad_deadzone = std::clamp((pct * 32767) / 100, 1, 32767);
+            mark();
+        }
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::TextColored(th.text_muted, "KEYBOARD");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("Click a key, then press the new key (Esc cancels). Only a seat set "
+                           "to Keyboard reads these.");
+        ImGui::PopStyleColor();
+        if (ImGui::BeginTable("snes_kb", 3, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 70.f);
+            ImGui::TableSetupColumn("Player 1");
+            ImGui::TableSetupColumn("Player 2");
+            ImGui::TableHeadersRow();
+            for (int b = 0; b < SnesPlatformSettings::kButtonCount; ++b) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::button_label(b));
+                for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(p * 100 + b);
+                    const bool cap = d.capturing_player == p && d.capturing_bind == b;
+                    const int sc = s.kb_scancode[static_cast<size_t>(p)][static_cast<size_t>(b)];
+                    const char* bl = cap ? "[ press... ]" : retcomm::sdl_scancode_name(sc);
+                    if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
+                    if (ImGui::Button(bl, ImVec2(-1.f, 0))) {
+                        d.capturing_hotkey = -1;
+                        d.capturing_player = p;
+                        d.capturing_bind = b;
+                    }
+                    if (cap) ImGui::PopStyleColor();
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::TextColored(th.text_muted, "GAMEPAD BUTTONS");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("Which pad button drives each SNES button ([GamepadMap] Controls). "
+                           "Face buttons default to the SNES layout: SNES A is the pad's B.");
+        ImGui::PopStyleColor();
+        if (ImGui::BeginTable("snes_pad", 3, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 70.f);
+            ImGui::TableSetupColumn("Player 1");
+            ImGui::TableSetupColumn("Player 2");
+            ImGui::TableHeadersRow();
+            for (int b = 0; b < SnesPlatformSettings::kButtonCount; ++b) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::button_label(b));
+                for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(p * 100 + b);
+                    auto& tok = s.pad_controls[static_cast<size_t>(p)][static_cast<size_t>(b)];
+                    ImGui::SetNextItemWidth(-1.f);
+                    if (ImGui::BeginCombo("##tok", tok.empty() ? SnesPlatformSettings::button_default_pad_token(b)
+                                                              : tok.c_str())) {
+                        for (int i = 0; i < SnesPlatformSettings::pad_token_count(); ++i) {
+                            const char* t = SnesPlatformSettings::pad_token(i);
+                            if (ImGui::Selectable(t, tok == t)) {
+                                tok = t;
+                                mark();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::Dummy(ImVec2(0, 12));
+    const float footer_y = ImGui::GetCursorPosY();
+    constexpr float kResetW = 150.f;
+    if (accent_button("Save", th, ImVec2(160, 0))) {
+        std::string err;
+        if (!hub.save_snes_settings(&err)) {
+            hub.append_log("Super Nintendo settings save failed: " + err);
+            hub.set_status("Save failed");
+        } else {
+            hub.show_toast("Saved!");
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        hub.show_snes_settings = false;
+        d.dirty = false;
+        d.capturing_hotkey = -1;
+        cancel_snes_bind_capture(hub);
+    }
+    if (d.dirty) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.warn, "unsaved changes");
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(th.text_muted, "%s",
+                       retcomm::snes_platform_settings_dir(hub.paths).string().c_str());
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowContentRegionMax().x - kResetW, footer_y));
+    if (ImGui::Button("Reset to Default", ImVec2(kResetW, 0))) {
+        d.capturing_hotkey = -1;
+        cancel_snes_bind_capture(hub);
+        s.reset_system_to_defaults();
+        mark();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("Restore Display, Audio, Hotkeys, keyboard binds, and gamepad maps to\n"
+                          "the snesrecomp defaults. Seat assignments are left unchanged.");
+    }
+    ImGui::EndChild();
+}
+
 void draw_log_collapsed_bar(HubModel& hub, const Theme& th) {
     constexpr float kBarH = 40.f;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.f, 6.f));
@@ -6176,7 +6595,7 @@ int main(int argc, char** argv) {
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (poll_psx_bind_capture(hub, e)) {
+            if (poll_snes_bind_capture(hub, e) || poll_psx_bind_capture(hub, e)) {
                 // Still feed ImGui so the modal stays responsive, but skip
                 // duplicate key handling for capture commits.
                 ImGui_ImplSDL3_ProcessEvent(&e);
@@ -6277,6 +6696,10 @@ int main(int argc, char** argv) {
         } else if (hub.show_psx_settings) {
             ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
             draw_psx_settings_panel(hub, th, boxart);
+            ImGui::EndChild();
+        } else if (hub.show_snes_settings) {
+            ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
+            draw_snes_settings_panel(hub, th);
             ImGui::EndChild();
         } else {
             // Extra width goes to the library; detail is flexible but capped at the

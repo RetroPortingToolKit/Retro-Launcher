@@ -739,6 +739,9 @@ void psx_keybinds_reset_player(const Paths& paths, int player) {
     write_kb_ini(g_kb_path);
 }
 
+const char* sdl_scancode_name(int scancode) { return sc_to_name(scancode); }
+int sdl_scancode_from_name(const char* name) { return name_to_sc(name); }
+
 bool apply_psx_input_files(const Paths& paths, const fs::path& game_cwd, std::string* error) {
     if (game_cwd.empty()) {
         if (error) *error = "empty game cwd";

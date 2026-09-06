@@ -56,6 +56,8 @@ set(RETCOMM_CORE_SOURCES
     src/launch/launch.cpp
     src/platform/psx_platform_settings.cpp
     src/platform/psx_input_profiles.cpp
+    src/platform/snes_platform_settings.cpp
+    src/platform/platform_settings.cpp
     src/romm/romm.cpp
     src/romm/romm_fetch.cpp
     src/romm/romm_saves.cpp

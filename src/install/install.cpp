@@ -664,11 +664,19 @@ int score_launch_candidate(const fs::path& root, const fs::path& file,
             else if (a.find(b) != std::string::npos || b.find(a) != std::string::npos)
                 score += 35;
             else {
-                // TwistedMetal4Recomp ↔ TwistedMetal4_Recompiled
-                std::string b2 = b;
-                if (b2.size() > 6 && b2.compare(b2.size() - 6, 6, "recomp") == 0)
-                    b2 = b2.substr(0, b2.size() - 6) + "recompiled";
-                if (a == b2 || a.find(b2) != std::string::npos) score += 45;
+                // TwistedMetal4Recomp ↔ TwistedMetal4_Recompiled, either way round:
+                // the catalog may carry the repo-style name while the archive ships
+                // the *_Recompiled binary, or (SNES ports) the reverse.
+                auto recomp_to_recompiled = [](std::string v) {
+                    if (v.size() > 6 && v.compare(v.size() - 6, 6, "recomp") == 0)
+                        v = v.substr(0, v.size() - 6) + "recompiled";
+                    return v;
+                };
+                const std::string a2 = recomp_to_recompiled(a);
+                const std::string b2 = recomp_to_recompiled(b);
+                if (a == b2 || a.find(b2) != std::string::npos || a2 == b ||
+                    b.find(a2) != std::string::npos || a2 == b2)
+                    score += 45;
             }
         }
     }
@@ -727,6 +735,28 @@ std::vector<std::string> list_launch_candidates(const fs::path& root, size_t lim
 }
 
 // When catalog launch.<os> misses, pick a unique high-confidence binary.
+// Release zips often wrap everything in one "<slug>-<ver>-<os>/" folder. The
+// "archive root" bonus in score_launch_candidate must be measured from inside
+// that wrapper, or a setup-kit exe sitting beside a toolchain/ tree loses the
+// bonus and gets refused as unclear.
+fs::path effective_archive_root(const fs::path& root) {
+    fs::path cur = root;
+    std::error_code ec;
+    for (int depth = 0; depth < 4; ++depth) {
+        fs::path only;
+        int entries = 0;
+        for (auto it = fs::directory_iterator(cur, ec); !ec && it != fs::directory_iterator();
+             it.increment(ec)) {
+            ++entries;
+            only = it->path();
+            if (entries > 1) break;
+        }
+        if (entries != 1 || !fs::is_directory(only, ec)) break;
+        cur = only;
+    }
+    return cur;
+}
+
 fs::path resolve_launch_binary(const fs::path& root, const std::string& expected_name,
                                const std::string& target_os, std::string* resolved_name) {
     fs::path exact = find_named_file(root, expected_name);
@@ -734,7 +764,8 @@ fs::path resolve_launch_binary(const fs::path& root, const std::string& expected
         if (resolved_name) *resolved_name = exact.filename().string();
         return exact;
     }
-    const auto cands = collect_launch_candidates(root, expected_name, target_os, 16);
+    const auto cands =
+        collect_launch_candidates(effective_archive_root(root), expected_name, target_os, 16);
     if (cands.empty()) return {};
     const LaunchCandidate& best = cands.front();
     // Accept: clear winner (recompiled / fuzzy / large+root) and not tied.
