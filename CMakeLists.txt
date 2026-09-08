@@ -105,6 +105,13 @@ if(WIN32)
     target_compile_definitions(retcomm-portable PRIVATE
         "RETCOMM_VERSION=\"${RETCOMM_VERSION}\""
     )
+    # The stub's entry point is wWinMain. MSVC picks it up from the WIN32
+    # subsystem; mingw's GUI startup calls WinMain unless -municode selects the
+    # wide one (cross builds: cmake/toolchain-mingw-w64-x86_64.cmake).
+    if(MINGW)
+        target_compile_options(retcomm-portable PRIVATE -municode)
+        target_link_options(retcomm-portable PRIVATE -municode)
+    endif()
     target_link_libraries(retcomm-portable PRIVATE shell32)
     install(TARGETS retcomm-portable RUNTIME DESTINATION bin)
 endif()
@@ -252,6 +259,11 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
         if(MSVC)
             target_link_options(retcomm-hub PRIVATE "/ENTRY:mainCRTStartup")
+        elseif(MINGW)
+            # mingw's -mwindows swaps in a startup object that calls WinMain, so
+            # keep the console startup (main) and mark the image GUI at link time.
+            set_target_properties(retcomm-hub PROPERTIES WIN32_EXECUTABLE FALSE)
+            target_link_options(retcomm-hub PRIVATE "-Wl,--subsystem,windows")
         endif()
     else()
         add_executable(retcomm-hub

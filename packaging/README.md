@@ -119,6 +119,41 @@ cmake --install build --config Release --prefix out
 ./packaging/windows/package.ps1 -Prefix out -Version 0.1.1 -VcpkgBin path\to\vcpkg\bin -Arch x64
 ```
 
+### Dev test zip, cross-compiled from Linux
+
+For handing a build to a Windows tester without a Windows machine or a release
+run. Needs mingw-w64 + the cross libs (Arch: `mingw-w64-gcc mingw-w64-curl
+mingw-w64-zlib`); SDL3 has no mingw package, so the script cross-builds it once
+into `.cache/sdl3-mingw`.
+
+```sh
+./packaging/windows/build-dev-zip.sh              # version → <CMake version>-dev.<sha>
+./packaging/windows/build-dev-zip.sh 0.6.4        # explicit label
+PORTABLE=1 ./packaging/windows/build-dev-zip.sh   # also the single-exe stub
+STRIP=0 ./packaging/windows/build-dev-zip.sh      # keep symbols in the zip
+```
+
+Writes `dist/RetComM-Launcher-windows-x64-dev.zip` — unzip on Windows, run
+`retcomm-hub.exe`. Layout matches the release package (exes + DLLs, with
+`fonts/`, `platforms/`, `controllers/`, `setup/` beside them); the DLL set is the
+import closure of both exes walked with `objdump`, and the toolchain links
+libgcc/libstdc++ statically. `cmake/toolchain-mingw-w64-x86_64.cmake` drives it
+and can be used on its own for a plain cross build.
+
+How a dev zip differs from a release:
+
+| | Dev zip | Release |
+|---|---|---|
+| Toolchain | mingw-w64 (GCC) | MSVC + vcpkg |
+| Signing | none — SmartScreen warns | Authenticode when the cert secret is set |
+| Self-update | disabled (no `channel.json`) | portable / installer channel |
+| ImGui color emoji | off (no mingw FreeType) | on |
+
+Test the CLI under wine (`wine retcomm.exe status`) for a quick link check, but
+wine ships no `tar.exe` or `powershell.exe`, so archive extraction — catalog
+sync, installs — always fails there. That is a wine gap, not a build defect;
+Windows 10+ ships `tar.exe`.
+
 Produces under `dist/`:
 
 | Artifact | Role |

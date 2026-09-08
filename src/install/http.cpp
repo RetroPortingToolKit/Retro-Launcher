@@ -82,6 +82,14 @@ CURL* make_easy(const std::string& url) {
 #if defined(CURL_HTTP_VERSION_2TLS)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
 #endif
+#if defined(_WIN32) && defined(CURLSSLOPT_NATIVE_CA)
+    // Verify against the Windows certificate store. Release builds link a
+    // Schannel libcurl (vcpkg) that already does, and ignore this; an OpenSSL
+    // libcurl — what the mingw cross dev build gets — otherwise looks for a CA
+    // bundle at a Unix path that does not exist on Windows and fails every
+    // HTTPS request with "SSL peer certificate ... was not OK".
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
+#endif
     return curl;
 }
 
