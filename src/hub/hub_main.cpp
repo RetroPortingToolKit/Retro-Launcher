@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -154,7 +155,10 @@ fs::path platform_icon_path(const std::string& slug) {
 
 // Load Lato like recomp-ui (18px body, oversample 2). Falls back to ImGui default.
 // Merge symbols + (when FreeType is enabled) CBDT color emoji (Noto Color Emoji).
-void load_hub_fonts() {
+// `density` is the display scale (see UiScale below): glyphs are rasterized that
+// much larger while keeping their 18-unit logical size, so text stays sharp on a
+// scaled display instead of being a magnified 18px bitmap.
+void load_hub_fonts(float density) {
     ImGuiIO& io = ImGui::GetIO();
 #if defined(IMGUI_ENABLE_FREETYPE)
     // Color-layered glyphs (CBDT/CBLC) for Noto Color Emoji / Segoe UI Emoji.
@@ -164,6 +168,7 @@ void load_hub_fonts() {
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 2;
+    cfg.RasterizerDensity = density;
     static const ImWchar kRanges[] = {
         0x0020, 0x00FF, // Basic Latin + Latin-1
         0x2010, 0x2027, // dashes, curly quotes, ellipsis
@@ -203,6 +208,7 @@ void load_hub_fonts() {
         // Color emoji bitmaps ignore oversampling; keep outline fonts crisp.
         merge_cfg.OversampleH = color_emoji ? 1 : 2;
         merge_cfg.OversampleV = color_emoji ? 1 : 2;
+        merge_cfg.RasterizerDensity = density;
 #if defined(IMGUI_ENABLE_FREETYPE)
         if (color_emoji) merge_cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_LoadColor;
 #else
@@ -308,6 +314,129 @@ void load_hub_fonts() {
     }
 
     io.FontGlobalScale = 1.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Display scaling
+// ---------------------------------------------------------------------------
+// SDL3 hands us a window measured in *pixels* on Windows: with "Scale and
+// layout" at 150% a 1280x800 window is still 1280x800 physical pixels, so the
+// 18px body font and every hard-coded padding in this file came out a third
+// smaller than the rest of the desktop.
+//
+// Rather than multiply ~600 layout constants, the UI keeps drawing in logical
+// units and the frame is stretched instead: io.DisplaySize becomes the pixel
+// size divided by the scale, io.DisplayFramebufferScale carries the factor into
+// the GL backend's viewport/scissor, and the atlas is rasterized at that density
+// so text is genuinely sharper rather than a magnified bitmap. At scale 1.0
+// nothing below changes a single value.
+struct UiScale {
+    // Pixels per logical unit — what the framebuffer and the font atlas use.
+    float px = 1.f;
+    // SDL screen coordinates per logical unit — what mouse events and window
+    // sizes use. Equals `px` on Windows (screen coords are pixels there) and
+    // 1.0 where SDL reports the density through the pixel size instead
+    // (macOS retina, Wayland with SDL_WINDOW_HIGH_PIXEL_DENSITY).
+    float coords = 1.f;
+
+    bool identity() const { return px == 1.f && coords == 1.f; }
+};
+
+// Config / env preference, else the display's own scale. Auto never shrinks:
+// a display reporting under 100% still draws 1:1.
+float resolve_ui_scale_px(SDL_Window* window, float pref) {
+    float s = 0.f;
+    if (const char* env = std::getenv("RETCOMM_UI_SCALE")) s = std::strtof(env, nullptr);
+    if (!(s > 0.f)) s = pref;
+    if (s > 0.f) return std::clamp(s, 0.5f, 4.f);
+    if (window) s = SDL_GetWindowDisplayScale(window);
+    if (!(s > 0.f)) s = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    if (!(s > 0.f)) return 1.f;
+    return std::clamp(s, 1.f, 4.f);
+}
+
+UiScale resolve_ui_scale(SDL_Window* window, float pref) {
+    UiScale out;
+    out.px = resolve_ui_scale_px(window, pref);
+    // display scale = pixel density * content scale, so the pixel density is
+    // exactly the part SDL already applied to the window's pixel size.
+    float density = window ? SDL_GetWindowPixelDensity(window) : 1.f;
+    if (!(density > 0.f)) density = 1.f;
+    out.coords = std::max(out.px / density, 0.05f);
+    return out;
+}
+
+// Re-rasterize the atlas after the scale changed (monitor swap, settings edit).
+// Only safe between frames.
+void rebuild_hub_fonts(float density) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    io.Fonts->Clear();
+    load_hub_fonts(density);
+    io.Fonts->Build();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+}
+
+// Mouse input reaches ImGui in window coordinates; move it into logical units.
+// The backend reads only the fields touched here, and the hub's own handlers
+// (gamepad/key bind capture) never look at mouse coordinates.
+void scale_mouse_event(SDL_Event& e, float coords) {
+    if (coords == 1.f) return;
+    switch (e.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        e.motion.x /= coords;
+        e.motion.y /= coords;
+        e.motion.xrel /= coords;
+        e.motion.yrel /= coords;
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        e.button.x /= coords;
+        e.button.y /= coords;
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        e.wheel.mouse_x /= coords;
+        e.wheel.mouse_y /= coords;
+        break;
+    default:
+        break;
+    }
+}
+
+// True where ImGui_ImplSDL3 re-asserts the cursor from the global mouse state
+// every frame (same driver whitelist it uses). Elsewhere — Wayland — there is
+// no global cursor and motion events are the only source.
+bool sdl_has_global_mouse() {
+    const char* drv = SDL_GetCurrentVideoDriver();
+    if (!drv) return false;
+    static const char* kWhitelist[] = {"windows", "cocoa", "x11", "DIVE", "VMAN"};
+    for (const char* w : kWhitelist) {
+        if (std::strncmp(drv, w, std::strlen(w)) == 0) return true;
+    }
+    return false;
+}
+
+// Install the logical coordinate space for the frame about to be built. Runs
+// after ImGui_ImplSDL3_NewFrame(), which fills io.DisplaySize with the window's
+// pixel size and queues an unscaled cursor position; ours is queued last, so it
+// is the one ImGui::NewFrame() ends up applying.
+void apply_ui_scale_frame(SDL_Window* window, const UiScale& s) {
+    if (s.identity()) return;
+    ImGuiIO& io = ImGui::GetIO();
+    int px_w = 0, px_h = 0;
+    SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) px_w = px_h = 0;
+    io.DisplaySize = ImVec2(static_cast<float>(px_w) / s.px, static_cast<float>(px_h) / s.px);
+    io.DisplayFramebufferScale = ImVec2(s.px, s.px);
+
+    if (sdl_has_global_mouse() && SDL_GetKeyboardFocus() == window) {
+        float gx = 0.f, gy = 0.f;
+        int wx = 0, wy = 0;
+        SDL_GetGlobalMouseState(&gx, &gy);
+        SDL_GetWindowPosition(window, &wx, &wy);
+        io.AddMousePosEvent((gx - static_cast<float>(wx)) / s.coords,
+                            (gy - static_cast<float>(wy)) / s.coords);
+    }
 }
 
 using retcomm::hub::BoxartCache;
@@ -2892,6 +3021,46 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::TextWrapped(
         "When enabled, Play queries GitHub for that title and asks before launching if a newer "
         "release is available. Save to apply.");
+    ImGui::PopStyleColor();
+
+    ImGui::Dummy(ImVec2(0, 10));
+    ImGui::TextColored(th.text_muted, "Interface scale");
+    {
+        struct ScaleChoice {
+            const char* label;
+            float value;
+        };
+        static const ScaleChoice kChoices[] = {
+            {"Auto (follow display)", 0.f}, {"100%", 1.f},   {"125%", 1.25f}, {"150%", 1.5f},
+            {"175%", 1.75f},                {"200%", 2.f},   {"250%", 2.5f},  {"300%", 3.f},
+        };
+        int cur = -1;
+        for (int i = 0; i < IM_ARRAYSIZE(kChoices); ++i) {
+            if (std::fabs(hub.settings.ui_scale - kChoices[i].value) < 0.005f) {
+                cur = i;
+                break;
+            }
+        }
+        // A hand-edited config.json may hold a value the presets do not cover.
+        char custom[32];
+        std::snprintf(custom, sizeof(custom), "%d%%",
+                      static_cast<int>(hub.settings.ui_scale * 100.f + 0.5f));
+        ImGui::SetNextItemWidth(240.f);
+        if (ImGui::BeginCombo("##ui_scale", cur >= 0 ? kChoices[cur].label : custom)) {
+            for (int i = 0; i < IM_ARRAYSIZE(kChoices); ++i) {
+                if (ImGui::Selectable(kChoices[i].label, i == cur)) {
+                    hub.settings.ui_scale = kChoices[i].value;
+                    hub.settings.dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped(
+        "Size of hub text and controls. Auto follows the desktop's own scaling (Windows "
+        "\"Scale and layout\", GNOME/KDE fractional scaling). Applies as soon as you pick it; "
+        "Save to keep it.");
     ImGui::PopStyleColor();
 
     ImGui::Dummy(ImVec2(0, 10));
@@ -6484,8 +6653,14 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    SDL_Window* window = SDL_CreateWindow("RetComM Launcher", 1280, 800,
-                                          SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    // HIGH_PIXEL_DENSITY asks for a native-resolution backbuffer where the
+    // platform scales windows for us (macOS retina, Wayland); on Windows and X11
+    // it is a no-op. Either way the pixel size is the truth and UiScale turns it
+    // back into the logical 1280x800 this UI is written against.
+    SDL_Window* window =
+        SDL_CreateWindow("RetComM Launcher", 1280, 800,
+                         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
+                             SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;
@@ -6503,7 +6678,12 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
-    load_hub_fonts();
+
+    // The atlas has to be built before the first frame, and config.json is not
+    // loaded yet (that needs hub.paths below), so start from the display's own
+    // scale. A pinned config ui_scale is applied a few lines further down.
+    UiScale ui = resolve_ui_scale(window, 0.f);
+    load_hub_fonts(ui.px);
 
     const Theme th = retcomm::hub::crt_theme();
     retcomm::hub::apply_imgui_style(th);
@@ -6524,6 +6704,30 @@ int main(int argc, char** argv) {
     hub.paths = retcomm::default_paths(hub.exe_dir);
     hub.cfg = retcomm::load_app_config(hub.paths.config_path);
     retcomm::set_github_token(hub.cfg.github_token);
+
+    // Now that config.json is in, honour a pinned ui_scale and give the window
+    // the logical 1280x800 it was always meant to be — on a 150% display that is
+    // 1920x1200 pixels, so clamp to what the monitor can actually show.
+    {
+        const UiScale want = resolve_ui_scale(window, hub.cfg.ui_scale);
+        if (want.px != ui.px) rebuild_hub_fonts(want.px);
+        ui = want;
+        if (ui.coords != 1.f) {
+            int w = static_cast<int>(std::lround(1280.f * ui.coords));
+            int h = static_cast<int>(std::lround(800.f * ui.coords));
+            SDL_Rect usable{};
+            const SDL_DisplayID did = SDL_GetDisplayForWindow(window);
+            if (did && SDL_GetDisplayUsableBounds(did, &usable) && usable.w > 0 && usable.h > 0) {
+                w = std::min(w, usable.w);
+                h = std::min(h, usable.h);
+            }
+            SDL_SetWindowSize(window, w, h);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+        std::fprintf(stderr, "retcomm-hub: UI scale %.2f (window coords x%.2f, %s)\n",
+                     static_cast<double>(ui.px), static_cast<double>(ui.coords),
+                     hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
+    }
 
     // First run: the wizard has not yet asked the user where RetComM should keep
     // its files, so this launch must not create any of them. ensure_dirs() and
@@ -6595,6 +6799,7 @@ int main(int argc, char** argv) {
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            scale_mouse_event(e, ui.coords);
             if (poll_snes_bind_capture(hub, e) || poll_psx_bind_capture(hub, e)) {
                 // Still feed ImGui so the modal stays responsive, but skip
                 // duplicate key handling for capture commits.
@@ -6647,8 +6852,26 @@ int main(int argc, char** argv) {
         if (!hub.job_running.load() && hub.queued_job_count() == 0)
             hub.maybe_run_deferred_cache_gc();
 
+        { // TEMP TEST HOOK
+            static int f = 0; static bool on = false;
+            if (std::getenv("RETCOMM_UI_SCALE_CYCLE") && ++f % 180 == 0) {
+                on = !on;
+                hub.settings.ui_scale = on ? 1.5f : 1.0f;
+                std::fprintf(stderr, "TEST: ui_scale -> %.2f\n", hub.settings.ui_scale);
+            }
+        }
+        // Follow the display: dragging onto a differently scaled monitor, or an
+        // edit in Settings, re-rasterizes the atlas. Between frames, so it is
+        // safe to drop the old fonts here.
+        {
+            const UiScale want = resolve_ui_scale(window, hub.settings.ui_scale);
+            if (want.px != ui.px) rebuild_hub_fonts(want.px);
+            ui = want;
+        }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        apply_ui_scale_frame(window, ui);
         ImGui::NewFrame();
 
         const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -7292,7 +7515,9 @@ int main(int argc, char** argv) {
         ImGui::End();
 
         ImGui::Render();
-        glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+        int fb_w = 0, fb_h = 0;
+        SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
         glClearColor(th.background.x, th.background.y, th.background.z, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

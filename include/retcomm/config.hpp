@@ -76,6 +76,10 @@ struct AppConfig {
     int keep_release_zips_per_repo = 1;
     int idle_build_keep_days = 14;     // 0 = never auto-prune idle src/.../build/
     int ccache_max_gb = 5;             // 0 = don't manage CCACHE_DIR / MAXSIZE
+    // Hub UI scale. 0 = follow the display (Windows "Scale and layout", KDE/GNOME
+    // fractional scaling, macOS backing scale); a value pins it. Clamped to
+    // [0.5, 4.0] when non-zero.
+    float ui_scale = 0.f;
     CatalogConfig catalog;
     RommConfig romm;
     NetplayConfig netplay;

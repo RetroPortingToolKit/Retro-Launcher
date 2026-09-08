@@ -110,6 +110,11 @@ AppConfig normalize_config(AppConfig cfg) {
     if (cfg.keep_release_zips_per_repo < 1) cfg.keep_release_zips_per_repo = 1;
     if (cfg.idle_build_keep_days < 0) cfg.idle_build_keep_days = 0;
     if (cfg.ccache_max_gb < 0) cfg.ccache_max_gb = 0;
+    // 0 stays 0 (= follow the display); anything else is a real scale factor.
+    if (cfg.ui_scale != 0.f) {
+        if (cfg.ui_scale < 0.5f) cfg.ui_scale = 0.5f;
+        if (cfg.ui_scale > 4.f) cfg.ui_scale = 4.f;
+    }
 
     // Drop empty install-root rows; keep first label for a path.
     {
@@ -297,6 +302,7 @@ AppConfig load_app_config(const fs::path& config_path) {
         if (j.contains("idle_build_keep_days"))
             cfg.idle_build_keep_days = j.value("idle_build_keep_days", 14);
         if (j.contains("ccache_max_gb")) cfg.ccache_max_gb = j.value("ccache_max_gb", 5);
+        if (j.contains("ui_scale")) cfg.ui_scale = j.value("ui_scale", 0.f);
 
         if (j.contains("default_install_root") && j.at("default_install_root").is_string())
             cfg.default_install_root = j.at("default_install_root").get<std::string>();
@@ -386,6 +392,7 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
               {"keep_release_zips_per_repo", cfg.keep_release_zips_per_repo},
               {"idle_build_keep_days", cfg.idle_build_keep_days},
               {"ccache_max_gb", cfg.ccache_max_gb},
+              {"ui_scale", cfg.ui_scale},
               {"catalog",
                {{"url", cfg.catalog.url},
                 {"github_repo", cfg.catalog.github_repo},

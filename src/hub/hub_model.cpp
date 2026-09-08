@@ -2759,6 +2759,7 @@ void HubModel::open_settings() {
     settings.check_updates_on_startup = cfg.check_updates_on_startup;
     settings.auto_scan_after_catalog_update = cfg.auto_scan_after_catalog_update;
     settings.check_updates_before_launch = cfg.check_updates_before_launch;
+    settings.ui_scale = cfg.ui_scale;
     copy_buf(settings.github_token, sizeof(settings.github_token), cfg.github_token);
     settings.auto_clean_build_dirs = cfg.auto_clean_build_dirs;
     settings.auto_gc_caches = cfg.auto_gc_caches;
@@ -2805,6 +2806,7 @@ void HubModel::open_setup() {
     settings.check_updates_on_startup = cfg.check_updates_on_startup;
     settings.auto_scan_after_catalog_update = cfg.auto_scan_after_catalog_update;
     settings.check_updates_before_launch = cfg.check_updates_before_launch;
+    settings.ui_scale = cfg.ui_scale;
     copy_buf(settings.github_token, sizeof(settings.github_token), cfg.github_token);
     settings.auto_clean_build_dirs = cfg.auto_clean_build_dirs;
     settings.auto_gc_caches = cfg.auto_gc_caches;
@@ -3356,6 +3358,7 @@ bool HubModel::save_settings(std::string* error) {
     next.check_updates_on_startup = settings.check_updates_on_startup;
     next.auto_scan_after_catalog_update = settings.auto_scan_after_catalog_update;
     next.check_updates_before_launch = settings.check_updates_before_launch;
+    next.ui_scale = settings.ui_scale;
     next.github_token = settings.github_token;
     next.auto_clean_build_dirs = settings.auto_clean_build_dirs;
     next.auto_gc_caches = settings.auto_gc_caches;
@@ -3403,6 +3406,7 @@ bool HubModel::save_settings(std::string* error) {
     settings.check_updates_on_startup = cfg.check_updates_on_startup;
     settings.auto_scan_after_catalog_update = cfg.auto_scan_after_catalog_update;
     settings.check_updates_before_launch = cfg.check_updates_before_launch;
+    settings.ui_scale = cfg.ui_scale;
     copy_buf(settings.github_token, sizeof(settings.github_token), cfg.github_token);
     settings.auto_clean_build_dirs = cfg.auto_clean_build_dirs;
     settings.auto_gc_caches = cfg.auto_gc_caches;

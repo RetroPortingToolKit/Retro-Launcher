@@ -336,6 +336,7 @@ struct SettingsDraft {
     int keep_release_zips_per_repo = 1;
     int idle_build_keep_days = 14;
     int ccache_max_gb = 5;
+    float ui_scale = 0.f; // 0 = follow the display; applied live, Save persists
     std::vector<PlatformFolderEdit> platform_folders;
     std::vector<InstallRootEdit> install_roots;
     int default_install_root_index = 0;
