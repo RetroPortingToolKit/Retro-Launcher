@@ -6852,20 +6852,25 @@ int main(int argc, char** argv) {
         if (!hub.job_running.load() && hub.queued_job_count() == 0)
             hub.maybe_run_deferred_cache_gc();
 
-        { // TEMP TEST HOOK
-            static int f = 0; static bool on = false;
-            if (std::getenv("RETCOMM_UI_SCALE_CYCLE") && ++f % 180 == 0) {
-                on = !on;
-                hub.settings.ui_scale = on ? 1.5f : 1.0f;
-                std::fprintf(stderr, "TEST: ui_scale -> %.2f\n", hub.settings.ui_scale);
-            }
-        }
         // Follow the display: dragging onto a differently scaled monitor, or an
         // edit in Settings, re-rasterizes the atlas. Between frames, so it is
         // safe to drop the old fonts here.
+        //
+        // The saved config is the preference everywhere except inside the
+        // Settings pane, where the combo previews live. Reading the draft
+        // unconditionally used to clobber a pinned ui_scale with the draft's
+        // zero-initialised "auto" on the first frame — so a config scale was
+        // applied at startup and then thrown away before anything was drawn —
+        // and left a cancelled preview in effect until the next launch.
         {
-            const UiScale want = resolve_ui_scale(window, hub.settings.ui_scale);
-            if (want.px != ui.px) rebuild_hub_fonts(want.px);
+            const float pref = hub.show_settings ? hub.settings.ui_scale : hub.cfg.ui_scale;
+            const UiScale want = resolve_ui_scale(window, pref);
+            if (want.px != ui.px) {
+                std::fprintf(stderr, "retcomm-hub: UI scale %.2f -> %.2f (window coords x%.2f)\n",
+                             static_cast<double>(ui.px), static_cast<double>(want.px),
+                             static_cast<double>(want.coords));
+                rebuild_hub_fonts(want.px);
+            }
             ui = want;
         }
 
