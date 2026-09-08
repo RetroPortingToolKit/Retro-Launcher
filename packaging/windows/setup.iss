@@ -22,6 +22,17 @@
 #define MyAppURL "https://github.com/TechnicallyComputers/RetComM-Launcher"
 #define MyAppExeName "retcomm-hub.exe"
 
+; VersionInfoVersion must be purely numeric. The release workflow accepts a
+; prerelease suffix (0.6.4-rc1), which ISCC would reject, so strip anything
+; from the first '-' or '+'. AppVersion still shows the full string.
+#define NumericVersion MyAppVersion
+#if Pos("-", NumericVersion) > 0
+  #define NumericVersion Copy(NumericVersion, 1, Pos("-", NumericVersion) - 1)
+#endif
+#if Pos("+", NumericVersion) > 0
+  #define NumericVersion Copy(NumericVersion, 1, Pos("+", NumericVersion) - 1)
+#endif
+
 [Setup]
 AppId={{A7E6C2B1-4D9F-4E8A-9C31-8F2B6D1E0A47}
 AppName={#MyAppName}
@@ -34,6 +45,22 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; Version resource for setup.exe. Without these Inno stamps its own compiler
+; version as FileVersion and leaves OriginalFilename and LegalCopyright blank,
+; which gives SmartScreen nothing to attribute the download to and raises the
+; score of Defender ML heuristics. Same reason the exes carry VERSIONINFO
+; (packaging/windows/retcomm.rc.in).
+; The uninstaller picks up company/product/copyright from these but keeps
+; Inno's own FileVersion; that one is not ours to set.
+VersionInfoVersion={#NumericVersion}
+VersionInfoProductVersion={#NumericVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoProductName={#MyAppName}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoCopyright=Copyright (C) {#MyAppPublisher}. MIT licensed.
+VersionInfoOriginalFileName=RetComM-Launcher-windows-{#Arch}-setup.exe
+AppCopyright=Copyright (C) {#MyAppPublisher}. MIT licensed.
+UninstallDisplayName={#MyAppName}
 OutputDir={#OutputDir}
 ; Stable download name (no version): AppVersion still carries MyAppVersion.
 OutputBaseFilename=RetComM-Launcher-windows-{#Arch}-setup

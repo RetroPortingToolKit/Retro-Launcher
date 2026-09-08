@@ -150,7 +150,7 @@ How a dev zip differs from a release:
 | ImGui color emoji | off (no mingw FreeType) | on |
 
 Test the CLI under wine (`wine retcomm.exe status`) for a quick link check, but
-wine ships no `tar.exe` or `powershell.exe`, so archive extraction — catalog
+wine ships no `tar.exe` or `powershell.exe`, so core archive extraction — catalog
 sync, installs — always fails there. That is a wine gap, not a build defect;
 Windows 10+ ships `tar.exe`.
 
@@ -183,6 +183,54 @@ the Inno Setup installer. The certificate is imported into the user store for
 the run and used by thumbprint, so the password never reaches a command line.
 Signing needs `signtool.exe` (Windows SDK; the CI runner has it). A configured
 certificate that fails to sign stops the package.
+
+### Antivirus false positives
+
+Unsigned releases were being flagged and quarantined by Microsoft Defender
+(`Trojan:Win32/Wacatac.B!ml` and friends). The `!ml` suffix means an ML
+heuristic, not a signature match. Four things fed it; three are fixed:
+
+- **No Authenticode signature, so no download reputation.** Still the dominant
+  factor; see "Code signing" above. Note that `WINDOWS_SIGN_PFX_BASE64` cannot
+  be used with a newly issued certificate: since June 2023 publicly trusted
+  code-signing keys must live on FIPS 140-2 hardware, so no exportable `.pfx`
+  exists to put in a secret. A cloud signing service (Azure Artifact Signing,
+  DigiCert KeyLocker, SSL.com eSigner) needs a `signtool /dlib` path here
+  instead.
+- **The portable stub looked like a dropper.** It wrote `payload.zip` to disk
+  and unpacked it by spawning `System32\tar.exe`, falling back to
+  `powershell -ExecutionPolicy Bypass -Command "Expand-Archive ..."`. Self-
+  extracting to disk and then driving a system interpreter is close to a
+  textbook dropper signature. It now inflates the payload in-process with a
+  vendored miniz (`third_party/miniz/`) and spawns nothing before the hub
+  itself. See `src/portable/win_portable_main.cpp`.
+- **No version metadata.** The `.rc` carried only an icon, so the binaries had
+  no `CompanyName` / `ProductName` / `OriginalFilename` for SmartScreen to
+  attribute a download to. Each exe now gets its own `VERSIONINFO` block via
+  `retcomm_add_windows_rc()` in `CMakeLists.txt`, and setup.exe gets the
+  matching `VersionInfo*` directives in `setup.iss` (Inno was otherwise
+  stamping its own compiler version and leaving the copyright blank). The
+  uninstaller inherits company/product/copyright but keeps Inno's own
+  FileVersion, which the script cannot override.
+- **The hub unpacked downloads the same way the stub did.** Catalog sync and
+  every prebuilt install ran `powershell -ExecutionPolicy Bypass -Command
+  Expand-Archive`, far more often than the stub's one-time unpack. Zip now
+  goes through the shared in-process reader on every platform; `tar.exe`
+  remains for `tar.*`/`7z` and as a fallback. Helper processes are also
+  resolved to absolute paths now (`win_system_exe` / `win_find_on_path`):
+  spawning `tar.exe` by bare name let the calling exe's directory and the
+  current directory outrank System32, which was a binary-planting hole as
+  well as a heuristic.
+
+Still open: `src/update/self_update.cpp` applies updates through a hidden
+`powershell -EncodedCommand`, which is its own behavioural-detection trigger;
+`data_root_migrate.cpp` shells out to `cmd.exe /C mklink`; and the portable
+payload is still an appended overlay rather than a PE resource.
+
+When a release is flagged anyway, dispute it as the developer at
+<https://www.microsoft.com/wdsi/filesubmission> (choose "Software developer").
+Turnaround is usually a few days. Each build is a new hash, so a cleared
+verdict does not carry to the next release — signing is what ends the cycle.
 
 Portable usage (after unzipping the release zip):
 

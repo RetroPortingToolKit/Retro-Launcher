@@ -6,7 +6,7 @@
 #   ./build/retcomm-hub
 
 cmake_minimum_required(VERSION 3.24)
-project(retcomm_launcher CXX)
+project(retcomm_launcher C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +63,29 @@ set(RETCOMM_CORE_SOURCES
     src/romm/romm_saves.cpp
 )
 
+# --- miniz (vendored) -------------------------------------------------------
+# In-process zip reading for retcomm_core (downloaded archives) and for the
+# Windows portable stub (its appended payload). The stub cannot use a shared
+# zlib -- the DLLs it would link against are inside the payload it is
+# unpacking -- so this is static and dependency-free.
+#
+# The defines are PUBLIC, not PRIVATE: include/retcomm/zip_extract.hpp includes
+# miniz.h in every consumer, and a consumer that saw a different configuration
+# than miniz.c was built with would be an ODR violation. Compression and the
+# zlib-style API are off; MINIZ_NO_ZLIB_COMPATIBLE_NAMES keeps miniz from
+# defining compress()/crc32()/inflate() and colliding with the real zlib that
+# libcurl already pulls in.
+add_library(retcomm_miniz STATIC third_party/miniz/miniz.c)
+target_include_directories(retcomm_miniz PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz)
+target_compile_definitions(retcomm_miniz PUBLIC
+    MINIZ_NO_DEFLATE_APIS
+    MINIZ_NO_ZLIB_APIS
+    MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+    MINIZ_NO_STDIO
+)
+set_target_properties(retcomm_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(retcomm_core STATIC ${RETCOMM_CORE_SOURCES})
 target_include_directories(retcomm_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -74,7 +97,7 @@ target_compile_definitions(retcomm_core PUBLIC
     "RETCOMM_CATALOG_GITHUB_REPO=\"${RETCOMM_CATALOG_GITHUB_REPO}\""
     "RETCOMM_CATALOG_DOWNLOAD_URL=\"${RETCOMM_CATALOG_DOWNLOAD_URL}\""
 )
-target_link_libraries(retcomm_core PUBLIC CURL::libcurl)
+target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz)
 if(WIN32)
     target_link_libraries(retcomm_core PUBLIC shell32)
 endif()
@@ -82,15 +105,52 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_L
     target_link_libraries(retcomm_core PUBLIC stdc++fs)
 endif()
 
-set(RETCOMM_WIN_RC "")
-if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/assets/retcomm.ico")
-    string(REPLACE "\\" "/" RETCOMM_ICO_PATH "${CMAKE_SOURCE_DIR}/assets/retcomm.ico")
-    configure_file("${CMAKE_SOURCE_DIR}/packaging/windows/retcomm.rc.in"
-                   "${CMAKE_BINARY_DIR}/retcomm.rc" @ONLY)
-    set(RETCOMM_WIN_RC "${CMAKE_BINARY_DIR}/retcomm.rc")
+# --- Windows resources (icon + VERSIONINFO) ---------------------------------
+# Each exe gets its own .rc so InternalName / OriginalFilename / FileDescription
+# name that specific binary. Version metadata matters beyond tidiness: a file
+# carrying none gives SmartScreen nothing to attribute a download to and scores
+# higher in Defender's ML heuristics. See packaging/windows/retcomm.rc.in.
+set(RETCOMM_RC_COMPANY "TechnicallyComputers")
+set(RETCOMM_RC_PRODUCT "RetComM Launcher")
+set(RETCOMM_RC_COPYRIGHT "Copyright (C) TechnicallyComputers. MIT licensed.")
+
+# FILEVERSION wants four comma-separated integers; RETCOMM_VERSION may carry a
+# prerelease suffix (0.6.4-rc1), so take only the leading x.y.z.
+if(RETCOMM_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    set(RETCOMM_VERSION_COMMA "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},0")
+else()
+    message(WARNING "RETCOMM_VERSION '${RETCOMM_VERSION}' is not x.y.z; "
+                    "Windows FILEVERSION falls back to 0,0,0,0")
+    set(RETCOMM_VERSION_COMMA "0,0,0,0")
 endif()
 
-add_executable(retcomm src/main.cpp ${RETCOMM_WIN_RC})
+# retcomm_add_windows_rc(<out_var> <internal_name> <original_filename> <description>)
+# Sets <out_var> to the generated .rc, or to "" off Windows / with no icon, so
+# callers can splice it into add_executable() unconditionally.
+function(retcomm_add_windows_rc out_var internal_name original_filename description)
+    set(${out_var} "" PARENT_SCOPE)
+    if(NOT WIN32 OR NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/retcomm.ico")
+        return()
+    endif()
+    string(REPLACE "\\" "/" RETCOMM_ICO_PATH "${CMAKE_SOURCE_DIR}/assets/retcomm.ico")
+    set(RETCOMM_RC_INTERNAL_NAME "${internal_name}")
+    set(RETCOMM_RC_ORIGINAL_FILENAME "${original_filename}")
+    set(RETCOMM_RC_DESCRIPTION "${description}")
+    set(rc_path "${CMAKE_BINARY_DIR}/rc/${internal_name}.rc")
+    configure_file("${CMAKE_SOURCE_DIR}/packaging/windows/retcomm.rc.in" "${rc_path}" @ONLY)
+    set(${out_var} "${rc_path}" PARENT_SCOPE)
+endfunction()
+
+# OriginalFilename is the name each file actually ships under: package.ps1
+# renames the portable stub to "RetComM Launcher.exe".
+retcomm_add_windows_rc(RETCOMM_RC_CLI "retcomm" "retcomm.exe"
+    "RetComM Launcher command line")
+retcomm_add_windows_rc(RETCOMM_RC_PORTABLE "retcomm-portable" "RetComM Launcher.exe"
+    "RetComM Launcher (portable)")
+retcomm_add_windows_rc(RETCOMM_RC_HUB "retcomm-hub" "retcomm-hub.exe"
+    "RetComM Launcher")
+
+add_executable(retcomm src/main.cpp ${RETCOMM_RC_CLI})
 target_link_libraries(retcomm PRIVATE retcomm_core)
 if(UNIX AND NOT APPLE)
     set_target_properties(retcomm PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
@@ -100,8 +160,13 @@ endif()
 if(WIN32)
     add_executable(retcomm-portable WIN32
         src/portable/win_portable_main.cpp
-        ${RETCOMM_WIN_RC}
+        ${RETCOMM_RC_PORTABLE}
     )
+    # Unpacks its payload with the shared reader in include/retcomm/zip_extract.hpp;
+    # retcomm_miniz supplies the include dir and defines. Nothing else from core is
+    # linked: the stub runs before the payload DLLs exist on disk.
+    target_include_directories(retcomm-portable PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_definitions(retcomm-portable PRIVATE
         "RETCOMM_VERSION=\"${RETCOMM_VERSION}\""
     )
@@ -109,10 +174,11 @@ if(WIN32)
     # subsystem; mingw's GUI startup calls WinMain unless -municode selects the
     # wide one (cross builds: cmake/toolchain-mingw-w64-x86_64.cmake).
     if(MINGW)
-        target_compile_options(retcomm-portable PRIVATE -municode)
+        target_compile_options(retcomm-portable PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-municode>)
         target_link_options(retcomm-portable PRIVATE -municode)
     endif()
-    target_link_libraries(retcomm-portable PRIVATE shell32)
+    target_link_libraries(retcomm-portable PRIVATE shell32 retcomm_miniz)
     install(TARGETS retcomm-portable RUNTIME DESTINATION bin)
 endif()
 
@@ -254,7 +320,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_main.cpp
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
-            ${RETCOMM_WIN_RC}
+            ${RETCOMM_RC_HUB}
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
         if(MSVC)

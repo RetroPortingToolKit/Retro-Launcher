@@ -7,6 +7,7 @@
 #include "retcomm/paths.hpp"
 #include "retcomm/release_tags.hpp"
 #include "retcomm/romm_fetch.hpp"
+#include "retcomm/zip_extract.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -346,9 +347,35 @@ bool is_archive_path(const fs::path& p) {
 
 #if defined(_WIN32)
 
-bool win_exe_on_path(const wchar_t* name) {
-    wchar_t buf[MAX_PATH];
-    return SearchPathW(nullptr, name, L".exe", MAX_PATH, buf, nullptr) != 0;
+// Absolute path to a helper that ships with Windows, or "" when absent.
+//
+// Never spawn one by bare name. CreateProcessW with a NULL lpApplicationName
+// resolves the command line through the calling exe's directory and the
+// current directory *before* System32, so a tar.exe dropped next to the hub
+// (or in whatever the cwd happens to be) would be picked over the real one.
+std::wstring win_system_exe(const wchar_t* name) {
+    wchar_t sys[MAX_PATH]{};
+    const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    const std::wstring full = std::wstring(sys) + L"\\" + name;
+    std::error_code ec;
+    return fs::is_regular_file(fs::path(full), ec) ? full : std::wstring();
+}
+
+// Third-party tools can only come from %PATH%. Hand SearchPathW that list
+// explicitly: its default search order also starts with the application
+// directory and the current directory.
+std::wstring win_find_on_path(const wchar_t* name) {
+    const DWORD need = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    if (need <= 1) return {};
+    std::wstring path_env(need, L'\0');
+    const DWORD got = GetEnvironmentVariableW(L"PATH", path_env.data(), need);
+    if (got == 0 || got >= need) return {};
+    path_env.resize(got);
+
+    wchar_t buf[MAX_PATH]{};
+    if (SearchPathW(path_env.c_str(), name, L".exe", MAX_PATH, buf, nullptr) == 0) return {};
+    return buf;
 }
 
 std::wstring win_quote_arg(const std::wstring& arg) {
@@ -370,9 +397,16 @@ std::wstring win_quote_arg(const std::wstring& arg) {
     return out;
 }
 
-// Spawn without a console window; returns process exit code, or -1 on spawn failure.
+// Spawn without a console window; returns process exit code, or -1 on spawn
+// failure. `exe` must be an absolute path (win_system_exe / win_find_on_path):
+// it is passed as lpApplicationName so no path search happens at all.
+// When `stdout_file` is set, the child's stdout is redirected into it.
 int win_run_hidden(const std::wstring& exe, const std::vector<std::wstring>& args,
-                   std::string* err_out) {
+                   std::string* err_out, const fs::path* stdout_file = nullptr) {
+    if (exe.empty()) {
+        if (err_out) *err_out = "helper not found";
+        return -1;
+    }
     std::wstring cmdline = win_quote_arg(exe);
     for (const auto& a : args) {
         cmdline.push_back(L' ');
@@ -384,9 +418,29 @@ int win_run_hidden(const std::wstring& exe, const std::vector<std::wstring>& arg
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
+
+    HANDLE out_handle = INVALID_HANDLE_VALUE;
+    if (stdout_file) {
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        out_handle = CreateFileW(stdout_file->wstring().c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ, &sa, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (out_handle == INVALID_HANDLE_VALUE) {
+            if (err_out) *err_out = "cannot create " + stdout_file->string();
+            return -1;
+        }
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdOutput = out_handle;
+        si.hStdError = out_handle;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
+
     const BOOL ok =
-        CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                       nullptr, nullptr, &si, &pi);
+        CreateProcessW(exe.c_str(), mutable_cmd.data(), nullptr, nullptr,
+                       stdout_file ? TRUE : FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (out_handle != INVALID_HANDLE_VALUE) CloseHandle(out_handle);
     if (!ok) {
         if (err_out)
             *err_out = "CreateProcess failed (" + std::to_string(GetLastError()) + "): " +
@@ -402,17 +456,6 @@ int win_run_hidden(const std::wstring& exe, const std::vector<std::wstring>& arg
         *err_out = "command failed (" + std::to_string(code) + "): " + fs::path(exe).string();
     }
     return static_cast<int>(code);
-}
-
-std::wstring win_ps_single_quote(const fs::path& p) {
-    std::wstring s = p.wstring();
-    std::wstring out;
-    out.reserve(s.size() + 2);
-    for (wchar_t c : s) {
-        if (c == L'\'') out += L"''";
-        else out += c;
-    }
-    return out;
 }
 
 bool extract_archive_windows(const fs::path& archive, const fs::path& dest, std::string* error) {
@@ -431,35 +474,32 @@ bool extract_archive_windows(const fs::path& archive, const fs::path& dest, std:
         fs::create_directories(dest, rec);
     };
 
-    // Windows 10+ ships tar.exe (libarchive) — handles zip and common tar.* formats.
-    if (win_exe_on_path(L"tar")) {
-        if (win_run_hidden(L"tar.exe",
-                           {L"-xf", archive.wstring(), L"-C", dest.wstring()}, &err) == 0)
-            return true;
+    // Zip in-process first: no temp file, no child process, and the common
+    // case (catalog.zip, prebuilt release zips) never touches a helper.
+    // This replaced a "powershell -ExecutionPolicy Bypass -Command
+    // Expand-Archive" fallback -- see packaging/README.md, "Antivirus false
+    // positives". tar.exe still covers tar.* and any zip miniz chokes on.
+    const std::string name = archive.filename().string();
+    if (ends_with_ci(name, ".zip")) {
+        std::string zerr;
+        if (retcomm::zip::extract_file(archive, dest, &zerr)) return true;
+        if (!zerr.empty()) err = zerr;
         reset_dest();
     }
 
-    // PowerShell Expand-Archive for .zip (same approach as the portable stub).
-    // -ErrorAction Stop + catch is required: Expand-Archive writes non-terminating
-    // errors on a corrupt member, and powershell.exe would still exit 0 — which
-    // reported a truncated tree as a successful extract.
-    const std::string name = archive.filename().string();
-    if (ends_with_ci(name, ".zip") && win_exe_on_path(L"powershell")) {
-        const std::wstring cmd =
-            L"try { Expand-Archive -LiteralPath '" + win_ps_single_quote(archive) +
-            L"' -DestinationPath '" + win_ps_single_quote(dest) +
-            L"' -Force -ErrorAction Stop } catch { exit 1 }";
-        if (win_run_hidden(L"powershell.exe",
-                           {L"-NoProfile", L"-ExecutionPolicy", L"Bypass", L"-Command", cmd},
-                           &err) == 0)
+    // Windows 10+ ships tar.exe (libarchive) — handles zip and common tar.* formats.
+    const std::wstring tar_exe = win_system_exe(L"tar.exe");
+    if (!tar_exe.empty()) {
+        if (win_run_hidden(tar_exe, {L"-xf", archive.wstring(), L"-C", dest.wstring()}, &err) == 0)
             return true;
         reset_dest();
     }
 
     // Optional 7-Zip on PATH.
-    if (win_exe_on_path(L"7z")) {
+    const std::wstring seven_zip = win_find_on_path(L"7z.exe");
+    if (!seven_zip.empty()) {
         const std::wstring out_sw = L"-o" + dest.wstring();
-        if (win_run_hidden(L"7z.exe", {L"x", L"-y", out_sw, archive.wstring()}, &err) == 0)
+        if (win_run_hidden(seven_zip, {L"x", L"-y", out_sw, archive.wstring()}, &err) == 0)
             return true;
         reset_dest();
     }
@@ -508,6 +548,15 @@ bool extract_archive(const fs::path& archive, const fs::path& dest, std::string*
 #else
     const std::string name = archive.filename().string();
     std::string err;
+
+    // Same in-process zip reader the Windows path uses, so a zip never needs a
+    // shell-out on any platform. Falls through to the tools below when miniz
+    // cannot read it.
+    if (ends_with_ci(name, ".zip")) {
+        std::string zerr;
+        if (retcomm::zip::extract_file(archive, dest, &zerr)) return true;
+        if (!zerr.empty()) err = zerr;
+    }
 
     // Prefer bsdtar (libarchive) — handles zip/tar/7z well on many systems.
     // --no-same-owner avoids failures when the archive records UIDs we can't set.
@@ -826,6 +875,20 @@ bool archive_contains_named_file(const fs::path& archive, const std::string& fil
     std::error_code ec;
     if (!fs::is_regular_file(archive, ec)) return false;
 
+    // Zip: read the central directory in-process. No temp file, no child
+    // process, and it is the format this is nearly always asked about.
+    if (ends_with_ci(archive.filename().string(), ".zip")) {
+        std::vector<std::string> names;
+        std::string zerr;
+        if (retcomm::zip::list_file(archive, &names, &zerr)) {
+            for (const auto& n : names) {
+                if (basename_eq_ci_zip(n, filename)) return true;
+            }
+            return false;
+        }
+        // Not readable as a zip — fall through to the external tools.
+    }
+
     const fs::path tmp =
         fs::temp_directory_path(ec) /
         ("retcomm-zip-list-" +
@@ -847,25 +910,12 @@ bool archive_contains_named_file(const fs::path& archive, const std::string& fil
 #if defined(_WIN32)
     std::string err;
     bool listed = false;
-    if (win_exe_on_path(L"tar") && win_exe_on_path(L"powershell")) {
-        const std::wstring cmd =
-            L"& tar.exe -tf '" + win_ps_single_quote(archive) +
-            L"' | Out-File -Encoding utf8 '" + win_ps_single_quote(tmp) + L"'";
-        listed = win_run_hidden(L"powershell.exe",
-                                {L"-NoProfile", L"-ExecutionPolicy", L"Bypass", L"-Command", cmd},
-                                &err) == 0;
-    }
-    if (!listed && ends_with_ci(archive.filename().string(), ".zip") &&
-        win_exe_on_path(L"powershell")) {
-        const std::wstring cmd =
-            L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
-            L"[IO.Compression.ZipFile]::OpenRead('" +
-            win_ps_single_quote(archive) +
-            L"').Entries | ForEach-Object { $_.FullName } | Out-File -Encoding utf8 '" +
-            win_ps_single_quote(tmp) + L"'";
-        listed = win_run_hidden(L"powershell.exe",
-                                {L"-NoProfile", L"-ExecutionPolicy", L"Bypass", L"-Command", cmd},
-                                &err) == 0;
+    const std::wstring tar_exe = win_system_exe(L"tar.exe");
+    if (!tar_exe.empty()) {
+        // Redirect the child's stdout straight into the temp file. This used to
+        // pipe tar.exe through "powershell -ExecutionPolicy Bypass -Command
+        // ... | Out-File", purely to capture output.
+        listed = win_run_hidden(tar_exe, {L"-tf", archive.wstring()}, &err, &tmp) == 0;
     }
     if (!listed) {
         cleanup();

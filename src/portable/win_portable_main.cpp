@@ -21,7 +21,7 @@
 // read-only stick) we fall back to %LOCALAPPDATA%\retcomm\portable\current\ for
 // the runtime and leave RETCOMM_HOME unset, so config+data stay at the historical
 // %LOCALAPPDATA%\retcomm and an existing portable user's library still resolves.
-// Unpack via System32\tar.exe, then PowerShell Expand-Archive as fallback.
+// The appended zip is unpacked in-process (miniz); no helper process is run.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -30,8 +30,9 @@
 #include <shellapi.h>
 
 #include "portable_trailer.hpp"
+#include "retcomm/zip_extract.hpp"
 
-#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -182,98 +183,31 @@ bool read_trailer(const fs::path& self, uint64_t* payload_size, uint64_t* payloa
     return retcomm_portable::find_payload(in, file_size, payload_size, payload_offset);
 }
 
-fs::path system_directory() {
-    wchar_t buf[MAX_PATH]{};
-    const UINT n = GetSystemDirectoryW(buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    return fs::path(buf);
-}
-
-std::wstring win_quote(const std::wstring& path) {
-    // Paths under LOCALAPPDATA rarely contain quotes; strip if present.
-    std::wstring cleaned;
-    cleaned.reserve(path.size());
-    for (wchar_t c : path) {
-        if (c != L'"') cleaned.push_back(c);
-    }
-    return L"\"" + cleaned + L"\"";
-}
-
-std::wstring ps_single_quote(const std::wstring& path) {
-    // Inside PowerShell single-quoted strings, '' is a literal apostrophe.
-    std::wstring out;
-    out.reserve(path.size() + 8);
-    for (wchar_t c : path) {
-        if (c == L'\'') out += L"''";
-        else out.push_back(c);
-    }
+// The shared zip reader reports errors as UTF-8; the stub shows them in a
+// MessageBox, so decode them properly rather than assuming ASCII.
+std::wstring widen(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n);
     return out;
 }
 
-// CreateProcess needs a mutable command line; include the exe as argv[0].
-bool run_hidden(const fs::path& exe, const std::wstring& args, DWORD* exit_code, std::wstring* err) {
-    std::error_code ec;
-    if (!fs::is_regular_file(exe, ec)) {
-        *err = L"Missing helper: " + exe.filename().wstring();
-        return false;
-    }
-    std::wstring cmd = win_quote(exe.wstring());
-    if (!args.empty()) {
-        cmd.push_back(L' ');
-        cmd += args;
-    }
-    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
-    cmdline.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(exe.wstring().c_str(), cmdline.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        *err = L"Failed to start " + exe.filename().wstring() + L" (Win32 " +
-               std::to_wstring(GetLastError()) + L").";
-        return false;
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    if (exit_code) *exit_code = code;
-    return true;
-}
-
-bool extract_zip_tar(const fs::path& zip_path, const fs::path& dest, std::wstring* err) {
-    // Windows 10+ ships bsdtar as System32\tar.exe; it unpacks .zip.
-    const fs::path tar = system_directory() / L"tar.exe";
-    const std::wstring args =
-        L"-xf " + win_quote(zip_path.wstring()) + L" -C " + win_quote(dest.wstring());
-    DWORD code = 1;
-    if (!run_hidden(tar, args, &code, err)) return false;
-    if (code != 0) {
-        *err = L"tar extract failed (exit " + std::to_wstring(code) + L").";
-        return false;
-    }
-    return true;
-}
-
-bool extract_zip_powershell(const fs::path& zip_path, const fs::path& dest, std::wstring* err) {
-    const fs::path ps =
-        system_directory() / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
-    const std::wstring args =
-        L"-NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '" +
-        ps_single_quote(zip_path.wstring()) + L"' -DestinationPath '" +
-        ps_single_quote(dest.wstring()) + L"' -Force\"";
-    DWORD code = 1;
-    if (!run_hidden(ps, args, &code, err)) return false;
-    if (code != 0) {
-        *err = L"Expand-Archive failed while unpacking RetComM (exit " +
-               std::to_wstring(code) + L").";
-        return false;
-    }
-    return true;
-}
-
+// Unpack the appended payload into `dest`, read straight out of this .exe.
+//
+// This used to write payload.zip beside the runtime and then shell out to
+// System32\tar.exe, falling back to
+//   powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive ..."
+// Dropping an archive to disk and spawning a system interpreter to unpack it is
+// the shape Defender's ML heuristics score as a dropper, and it was getting
+// released builds quarantined. Nothing is written now but the extracted files,
+// and no child process runs before the hub itself launches.
+//
+// The reader -- and the zip-slip guard on entry names -- is shared with
+// retcomm_core, which unpacks downloaded archives the same way. The stub reads
+// through a stream at the payload offset, so the zip is never copied anywhere
+// first. See include/retcomm/zip_extract.hpp.
 bool extract_payload(const fs::path& self, uint64_t offset, uint64_t size, const fs::path& dest,
                      std::wstring* err) {
     std::error_code ec;
@@ -284,48 +218,15 @@ bool extract_payload(const fs::path& self, uint64_t offset, uint64_t size, const
         return false;
     }
 
-    const fs::path zip_path = dest.parent_path() / "payload.zip";
-    {
-        std::ifstream in(self, std::ios::binary);
-        if (!in) {
-            *err = L"Cannot read portable executable.";
-            return false;
-        }
-        in.seekg(static_cast<std::streamoff>(offset));
-        std::ofstream out(zip_path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            *err = L"Cannot write temporary zip.";
-            return false;
-        }
-        std::vector<char> buf(1 << 20);
-        uint64_t left = size;
-        while (left > 0) {
-            const size_t chunk = static_cast<size_t>(std::min<uint64_t>(left, buf.size()));
-            in.read(buf.data(), static_cast<std::streamsize>(chunk));
-            const auto got = in.gcount();
-            if (got <= 0) {
-                *err = L"Truncated portable payload.";
-                return false;
-            }
-            out.write(buf.data(), got);
-            left -= static_cast<uint64_t>(got);
-        }
+    std::ifstream in(self, std::ios::binary);
+    if (!in) {
+        *err = L"Cannot read portable executable.";
+        return false;
     }
 
-    std::wstring tar_err;
-    if (extract_zip_tar(zip_path, dest, &tar_err)) {
-        fs::remove(zip_path, ec);
-        return true;
-    }
-
-    std::wstring ps_err;
-    if (extract_zip_powershell(zip_path, dest, &ps_err)) {
-        fs::remove(zip_path, ec);
-        return true;
-    }
-
-    fs::remove(zip_path, ec);
-    *err = L"Could not unpack portable payload.\n" + tar_err + L"\n" + ps_err;
+    std::string zip_err;
+    if (retcomm::zip::extract_stream(in, offset, size, dest, &zip_err)) return true;
+    *err = L"Could not unpack the portable payload: " + widen(zip_err);
     return false;
 }
 

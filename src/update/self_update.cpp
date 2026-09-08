@@ -426,6 +426,45 @@ std::wstring find_powershell_exe() {
     return L"powershell.exe";
 }
 
+// A private staging dir under %TEMP% for the installer apply step.
+//
+// The Inno setup writes over the whole install directory, so the staged
+// setup.exe, the apply script, its log and the PowerShell child's working
+// directory all have to live outside that tree — the same rule the uninstall
+// and relaunch paths already follow. Staging under paths.data_dir is only safe
+// while the data root sits outside the install dir (the default layout); a user
+// who points the root at the install folder otherwise ends up running setup.exe
+// from inside the directory it is about to replace.
+//
+// Returns {} when %TEMP% is unusable so the caller can fall back.
+fs::path make_setup_staging_dir() {
+    wchar_t tmp[MAX_PATH]{};
+    const DWORD n = GetTempPathW(MAX_PATH, tmp);
+    if (n == 0 || n >= MAX_PATH) return {};
+    const fs::path base(tmp);
+    const std::string prefix = "retcomm-self-update-";
+
+    // Best-effort sweep of dirs left behind by an apply that never relaunched.
+    // One still in use fails to delete (sharing violation) and is skipped.
+    std::error_code sweep_ec;
+    for (auto it = fs::directory_iterator(base, fs::directory_options::skip_permission_denied,
+                                          sweep_ec);
+         !sweep_ec && it != fs::directory_iterator(); it.increment(sweep_ec)) {
+        if (!it->is_directory(sweep_ec)) continue;
+        if (it->path().filename().string().rfind(prefix, 0) != 0) continue;
+        std::error_code rm_ec;
+        fs::remove_all(it->path(), rm_ec);
+    }
+
+    const fs::path dir = base / (prefix + std::to_string(GetCurrentProcessId()));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    ec.clear();
+    fs::create_directories(dir, ec);
+    if (ec) return {};
+    return fs::is_directory(dir, ec) ? dir : fs::path{};
+}
+
 std::string base64_encode_bytes(const unsigned char* data, size_t len) {
     static const char kTbl[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1346,7 +1385,13 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         if (dest_dir.empty() || !dir_is_writable(dest_dir)) {
             return fail(result, "installer update needs a writable install directory.");
         }
-        const fs::path staged_setup = work / "bin" / asset->name;
+        // Stage outside the install dir: the setup replaces that whole tree, and
+        // schedule_run_setup_and_restart puts the apply script, its log and the
+        // PowerShell child's working directory beside this file. Falls back to
+        // the data dir only when %TEMP% is unusable.
+        fs::path stage_dir = make_setup_staging_dir();
+        if (stage_dir.empty()) stage_dir = work / "bin";
+        const fs::path staged_setup = stage_dir / asset->name;
         fs::create_directories(staged_setup.parent_path(), ec);
         fs::copy_file(download, staged_setup, fs::copy_options::overwrite_existing, ec);
         if (ec) return fail(result, "staging setup.exe failed: " + ec.message());

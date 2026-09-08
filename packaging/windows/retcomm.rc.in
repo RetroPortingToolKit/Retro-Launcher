@@ -1,3 +1,44 @@
-#include <winuser.h>
+// Windows resources for a RetComM executable — icon + VERSIONINFO.
+//
+// Generated per target by retcomm_add_windows_rc() in CMakeLists.txt, so each
+// exe names itself in InternalName / OriginalFilename / FileDescription.
+//
+// The VERSIONINFO block is not cosmetic: an exe with no version metadata gives
+// SmartScreen nothing to attribute the download to and scores higher in
+// Defender's ML heuristics, which is part of why unsigned releases were being
+// quarantined. Signing is the real fix (packaging/README.md, "Code signing");
+// this is the half that costs nothing.
+
+#include <winresrc.h>
 
 IDI_ICON1 ICON "@RETCOMM_ICO_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    @RETCOMM_VERSION_COMMA@
+ PRODUCTVERSION @RETCOMM_VERSION_COMMA@
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0409 = en-US, 04B0 = Unicode (1200); must match Translation below.
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "@RETCOMM_RC_COMPANY@"
+            VALUE "FileDescription",  "@RETCOMM_RC_DESCRIPTION@"
+            VALUE "FileVersion",      "@RETCOMM_VERSION@"
+            VALUE "InternalName",     "@RETCOMM_RC_INTERNAL_NAME@"
+            VALUE "LegalCopyright",   "@RETCOMM_RC_COPYRIGHT@"
+            VALUE "OriginalFilename", "@RETCOMM_RC_ORIGINAL_FILENAME@"
+            VALUE "ProductName",      "@RETCOMM_RC_PRODUCT@"
+            VALUE "ProductVersion",   "@RETCOMM_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
