@@ -439,6 +439,72 @@ void apply_ui_scale_frame(SDL_Window* window, const UiScale& s) {
     }
 }
 
+// Size and place the window for the resolved scale, keeping every part the user
+// has to grab — title bar, borders — inside the desktop's work area.
+//
+// The 1280x800 this UI is written against is a LOGICAL size, so at 150% it asks
+// for 1920x1200 pixels and at 300% for 3840x2400: on most monitors that does not
+// fit. The old code clamped those numbers to the usable bounds and centred the
+// result, which failed twice over. SDL sizes and positions the CLIENT area, so
+// the caption lives above y and was never paid for; and SDL_WINDOWPOS_CENTERED
+// centres on the DISPLAY bounds, not the usable bounds the size was clamped to,
+// so a window as tall as the work area was pushed up by half the taskbar's
+// height and its title bar ended up off the top of the screen — unreachable,
+// with no grabbable edges either, because it already spanned the work area.
+void fit_window_to_display(SDL_Window* window, const UiScale& s) {
+    const int want_w = static_cast<int>(std::lround(1280.f * s.coords));
+    const int want_h = static_cast<int>(std::lround(800.f * s.coords));
+
+    SDL_Rect usable{};
+    const SDL_DisplayID did = SDL_GetDisplayForWindow(window);
+    if (!did || !SDL_GetDisplayUsableBounds(did, &usable) || usable.w <= 0 || usable.h <= 0) {
+        // No work area to reason about: honour the scale and let the window
+        // manager place it, which is what this did before any of the above.
+        if (s.coords != 1.f) {
+            SDL_SetWindowSize(window, want_w, want_h);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+        return;
+    }
+
+    // Frame extents come from the live window, so they are already in the
+    // display's own scale. Platforms without server-side decorations report
+    // nothing and leave these at 0, where the margin alone is the slack.
+    int frame_t = 0, frame_l = 0, frame_b = 0, frame_r = 0;
+    SDL_GetWindowBordersSize(window, &frame_t, &frame_l, &frame_b, &frame_r);
+    const int margin = static_cast<int>(std::lround(16.f * s.coords));
+
+    // Centre the whole FRAME in the work area, never letting the caption cross
+    // the top edge. Runs before a maximize too, so Restore lands somewhere sane.
+    auto place = [&](int w, int h) {
+        SDL_SetWindowSize(window, w, h);
+        int x = usable.x + frame_l + (usable.w - (w + frame_l + frame_r)) / 2;
+        int y = usable.y + frame_t + (usable.h - (h + frame_t + frame_b)) / 2;
+        if (x < usable.x + frame_l) x = usable.x + frame_l;
+        if (y < usable.y + frame_t) y = usable.y + frame_t;
+        SDL_SetWindowPosition(window, x, y);
+    };
+
+    const int max_w = usable.w - frame_l - frame_r - margin * 2;
+    const int max_h = usable.h - frame_t - frame_b - margin * 2;
+    if (max_w <= 0 || max_h <= 0) {   // a work area smaller than its own chrome
+        place(want_w, want_h);
+        return;
+    }
+
+    if (want_w > max_w || want_h > max_h) {
+        // Too big to place by hand. Maximizing is the honest version of what the
+        // clamp was reaching for: the OS owns the geometry, the title bar is
+        // always reachable, snapping works, and Restore gives back the size set
+        // here. This is also the 100% path on a small laptop panel, where an
+        // 800-tall window never fit a 768-tall screen and nothing clamped it.
+        place(std::min(want_w, max_w), std::min(want_h, max_h));
+        SDL_MaximizeWindow(window);
+        return;
+    }
+    place(want_w, want_h);
+}
+
 using retcomm::hub::BoxartCache;
 using retcomm::hub::BoxartTexture;
 using retcomm::hub::FolderPickTarget;
@@ -6706,24 +6772,13 @@ int main(int argc, char** argv) {
     retcomm::set_github_token(hub.cfg.github_token);
 
     // Now that config.json is in, honour a pinned ui_scale and give the window
-    // the logical 1280x800 it was always meant to be — on a 150% display that is
-    // 1920x1200 pixels, so clamp to what the monitor can actually show.
+    // the logical 1280x800 it was always meant to be — on a 150% display that
+    // is 1920x1200 pixels, which no 1080p monitor can show.
     {
         const UiScale want = resolve_ui_scale(window, hub.cfg.ui_scale);
         if (want.px != ui.px) rebuild_hub_fonts(want.px);
         ui = want;
-        if (ui.coords != 1.f) {
-            int w = static_cast<int>(std::lround(1280.f * ui.coords));
-            int h = static_cast<int>(std::lround(800.f * ui.coords));
-            SDL_Rect usable{};
-            const SDL_DisplayID did = SDL_GetDisplayForWindow(window);
-            if (did && SDL_GetDisplayUsableBounds(did, &usable) && usable.w > 0 && usable.h > 0) {
-                w = std::min(w, usable.w);
-                h = std::min(h, usable.h);
-            }
-            SDL_SetWindowSize(window, w, h);
-            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        }
+        fit_window_to_display(window, ui);
         std::fprintf(stderr, "retcomm-hub: UI scale %.2f (window coords x%.2f, %s)\n",
                      static_cast<double>(ui.px), static_cast<double>(ui.coords),
                      hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
