@@ -104,7 +104,7 @@ jobs:
 
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Building RetComM ${VER} (tag ${TAG})"
+          echo "Building Retro ${VER} (tag ${TAG})"
 
   linux:
     needs: version
@@ -149,7 +149,7 @@ jobs:
           cmake --build "$HOME/sdl-build" -j"$(nproc)"
           cmake --install "$HOME/sdl-build"
 
-      - name: Configure & build RetComM
+      - name: Configure & build Retro
         run: |
           test -f assets/fonts/LatoLatin-Regular.ttf
           test -f assets/fonts/LatoLatin-Bold.ttf
@@ -178,13 +178,13 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib:${LD_LIBRARY_PATH:-}"
           ./packaging/linux/build-appimage.sh "$PWD/out" "${{ needs.version.outputs.version }}" x86_64
           ls -lah dist/
-          test -f "dist/RetComM-Launcher-linux-x86_64.AppImage"
+          test -f "dist/Retro-Launcher-linux-x86_64.AppImage"
 
       - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: |
-            dist/RetComM-Launcher-linux-x86_64.AppImage
+            dist/Retro-Launcher-linux-x86_64.AppImage
           retention-days: 5
 
   windows:
@@ -339,9 +339,9 @@ jobs:
           }
           Get-ChildItem dist
           $need = @(
-            "RetComM-Launcher-portable-windows.zip",
-            "RetComM Launcher.exe",
-            "RetComM-Launcher-windows-x64-setup.exe"
+            "Retro-Launcher-portable-windows.zip",
+            "Retro Launcher.exe",
+            "Retro-Launcher-windows-x64-setup.exe"
           )
           foreach ($n in $need) {
             $p = Join-Path dist $n
@@ -352,8 +352,8 @@ jobs:
         with:
           name: windows-x64
           path: |
-            dist/RetComM-Launcher-portable-windows.zip
-            dist/RetComM-Launcher-windows-x64-setup.exe
+            dist/Retro-Launcher-portable-windows.zip
+            dist/Retro-Launcher-windows-x64-setup.exe
           retention-days: 5
 
   macos:
@@ -402,20 +402,20 @@ jobs:
         run: |
           ./packaging/macos/build-app.sh "$PWD/out" "${{ needs.version.outputs.version }}" "${{ matrix.arch }}"
           ls -lah dist/
-          test -f "dist/RetComM-Launcher-macos-${{ matrix.arch }}.dmg"
-          test -d "dist/RetComM Launcher.app/Contents/Resources/fonts"
-          test -f "dist/RetComM Launcher.app/Contents/Resources/fonts/LatoLatin-Regular.ttf"
+          test -f "dist/Retro-Launcher-macos-${{ matrix.arch }}.dmg"
+          test -d "dist/Retro Launcher.app/Contents/Resources/fonts"
+          test -f "dist/Retro Launcher.app/Contents/Resources/fonts/LatoLatin-Regular.ttf"
           # bundle_dylibs.sh already fails on leftover cellar paths; dump for logs.
           echo "=== Frameworks ==="
-          ls -lah "dist/RetComM Launcher.app/Contents/Frameworks/"
+          ls -lah "dist/Retro Launcher.app/Contents/Frameworks/"
           echo "=== retcomm-hub ==="
-          otool -L "dist/RetComM Launcher.app/Contents/MacOS/retcomm-hub"
-          for f in "dist/RetComM Launcher.app/Contents/Frameworks/"*; do
+          otool -L "dist/Retro Launcher.app/Contents/MacOS/retcomm-hub"
+          for f in "dist/Retro Launcher.app/Contents/Frameworks/"*; do
             echo "=== $(basename "$f") ==="
             otool -L "$f"
           done
-          if otool -L "dist/RetComM Launcher.app/Contents/MacOS/"* \
-               "dist/RetComM Launcher.app/Contents/Frameworks/"* \
+          if otool -L "dist/Retro Launcher.app/Contents/MacOS/"* \
+               "dist/Retro Launcher.app/Contents/Frameworks/"* \
                | grep -E '/usr/local/|/opt/homebrew/'; then
             echo "::error::bundled app still references Homebrew dylibs" >&2
             exit 1
@@ -425,7 +425,7 @@ jobs:
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            dist/RetComM-Launcher-macos-${{ matrix.arch }}.dmg
+            dist/Retro-Launcher-macos-${{ matrix.arch }}.dmg
           retention-days: 5
 
   publish:
@@ -447,13 +447,13 @@ jobs:
           ls -lah dist/
           test -n "$(ls -A dist)" || { echo "No release artifacts found" >&2; exit 1; }
           # Guaranteed end-user set. Stable names (version is the release tag).
-          test -f dist/RetComM-Launcher-linux-x86_64.AppImage
-          test -f dist/RetComM-Launcher-windows-x64-setup.exe
-          test -f dist/RetComM-Launcher-portable-windows.zip
-          test -f dist/RetComM-Launcher-macos-arm64.dmg
-          test -f dist/RetComM-Launcher-macos-x86_64.dmg
+          test -f dist/Retro-Launcher-linux-x86_64.AppImage
+          test -f dist/Retro-Launcher-windows-x64-setup.exe
+          test -f dist/Retro-Launcher-portable-windows.zip
+          test -f dist/Retro-Launcher-macos-arm64.dmg
+          test -f dist/Retro-Launcher-macos-x86_64.dmg
           # Do not publish the loose portable stub — only the zip (friendly exe inside).
-          rm -f "dist/RetComM Launcher.exe"
+          rm -f "dist/Retro Launcher.exe"
 
       - name: Ensure release tag exists
         env:
@@ -470,7 +470,7 @@ jobs:
             git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
           else
             echo "Creating annotated tag ${TAG} at ${GITHUB_SHA}"
-            git tag -a "${TAG}" "${GITHUB_SHA}" -m "RetComM Launcher ${VERSION}"
+            git tag -a "${TAG}" "${GITHUB_SHA}" -m "Retro Launcher ${VERSION}"
             git push origin "refs/tags/${TAG}"
           fi
 
@@ -478,7 +478,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: RetComM Launcher ${{ needs.version.outputs.version }}
+          name: Retro Launcher ${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true

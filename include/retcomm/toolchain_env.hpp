@@ -9,8 +9,8 @@ namespace retcomm {
 
 namespace fs = std::filesystem;
 
-// After a toolchain pack is present under the shared RetComM cache, mirror the
-// retcomm-toolchains zip installer:
+// After a toolchain pack is present under the shared Retro cache, mirror the
+// RetroPorting-Toolchains zip installer:
 //   1. Refresh toolchains/<id>/latest → pack_root (symlink / Windows junction;
 //      never a recursive copy of the pack)
 //   2. Idempotently add …/latest/bin (or pack_root/bin) to the user login PATH

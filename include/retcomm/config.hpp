@@ -42,7 +42,7 @@ struct AppConfig {
     fs::path bios_root;  // RomM/ES-DE style BIOS tree (flat + per-system folders)
     fs::path saves_root; // Native saves library (SRAM / memcard), per-title under platform
     // Optional extra (or replacement) game install roots. Empty → only the
-    // RetComM data_dir/apps default. When 2+ effective roots exist, Install asks.
+    // Retro data_dir/apps default. When 2+ effective roots exist, Install asks.
     std::vector<InstallRootEntry> install_roots;
     // Preferred root for new installs (must match an effective root path).
     fs::path default_install_root;

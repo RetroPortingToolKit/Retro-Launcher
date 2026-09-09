@@ -1,4 +1,4 @@
-# RetComM packaging
+# Retro packaging
 
 Helpers used by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
@@ -6,12 +6,12 @@ Release assets:
 
 | Platform | Artifact |
 |---|---|
-| Linux | `RetComM-Launcher-linux-x86_64.AppImage` |
-| macOS | `RetComM-Launcher-macos-{arm64,x86_64}.dmg` |
-| Windows | `RetComM-Launcher-windows-x64-setup.exe` + `RetComM-Launcher-portable-windows.zip` |
+| Linux | `Retro-Launcher-linux-x86_64.AppImage` |
+| macOS | `Retro-Launcher-macos-{arm64,x86_64}.dmg` |
+| Windows | `Retro-Launcher-windows-x64-setup.exe` + `Retro-Launcher-portable-windows.zip` |
 
 Filenames are stable across releases (version lives in the GitHub tag / binary
-`RETCOMM_VERSION`). The portable zip contains `RetComM Launcher.exe` (friendly
+`RETCOMM_VERSION`). The portable zip contains `Retro Launcher.exe` (friendly
 desktop name). Self-update replaces AppImage / portable in place and keeps the
 user's path, so a versioned download name would go stale.
 
@@ -55,14 +55,14 @@ prefix or the final package. Windows/macOS/Linux packagers also require
 ./packaging/linux/build-local-appimage.sh 0.1.2
 ```
 
-Builds icons, SDL3 (cached under `.cache/sdl3` if not already installed), RetComM,
-and writes `dist/RetComM-Launcher-linux-<arch>.AppImage`.
+Builds icons, SDL3 (cached under `.cache/sdl3` if not already installed), Retro,
+and writes `dist/Retro-Launcher-linux-<arch>.AppImage`.
 
 ```sh
-./dist/RetComM-Launcher-linux-*.AppImage
-./dist/RetComM-Launcher-linux-*.AppImage cli list
+./dist/Retro-Launcher-linux-*.AppImage
+./dist/Retro-Launcher-linux-*.AppImage cli list
 # if FUSE is unavailable:
-./dist/RetComM-Launcher-linux-*.AppImage --appimage-extract-and-run
+./dist/Retro-Launcher-linux-*.AppImage --appimage-extract-and-run
 ```
 
 ### Manual / CI-style steps
@@ -75,9 +75,9 @@ cmake --build build -j && cmake --install build
 
 Self-update replaces the running AppImage in place (`APPIMAGE` env). Dev
 binaries / loose copies under `~/.local/share/retcomm/bin` are not updatable —
-Menu → Update RetComM stays disabled with a hint to launch the AppImage.
+Menu → Update Retro stays disabled with a hint to launch the AppImage.
 
-When launching a title, RetComM strips AppImage `LD_LIBRARY_PATH` / `APPDIR`
+When launching a title, Retro strips AppImage `LD_LIBRARY_PATH` / `APPDIR`
 from the child environment so native recomp binaries load their own (or system)
 libs instead of the launcher’s bundled SDL.
 
@@ -91,10 +91,10 @@ Produces under `dist/`:
 
 | Artifact | Role |
 |---|---|
-| `RetComM Launcher.app` | App bundle (local staging) |
-| `RetComM-Launcher-macos-<arch>.dmg` | Drag-to-Applications installer disk image |
+| `Retro Launcher.app` | App bundle (local staging) |
+| `Retro-Launcher-macos-<arch>.dmg` | Drag-to-Applications installer disk image |
 
-Open the DMG and drag **RetComM Launcher** onto **Applications**. That puts it on
+Open the DMG and drag **Retro Launcher** onto **Applications**. That puts it on
 Launchpad, Spotlight, and the Applications folder. Self-update downloads the
 matching arch DMG and refreshes the running `.app` only (dev `.app`-less builds
 cannot self-update).
@@ -133,7 +133,7 @@ PORTABLE=1 ./packaging/windows/build-dev-zip.sh   # also the single-exe stub
 STRIP=0 ./packaging/windows/build-dev-zip.sh      # keep symbols in the zip
 ```
 
-Writes `dist/RetComM-Launcher-windows-x64-dev.zip` — unzip on Windows, run
+Writes `dist/Retro-Launcher-windows-x64-dev.zip` — unzip on Windows, run
 `retcomm-hub.exe`. Layout matches the release package (exes + DLLs, with
 `fonts/`, `platforms/`, `controllers/`, `setup/` beside them); the DLL set is the
 import closure of both exes walked with `objdump`, and the toolchain links
@@ -158,9 +158,9 @@ Produces under `dist/`:
 
 | Artifact | Role |
 |---|---|
-| `RetComM Launcher.exe` | Single-file portable stub + payload (local; not the GitHub asset) |
-| `RetComM-Launcher-portable-windows.zip` | Release zip; root entry is `RetComM Launcher.exe` (no nested folder) |
-| `RetComM-Launcher-windows-x64-setup.exe` | Per-user Inno Setup installer (Start Menu / desktop) |
+| `Retro Launcher.exe` | Single-file portable stub + payload (local; not the GitHub asset) |
+| `Retro-Launcher-portable-windows.zip` | Release zip; root entry is `Retro Launcher.exe` (no nested folder) |
+| `Retro-Launcher-windows-x64-setup.exe` | Per-user Inno Setup installer (Start Menu / desktop) |
 
 ### Code signing
 
@@ -177,7 +177,7 @@ otherwise packages unsigned with a notice:
 | `WINDOWS_SIGN_DESCRIPTION` | optional text for the file properties / UAC prompt |
 
 Signed: `retcomm.exe`, `retcomm-hub.exe`, every staged DLL, the combined
-`RetComM Launcher.exe` (after its payload is appended; the stub finds the
+`Retro Launcher.exe` (after its payload is appended; the stub finds the
 RCM1 trailer before the certificate table), `retcomm-hub`'s uninstaller and
 the Inno Setup installer. The certificate is imported into the user store for
 the run and used by thumbprint, so the password never reaches a command line.
@@ -235,14 +235,14 @@ verdict does not carry to the next release — signing is what ends the cycle.
 Portable usage (after unzipping the release zip):
 
 ```text
-RetComM Launcher.exe           # hub UI
-RetComM Launcher.exe cli list  # CLI
+Retro Launcher.exe           # hub UI
+Retro Launcher.exe cli list  # CLI
 ```
 
 Self-update channels (detected via `channel.json` / env from the portable stub):
 
-- **installer** (primary) → downloads `RetComM-Launcher-windows-*-setup.exe`, silent Inno into the current install dir
-- **portable** → downloads `RetComM-Launcher-portable-windows.zip`, extracts the stub, replaces the desktop exe, re-extracts on next launch
+- **installer** (primary) → downloads `Retro-Launcher-windows-*-setup.exe`, silent Inno into the current install dir
+- **portable** → downloads `Retro-Launcher-portable-windows.zip`, extracts the stub, replaces the desktop exe, re-extracts on next launch
 
 The portable stub keeps everything beside the `.exe` — `RetComM-Data\runtime\`
 for the unpacked hub/CLI and `RetComM-Data\{config,data}\` for the toolchain,

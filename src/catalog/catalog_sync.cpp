@@ -22,10 +22,10 @@ using json = nlohmann::json;
 
 #if !defined(RETCOMM_CATALOG_DOWNLOAD_URL)
 #define RETCOMM_CATALOG_DOWNLOAD_URL \
-    "https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip"
+    "https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip"
 #endif
 #if !defined(RETCOMM_CATALOG_GITHUB_REPO)
-#define RETCOMM_CATALOG_GITHUB_REPO "TechnicallyComputers/retcomm-catalog"
+#define RETCOMM_CATALOG_GITHUB_REPO "RetroPortingToolKit/Retro-Catalog"
 #endif
 
 struct RemoteCatalogRelease {

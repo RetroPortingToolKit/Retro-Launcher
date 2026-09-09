@@ -1,4 +1,4 @@
-# Package RetComM Windows portable single-exe and Inno Setup installer.
+# Package Retro Windows portable single-exe and Inno Setup installer.
 #
 # Usage:
 #   packaging/windows/package.ps1 -Prefix out -Version 0.1.1 [-VcpkgBin path] [-Arch x64] [-PortableStub path]
@@ -29,7 +29,7 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $script:SignTool = $null
 $script:SignThumb = $null
 $script:SignTs = if ($env:WINDOWS_SIGN_TIMESTAMP_URL) { $env:WINDOWS_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-$script:SignDesc = if ($env:WINDOWS_SIGN_DESCRIPTION) { $env:WINDOWS_SIGN_DESCRIPTION } else { "RetComM Launcher" }
+$script:SignDesc = if ($env:WINDOWS_SIGN_DESCRIPTION) { $env:WINDOWS_SIGN_DESCRIPTION } else { "Retro Launcher" }
 
 function Find-SignTool {
     if ($env:SIGNTOOL -and (Test-Path $env:SIGNTOOL)) { return $env:SIGNTOOL }
@@ -106,9 +106,9 @@ Initialize-Signing
 $OutDir = Join-Path $Root "dist"
 $Stage = Join-Path $OutDir "windows-stage"
 # Friendly name for the desktop / unzipped portable stub (spaces OK).
-$PortableExeName = "RetComM Launcher.exe"
+$PortableExeName = "Retro Launcher.exe"
 # Release-page asset: zip wrapping that exe (stable name, no version).
-$PortableZipName = "RetComM-Launcher-portable-windows.zip"
+$PortableZipName = "Retro-Launcher-portable-windows.zip"
 
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
@@ -369,7 +369,7 @@ if (-not $PortableStub -or -not (Test-Path $PortableStub)) {
     # trailer just before that table when it is not at the very end.
     Sign-Files @($OutPortableExe)
 
-    # Release asset: flat zip root = "RetComM Launcher.exe" (no nested folder).
+    # Release asset: flat zip root = "Retro Launcher.exe" (no nested folder).
     # Compress-Archive with a full path can store a parent segment; ZipFile does not.
     $OutPortableZip = Join-Path $OutDir $PortableZipName
     if (Test-Path $OutPortableZip) { Remove-Item $OutPortableZip -Force }

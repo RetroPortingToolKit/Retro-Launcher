@@ -601,7 +601,7 @@ std::set<std::string> rom_exts_for_platform(const retcomm::Catalog& catalog,
         return exts;
     }
     if (!exts.empty()) return exts;
-    // Fallbacks aligned with retcomm-catalog platform-defaults.json
+    // Fallbacks aligned with Retro-Catalog platform-defaults.json
     if (platform == "snes") return {"sfc", "smc", "fig", "swc"};
     if (platform == "gba") return {"gba"};
     if (platform == "n64") return {"z64", "n64", "v64"};
@@ -925,7 +925,7 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
     ImGui::Dummy(ImVec2(width, h));
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 20.f, p0.y + 14.f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.good);
-    ImGui::TextUnformatted("RetComM");
+    ImGui::TextUnformatted("Retro");
     ImGui::PopStyleColor();
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 20.f, p0.y + 40.f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
@@ -975,9 +975,9 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         const float chip_pad_y = 5.f;
         const float chip_w = chip_sz.x + chip_pad_x * 2.f;
         const float chip_h = chip_sz.y + chip_pad_y * 2.f;
-        // Clear of both brand lines (title + subtitle), not just "RetComM".
+        // Clear of both brand lines (title + subtitle), not just "Retro".
         const float brand_w =
-            std::max(ImGui::CalcTextSize("RetComM").x,
+            std::max(ImGui::CalcTextSize("Retro").x,
                      ImGui::CalcTextSize("Retro Compilation Manager").x);
         const float chip_x = p0.x + 20.f + brand_w + 28.f;
         const float chip_y = p0.y + (h - chip_h) * 0.5f;
@@ -2088,7 +2088,7 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip(
-                "When checked, RetComM will not overwrite this title's settings.toml / "
+                "When checked, Retro will not overwrite this title's settings.toml / "
                 "config.ini from global PlayStation Configure on install, update, or "
                 "launch.\nExisting files are left as-is.");
         }
@@ -2530,7 +2530,7 @@ void draw_welcome_panel(BoxartCache& boxart, const Theme& th) {
         ImGui::Dummy(ImVec2(0, 12.f));
     }
 
-    const char* welcome = "Welcome to RetComM";
+    const char* welcome = "Welcome to Retro";
     const ImVec2 tw = ImGui::CalcTextSize(welcome);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail.x - tw.x) * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.accent);
@@ -2892,11 +2892,11 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::TextWrapped("Paths and platform folder names written to config.json.");
     ImGui::Separator();
 
-    // Where RetComM itself lives (toolchain, engines, installs, caches). Read-only
+    // Where Retro itself lives (toolchain, engines, installs, caches). Read-only
     // here — changing it relocates the tree, so it goes through its own dialog.
     {
         const bool custom = retcomm::using_custom_root(hub.paths);
-        ImGui::TextColored(th.text_muted, "RetComM data folder");
+        ImGui::TextColored(th.text_muted, "Retro data folder");
         ImGui::TextWrapped("%s", hub.paths.data_dir.string().c_str());
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
         ImGui::TextWrapped("Source: %s%s",
@@ -2975,7 +2975,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::PopStyleColor();
     ImGui::TextWrapped(
         "Folders that hold installed titles (each contains <game>/releases/…). "
-        "Default is RetComM's apps/ folder. Add another root (e.g. an external drive) when "
+        "Default is Retro's apps/ folder. Add another root (e.g. an external drive) when "
         "you want Install to ask where to put a new game. Existing installs stay where they are.");
     if (ImGui::BeginTable("install_roots", 4,
                           ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
@@ -3063,7 +3063,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         hub.settings.dirty = true;
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped(
-        "When enabled, RetComM checks for launcher, toolchain, and game updates after the hub "
+        "When enabled, Retro checks for launcher, toolchain, and game updates after the hub "
         "starts. Turn off to skip the startup prompt (Check Updates in the menu still works). "
         "Save to apply.");
     ImGui::PopStyleColor();
@@ -3074,7 +3074,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         hub.settings.dirty = true;
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped(
-        "When the catalog adds titles, RetComM binds them to ROMs you already have using "
+        "When the catalog adds titles, Retro binds them to ROMs you already have using "
         "cached hashes, then scans only the affected platforms for anything still unmatched. "
         "New games show up without pressing Add/Scan Files. Save to apply.");
     ImGui::PopStyleColor();
@@ -3206,7 +3206,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
             hub.settings.dirty = true;
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
         ImGui::TextWrapped(
-            "When enabled, RetComM deletes each title's src/current/build/ after a successful "
+            "When enabled, Retro deletes each title's src/current/build/ after a successful "
             "local build to free disk space. Leave off for faster package updates (incremental "
             "Ninja). Save to apply.");
         ImGui::PopStyleColor();
@@ -3218,7 +3218,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         ImGui::TextWrapped(
             "Keeps a few recent toolchain/SDK versions, drops unreferenced engine pins, old "
             "release zip downloads, and cmake build/ trees idle longer than the day limit. "
-            "Shared ccache lives under the RetComM data dir with a size cap.");
+            "Shared ccache lives under the Retro data dir with a size cap.");
         ImGui::PopStyleColor();
         ImGui::SetNextItemWidth(120);
         if (ImGui::InputInt("Keep toolchain versions", &hub.settings.keep_toolchain_versions)) {
@@ -3305,7 +3305,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
         ImGui::TextWrapped(
             "Wipes library paths, scan databases, and RomM sync settings from config, then "
-            "restarts RetComM into the first-time setup wizard. Installed games, ROM files, "
+            "restarts Retro into the first-time setup wizard. Installed games, ROM files, "
             "and BIOS dumps are not deleted.");
         ImGui::PopStyleColor();
 
@@ -3313,17 +3313,17 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         {
             const bool busy = hub.job_running.load();
             ImGui::BeginDisabled(busy);
-            if (danger_button("\xE2\x9A\xA0 Uninstall All RetComM Data \xE2\x9A\xA0", th,
+            if (danger_button("\xE2\x9A\xA0 Uninstall All Retro Data \xE2\x9A\xA0", th,
                               ImVec2(-1, 0))) {
                 hub.refresh_uninstall_plan();
                 hub.uninstall_confirm[0] = '\0';
-                ImGui::OpenPopup("Uninstall RetComM?###uninstall_retcomm");
+                ImGui::OpenPopup("Uninstall Retro?###uninstall_retcomm");
             }
             ImGui::EndDisabled();
         }
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
         ImGui::TextWrapped(
-            "Removes RetComM entirely: the whole RetComM data folder (AppData / .local/share "
+            "Removes Retro entirely: the whole Retro data folder (AppData / .local/share "
             "or your custom folder) with every installed game, save, toolchain and cache, plus "
             "the launcher itself. Your ROM library and BIOS folders are the only things kept. "
             "This cannot be undone.");
@@ -3357,7 +3357,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         if (ImGui::BeginPopupModal("Hard reset?###hard_reset_library", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.f);
-            ImGui::TextColored(th.warn, "RetComM will restart into first-time setup.");
+            ImGui::TextColored(th.warn, "Retro will restart into first-time setup.");
             ImGui::TextWrapped(
                 "Hard reset library settings?\n\n"
                 "• Deletes config.json (library / BIOS / saves roots, RomM sync)\n"
@@ -3379,11 +3379,11 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
             ImGui::EndPopup();
         }
 
-        if (ImGui::BeginPopupModal("Uninstall RetComM?###uninstall_retcomm", nullptr,
+        if (ImGui::BeginPopupModal("Uninstall Retro?###uninstall_retcomm", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 460.f);
             ImGui::TextColored(th.warn,
-                               "\xE2\x9A\xA0 This deletes RetComM and everything it stores. "
+                               "\xE2\x9A\xA0 This deletes Retro and everything it stores. "
                                "There is no undo. \xE2\x9A\xA0");
             ImGui::TextWrapped(
                 "Deleted for good:\n"
@@ -3391,7 +3391,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                 "\xE2\x80\xA2 Library / BIOS / RomM settings and every scan database\n"
                 "\xE2\x80\xA2 The launcher itself\n\n"
                 "Kept: your ROM library folder and BIOS folder, and any install location "
-                "outside the RetComM data folder.");
+                "outside the Retro data folder.");
             ImGui::Dummy(ImVec2(0, 6));
             ImGui::TextColored(th.text_muted, "Folders that will be deleted:");
             for (const auto& p : hub.uninstall_plan.data_paths)
@@ -3413,7 +3413,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
             const bool busy = hub.job_running.load();
             const bool confirmed = std::string(hub.uninstall_confirm) == "UNINSTALL";
             ImGui::BeginDisabled(busy || !confirmed);
-            if (danger_button("Yes, uninstall RetComM", th, ImVec2(240, 0))) {
+            if (danger_button("Yes, uninstall Retro", th, ImVec2(240, 0))) {
                 hub.start_job(HubJob::UninstallEverything);
                 ImGui::CloseCurrentPopup();
             }
@@ -3568,7 +3568,7 @@ bool draw_setup_path_card(BoxartCache& boxart, const Theme& th, const char* id,
 void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window) {
     if (!hub.show_setup) return;
 
-    ImGui::OpenPopup("Welcome to RetComM###setup_wizard");
+    ImGui::OpenPopup("Welcome to Retro###setup_wizard");
     constexpr float kWizW = 820.f; // a bit wider so the two path cards can breathe
     constexpr float kWizH = 628.f;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -3587,7 +3587,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
     ImGui::SetNextWindowSizeConstraints(ImVec2(wiz_w, wiz_h), ImVec2(wiz_w, wiz_h));
     ImGui::SetNextWindowSize(ImVec2(wiz_w, wiz_h), ImGuiCond_Always);
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("Welcome to RetComM###setup_wizard", nullptr,
+    if (!ImGui::BeginPopupModal("Welcome to Retro###setup_wizard", nullptr,
                                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar))
         return;
 
@@ -3666,7 +3666,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         const float card_w = (row_w - gap) * 0.5f;
         const float card_h = std::max(240.f, ImGui::GetContentRegionAvail().y - 4.f);
         if (draw_setup_path_card(boxart, th, "easy", "Easy Setup",
-                                 "Pick one Emulation folder. RetComM creates roms, bios, "
+                                 "Pick one Emulation folder. Retro creates roms, bios, "
                                  "and saves under it with default platform folders.",
                                  "setup_easy_rocket.png", card_w, card_h)) {
             hub.setup_path = SetupPath::Easy;
@@ -3702,7 +3702,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::BeginChild("##setup_easy_root_body", ImVec2(0.f, -footer_h), ImGuiChildFlags_None);
         push_wrap();
         ImGui::TextWrapped(
-            "Step 1 of 2 — Installation Directory. This is where RetComM installs itself: "
+            "Step 1 of 2 — Installation Directory. This is where Retro installs itself: "
             "the games it builds, the build tools it downloads, and its caches. It can grow "
             "to tens of GB, so pick a drive with room. Your game files are chosen next and "
             "can live anywhere.");
@@ -3725,7 +3725,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
             hub.setup_use_custom_data_root = true;
             if (hub.data_root_input[0] == '\0' && !hub.exe_dir.empty()) {
                 copy_buf(hub.data_root_input, sizeof(hub.data_root_input),
-                         (hub.exe_dir / "RetComM").string());
+                         (hub.exe_dir / "Retro").string());
             }
             changed = true;
         }
@@ -3744,7 +3744,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
             ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
             push_wrap();
             if (plan.blocker.empty()) {
-                ImGui::TextWrapped("RetComM will be installed in:\n  %s",
+                ImGui::TextWrapped("Retro will be installed in:\n  %s",
                                    plan.to_root.string().c_str());
                 if (!plan.note.empty()) {
                     ImGui::Dummy(ImVec2(0, 4));
@@ -3752,11 +3752,11 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
                 }
                 if (plan.existing_bytes > 0) {
                     ImGui::Dummy(ImVec2(0, 4));
-                    ImGui::TextWrapped("Existing RetComM files (%s) move here when you finish.",
+                    ImGui::TextWrapped("Existing Retro files (%s) move here when you finish.",
                                        human_bytes(plan.existing_bytes).c_str());
                 }
             } else {
-                ImGui::TextWrapped("Pick a folder RetComM can create and write to.");
+                ImGui::TextWrapped("Pick a folder Retro can create and write to.");
             }
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
@@ -3795,7 +3795,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         push_wrap();
         ImGui::TextWrapped(
             "Step 2 of 2 — Choose your Emulation folder. This is where your game files "
-            "live, separate from the installation directory. RetComM will use …/roms, "
+            "live, separate from the installation directory. Retro will use …/roms, "
             "…/bios, and …/saves under it, create any that are missing, and seed default "
             "platform folders.");
         ImGui::PopTextWrapPos();
@@ -3857,7 +3857,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
             ImGui::TextColored(th.warn, "Choose an Emulation folder to continue.");
         }
     } else if (hub.setup_step == 0) {
-        // Step 1 of 3 — where RetComM keeps its own files. This has to come
+        // Step 1 of 3 — where Retro keeps its own files. This has to come
         // first: everything the later steps create lands under it.
         hub.refresh_data_root_plan();
         const bool custom = hub.setup_use_custom_data_root;
@@ -3867,7 +3867,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::BeginChild("##setup_dataroot_body", ImVec2(0.f, -footer_h), ImGuiChildFlags_None);
         push_wrap();
         ImGui::TextWrapped(
-            "Step 1 of 3 — Choose where RetComM stores its own files: the build toolchain, "
+            "Step 1 of 3 — Choose where Retro stores its own files: the build toolchain, "
             "engine sources, installed games, and caches. This can grow to tens of GB, so "
             "put it on a drive with room. Your ROM, BIOS, and saves folders are set next "
             "and can live anywhere.");
@@ -3899,7 +3899,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
 
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::BeginDisabled(!custom);
-        if (path_field_with_browse("RetComM folder", "##setup_data_root", hub.data_root_input,
+        if (path_field_with_browse("Retro folder", "##setup_data_root", hub.data_root_input,
                                    sizeof(hub.data_root_input), hub, window,
                                    FolderPickTarget::DataRoot, th))
             hub.data_root_plan_dirty = true;
@@ -3919,11 +3919,11 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
                 if (plan.existing_bytes > 0) {
                     ImGui::Dummy(ImVec2(0, 4));
                     ImGui::TextWrapped(
-                        "Existing RetComM data (%s) will be moved here when you finish.",
+                        "Existing Retro data (%s) will be moved here when you finish.",
                         human_bytes(plan.existing_bytes).c_str());
                 }
             } else {
-                ImGui::TextWrapped("Pick a folder RetComM can create and write to.");
+                ImGui::TextWrapped("Pick a folder Retro can create and write to.");
             }
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
@@ -4060,7 +4060,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::PushStyleColor(ImGuiCol_Text, th.text);
         ImGui::TextWrapped(
             "Step 3 of 3 - Assign platform folder mappings.  Platform name is on the left, "
-            "and on the right is a list of folder names to search.  RetComM will create empty "
+            "and on the right is a list of folder names to search.  Retro will create empty "
             "folders for any platforms that are missing from your library, to import new files "
             "you provide.");
         ImGui::PopStyleColor();
@@ -4143,16 +4143,16 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
     ImGui::EndPopup();
 }
 
-// Change where RetComM keeps config + data. The move itself runs on the job
+// Change where Retro keeps config + data. The move itself runs on the job
 // thread (HubJob::MigrateDataRoot) and ends in a relaunch.
 void draw_data_root_dialog(HubModel& hub, const Theme& th, SDL_Window* window) {
     if (!hub.show_data_root_dialog) return;
-    ImGui::OpenPopup("RetComM data folder###data_root_dialog");
+    ImGui::OpenPopup("Retro data folder###data_root_dialog");
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(std::min(660.f, vp->WorkSize.x * 0.94f), 0),
                              ImGuiCond_Always);
-    if (!ImGui::BeginPopupModal("RetComM data folder###data_root_dialog", nullptr,
+    if (!ImGui::BeginPopupModal("Retro data folder###data_root_dialog", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize))
         return;
 
@@ -4179,7 +4179,7 @@ void draw_data_root_dialog(HubModel& hub, const Theme& th, SDL_Window* window) {
         ImGui::TextWrapped("Leave empty to go back to the default (%s).",
                            retcomm::default_os_data_dir().string().c_str());
     else
-        ImGui::TextWrapped("Pick a folder on a drive with room — RetComM creates "
+        ImGui::TextWrapped("Pick a folder on a drive with room — Retro creates "
                            "config/ and data/ inside it.");
     ImGui::PopStyleColor();
 
@@ -4211,7 +4211,7 @@ void draw_data_root_dialog(HubModel& hub, const Theme& th, SDL_Window* window) {
             ImGui::PopTextWrapPos();
         }
         ImGui::Dummy(ImVec2(0, 6));
-        ImGui::TextColored(th.warn, "RetComM will restart.");
+        ImGui::TextColored(th.warn, "Retro will restart.");
     }
 
     ImGui::Dummy(ImVec2(0, 12));
@@ -4271,7 +4271,7 @@ void draw_romm_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::TextWrapped(
         "Connect to a RomM instance for future sync. Use a Client API Token from "
         "RomM → Administration → Client API Tokens (Bearer rmm_…). No username/password "
-        "needed in RetComM.");
+        "needed in Retro.");
     ImGui::Separator();
 
     ImGui::TextColored(th.text_muted, "RomM Instance URL");
@@ -6724,7 +6724,7 @@ int main(int argc, char** argv) {
     // it is a no-op. Either way the pixel size is the truth and UiScale turns it
     // back into the logical 1280x800 this UI is written against.
     SDL_Window* window =
-        SDL_CreateWindow("RetComM Launcher", 1280, 800,
+        SDL_CreateWindow("Retro Launcher", 1280, 800,
                          SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
                              SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
@@ -6784,7 +6784,7 @@ int main(int argc, char** argv) {
                      hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
     }
 
-    // First run: the wizard has not yet asked the user where RetComM should keep
+    // First run: the wizard has not yet asked the user where Retro should keep
     // its files, so this launch must not create any of them. ensure_dirs() and
     // the catalog cache both land under data_dir — running them here is what
     // left a stray data folder at the default location that then collided with
@@ -6826,7 +6826,7 @@ int main(int argc, char** argv) {
     // marker rather than prompting again.
     if (setup_pending) {
         hub.open_setup(); // pre-fills any partial config.json
-        hub.set_status("First-time setup — choose where RetComM keeps its files");
+        hub.set_status("First-time setup — choose where Retro keeps its files");
     } else if (!retcomm::hub_setup_completed(hub.paths, hub.exe_dir)) {
         std::string marker_err;
         if (!retcomm::mark_hub_setup_completed(hub.paths, hub.exe_dir, &marker_err))
@@ -7403,8 +7403,8 @@ int main(int argc, char** argv) {
         // Update prompts in order: launcher → toolchain → games.
         // Avoid opening the next modal on the same frame (IsPopupOpen can lag OpenPopup).
         const bool open_launcher_update = hub.launcher_update_prompt_pending.exchange(false);
-        if (open_launcher_update) ImGui::OpenPopup("RetComM update###launcher_update");
-        if (ImGui::BeginPopupModal("RetComM update###launcher_update", nullptr,
+        if (open_launcher_update) ImGui::OpenPopup("Retro update###launcher_update");
+        if (ImGui::BeginPopupModal("Retro update###launcher_update", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             std::string cur, latest;
             {
@@ -7414,7 +7414,7 @@ int main(int argc, char** argv) {
             }
             ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 380.f);
             ImGui::TextWrapped(
-                "A newer RetComM Launcher release is available.\n\n"
+                "A newer Retro Launcher release is available.\n\n"
                 "Installed: %s\nLatest: %s\n\n"
                 "Update now? The app will download the package and restart.",
                 cur.empty() ? "?" : cur.c_str(),
@@ -7423,7 +7423,7 @@ int main(int argc, char** argv) {
             ImGui::Dummy(ImVec2(0, 10));
             // Never gate these on job_running — CheckUpdates used to arm this modal
             // mid-job and left Update greyed out for the whole game/toolchain scan.
-            if (accent_button("Update RetComM", th, ImVec2(160, 0))) {
+            if (accent_button("Update Retro", th, ImVec2(160, 0))) {
                 hub.cancel_prefetch_updates();
                 hub.discard_followup_update_prompts();
                 hub.start_job(HubJob::SelfUpdate);
@@ -7445,14 +7445,14 @@ int main(int argc, char** argv) {
         {
             static bool launcher_modal_was_open = false;
             const bool launcher_modal_open =
-                open_launcher_update || ImGui::IsPopupOpen("RetComM update###launcher_update");
+                open_launcher_update || ImGui::IsPopupOpen("Retro update###launcher_update");
             if (launcher_modal_was_open && !launcher_modal_open && !launcher_self_updating)
                 hub.release_deferred_followup_updates();
             launcher_modal_was_open = launcher_modal_open;
         }
         const bool launcher_blocking =
             launcher_self_updating || open_launcher_update ||
-            ImGui::IsPopupOpen("RetComM update###launcher_update") ||
+            ImGui::IsPopupOpen("Retro update###launcher_update") ||
             hub.launcher_update_prompt_pending.load();
 
         const bool open_toolchain_update =
@@ -7470,7 +7470,7 @@ int main(int argc, char** argv) {
             ImGui::TextWrapped(
                 "A newer portable toolchain (cmake-clang-v1) is available.\n\n"
                 "Installed: %s\nLatest: %s\n\n"
-                "Update now? Builds that use the shared RetComM toolchain cache "
+                "Update now? Builds that use the shared Retro toolchain cache "
                 "will pick up the new pack.",
                 cur.empty() ? "?" : cur.c_str(),
                 latest.empty() ? "?" : latest.c_str());

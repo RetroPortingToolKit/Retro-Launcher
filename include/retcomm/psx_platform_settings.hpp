@@ -16,7 +16,7 @@ inline bool is_psx_platform(const std::string& platform) {
     return platform == "psx" || platform == "ps1" || platform == "ps";
 }
 
-// Global RetComM PlayStation prefs (Display / Audio / Input / Hotkeys).
+// Global Retro PlayStation prefs (Display / Audio / Input / Hotkeys).
 // Persisted under data_dir/platform/psx/{settings.toml,config.ini}.
 struct PsxPlatformSettings {
     // --- Display ([video]) ---

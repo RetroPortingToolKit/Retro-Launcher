@@ -37,7 +37,7 @@ using json = nlohmann::json;
 #define RETCOMM_VERSION "0.0.0"
 #endif
 #if !defined(RETCOMM_GITHUB_SLUG)
-#define RETCOMM_GITHUB_SLUG "TechnicallyComputers/RetComM-Launcher"
+#define RETCOMM_GITHUB_SLUG "RetroPortingToolKit/Retro-Launcher"
 #endif
 
 fs::path launcher_state_path(const Paths& paths) { return paths.data_dir / "launcher.json"; }
@@ -129,7 +129,7 @@ fs::path running_appimage_path() {
 fs::path macos_app_bundle_path() {
 #if defined(__APPLE__)
     const fs::path exe = current_executable_path();
-    // …/RetComM Launcher.app/Contents/MacOS/retcomm-hub
+    // …/Retro Launcher.app/Contents/MacOS/retcomm-hub
     if (exe.empty()) return {};
     const fs::path macos = exe.parent_path();
     const fs::path contents = macos.parent_path();
@@ -273,13 +273,13 @@ const char* channel_id_for(RetcommInstallChannel c) {
 std::string unsupported_hint() {
 #if defined(_WIN32)
     return "Self-update needs the Windows installer (or portable) build. "
-           "Install from the GitHub setup.exe, then use Update RetComM.";
+           "Install from the GitHub setup.exe, then use Update Retro.";
 #elif defined(__APPLE__)
-    return "Self-update needs RetComM Launcher.app (from the DMG). "
-           "Install to Applications, launch that app, then use Update RetComM.";
+    return "Self-update needs Retro Launcher.app (from the DMG). "
+           "Install to Applications, launch that app, then use Update Retro.";
 #else
     return "Self-update needs the Linux AppImage. "
-           "Launch RetComM-Launcher-linux-*.AppImage, then use Update RetComM.";
+           "Launch Retro-Launcher-linux-*.AppImage, then use Update Retro.";
 #endif
 }
 
@@ -779,16 +779,16 @@ function Fail-And-Relaunch([string]$OldPath) {
   if ((Test-Path -LiteralPath $OldPath) -and -not (Test-Path -LiteralPath $Dest)) {
     Move-Item -LiteralPath $OldPath -Destination $Dest -Force -ErrorAction SilentlyContinue
   }
-  $msg = "RetComM portable update failed to replace the exe.`n`nMove it out of Downloads/OneDrive if needed, ensure the folder is writable, then try Update again.`n`nLog:`n" + $Log
+  $msg = "Retro portable update failed to replace the exe.`n`nMove it out of Downloads/OneDrive if needed, ensure the folder is writable, then try Update again.`n`nLog:`n" + $Log
   try {
     Add-Type -AssemblyName System.Windows.Forms
-    [void][System.Windows.Forms.MessageBox]::Show($msg, 'RetComM Launcher')
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'Retro Launcher')
   } catch {}
   if (Test-Path -LiteralPath $Dest) { Start-Process -FilePath $Dest }
   exit 1
 }
 try { Remove-Item -LiteralPath $Log -Force -ErrorAction SilentlyContinue } catch {}
-Log 'RetComM portable update'
+Log 'Retro portable update'
 Log ("NEW=" + $New)
 Log ("DEST=" + $Dest)
 Log ("Waiting for PID " + $WaitPid)
@@ -873,10 +873,10 @@ if ($Ready) { try { Set-Content -LiteralPath $Ready -Value '1' -Encoding ASCII -
 function Log([string]$m) { Add-Content -LiteralPath $Log -Value $m -Encoding UTF8 }
 function Fail-And-Relaunch {
   Log 'FAILED'
-  $msg = "RetComM installer update failed.`n`nTry running the setup from the GitHub release manually.`n`nLog:`n" + $Log
+  $msg = "Retro installer update failed.`n`nTry running the setup from the GitHub release manually.`n`nLog:`n" + $Log
   try {
     Add-Type -AssemblyName System.Windows.Forms
-    [void][System.Windows.Forms.MessageBox]::Show($msg, 'RetComM Launcher')
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'Retro Launcher')
   } catch {}
   if (Test-Path -LiteralPath $Hub) {
     Start-Process -FilePath $Hub -WorkingDirectory $Dir
@@ -884,7 +884,7 @@ function Fail-And-Relaunch {
   exit 1
 }
 try { Remove-Item -LiteralPath $Log -Force -ErrorAction SilentlyContinue } catch {}
-Log 'RetComM installer update'
+Log 'Retro installer update'
 Log ("SETUP=" + $Setup)
 Log ("DIR=" + $Dir)
 Log ("HUB=" + $Hub)
@@ -1032,7 +1032,7 @@ bool schedule_retcomm_relaunch_impl(std::string* error) {
 #endif
     if (launch.empty()) launch = current_executable_path();
     if (launch.empty()) {
-        if (error) *error = "cannot resolve RetComM executable path for relaunch";
+        if (error) *error = "cannot resolve Retro executable path for relaunch";
         return false;
     }
 
@@ -1153,7 +1153,7 @@ RetcommInstallInfo retcomm_install_info() {
             info.hint.clear();
         } else {
             info.hint = "Portable channel detected but portable_exe is missing. "
-                        "Relaunch from RetComM Launcher.exe (portable zip).";
+                        "Relaunch from Retro Launcher.exe (portable zip).";
         }
         return info;
     }
@@ -1226,10 +1226,10 @@ SelfUpdateCheckInfo check_retcomm_update(const Paths& /*paths*/, const SelfUpdat
     info.update_available =
         normalize_tag(info.current_tag) != normalize_tag(info.latest_tag);
     if (info.update_available) {
-        info.message = "RetComM Launcher update available: " + info.current_tag + " → " +
+        info.message = "Retro Launcher update available: " + info.current_tag + " → " +
                        info.latest_tag;
     } else {
-        info.message = "RetComM Launcher is up to date (" + info.latest_tag + ").";
+        info.message = "Retro Launcher is up to date (" + info.latest_tag + ").";
     }
     return info;
 }
@@ -1260,7 +1260,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         normalize_tag(result.current_tag) == normalize_tag(result.latest_tag)) {
         result.ok = true;
         result.skipped = true;
-        result.message = "RetComM Launcher is up to date (" + result.latest_tag + ").";
+        result.message = "Retro Launcher is up to date (" + result.latest_tag + ").";
         return result;
     }
 
@@ -1276,7 +1276,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
     if (!asset) {
         return fail(result, "Release " + rel.tag + " has no asset for channel " + channel_name +
                                 " (" + host_os_key() + "). Expected AppImage, macOS DMG, or "
-                                "windows-*-setup.exe / RetComM-Launcher-portable-windows.zip.");
+                                "windows-*-setup.exe / Retro-Launcher-portable-windows.zip.");
     }
     result.asset_name = asset->name;
     const std::string asset_lower = to_lower(asset->name);
@@ -1304,7 +1304,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         if (dest_portable.empty() || !fs::is_regular_file(dest_portable, ec)) {
             return fail(result,
                         "portable channel detected but portable_exe is missing. "
-                        "Relaunch from RetComM Launcher.exe (portable zip).");
+                        "Relaunch from Retro Launcher.exe (portable zip).");
         }
         if (!dir_is_writable(dest_portable.parent_path())) {
             return fail(result, "portable exe directory is not writable: " +
@@ -1334,7 +1334,14 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
                 }
                 return {};
             };
-            source_exe = try_name("RetComM Launcher.exe");
+            source_exe = try_name("Retro Launcher.exe");
+            if (source_exe.empty())
+                source_exe = try_name("Retro-Launcher-windows-portable.exe");
+            // Pre-rename zips are still on the releases page, and a rollback
+            // downloads one. The RCM1 scan below would find the stub anyway;
+            // naming them keeps that the last resort rather than the usual path.
+            if (source_exe.empty())
+                source_exe = try_name("RetComM Launcher.exe");
             if (source_exe.empty())
                 source_exe = try_name("RetComM-Launcher-windows-portable.exe");
             if (source_exe.empty()) {
@@ -1354,10 +1361,10 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
             }
             if (source_exe.empty() || !fs::is_regular_file(source_exe, ec)) {
                 return fail(result,
-                            "portable zip has no RetComM Launcher stub (RCM1): " + asset->name);
+                            "portable zip has no Retro Launcher stub (RCM1): " + asset->name);
             }
         } else if (!looks_like_retcomm_portable_stub(source_exe)) {
-            return fail(result, "downloaded portable asset is not a RetComM stub (missing RCM1): " +
+            return fail(result, "downloaded portable asset is not a Retro stub (missing RCM1): " +
                                     asset->name);
         }
 
@@ -1370,7 +1377,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         }
         result.ok = true;
         result.restart_scheduled = true;
-        result.message = "Updating RetComM Launcher " + result.current_tag + " → " + rel.tag +
+        result.message = "Updating Retro Launcher " + result.current_tag + " → " + rel.tag +
                          "\n  channel: " + channel_name + "\n  asset: " + asset->name +
                          "\n  install: " + dest_portable.string() +
                          "\nRestarting after this window closes…";
@@ -1402,7 +1409,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         }
         result.ok = true;
         result.restart_scheduled = true;
-        result.message = "Updating RetComM Launcher " + result.current_tag + " → " + rel.tag +
+        result.message = "Updating Retro Launcher " + result.current_tag + " → " + rel.tag +
                          "\n  channel: " + channel_name + "\n  asset: " + asset->name +
                          "\n  install: " + dest_dir.string() +
                          "\nRestarting after this window closes…";
@@ -1429,7 +1436,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         }
         result.ok = true;
         result.restart_scheduled = true;
-        result.message = "Updating RetComM Launcher " + result.current_tag + " → " + rel.tag +
+        result.message = "Updating Retro Launcher " + result.current_tag + " → " + rel.tag +
                          "\n  channel: " + channel_name + "\n  asset: " + asset->name +
                          "\n  install: " + dest.string() +
                          "\nRestarting after this window closes…";
@@ -1455,7 +1462,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
         }
         result.ok = true;
         result.restart_scheduled = true;
-        result.message = "Updating RetComM Launcher " + result.current_tag + " → " + rel.tag +
+        result.message = "Updating Retro Launcher " + result.current_tag + " → " + rel.tag +
                          "\n  channel: " + channel_name + "\n  asset: " + asset->name +
                          "\n  install: " + dest_app.string() +
                          "\nRestarting after this window closes…";
@@ -1560,7 +1567,7 @@ RetcommUninstallPlan plan_retcomm_uninstall(const Paths& paths, const fs::path& 
             push_uninstall_path(plan.data_paths, plan.app_path.parent_path() / "RetComM-Data");
         } else {
             plan.app_note = "Portable stub not resolved: the unpacked runtime goes with the data "
-                            "folder, but RetComM Launcher.exe has to be deleted by hand.";
+                            "folder, but Retro Launcher.exe has to be deleted by hand.";
         }
         break;
     }
@@ -1648,7 +1655,7 @@ function Nuke([string]$p) {
   return $false
 }
 try { Remove-Item -LiteralPath $Log -Force -ErrorAction SilentlyContinue } catch {}
-Log 'RetComM uninstall'
+Log 'Retro uninstall'
 Log ("Waiting for PID " + $WaitPid)
 $deadline = (Get-Date).AddSeconds(120)
 while ((Get-Date) -lt $deadline) {
@@ -1686,12 +1693,12 @@ foreach ($p in $Paths) { if (-not (Nuke $p)) { $failed += $p } }
 if ($App) { if (-not (Nuke $App)) { $failed += $App } }
 if ($failed.Count -gt 0) {
   Log 'FINISHED WITH ERRORS'
-  $msg = "RetComM was uninstalled, but these could not be deleted:`n`n" +
+  $msg = "Retro was uninstalled, but these could not be deleted:`n`n" +
          ($failed -join "`n") +
          "`n`nClose anything still using them and delete them by hand.`n`nLog:`n" + $Log
   try {
     Add-Type -AssemblyName System.Windows.Forms
-    [void][System.Windows.Forms.MessageBox]::Show($msg, 'RetComM Launcher')
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'Retro Launcher')
   } catch {}
   exit 1
 }

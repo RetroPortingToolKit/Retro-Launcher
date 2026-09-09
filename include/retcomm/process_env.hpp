@@ -12,7 +12,7 @@ namespace retcomm {
 // sanitize_env_for_external_child(): mutate the current process (use in a
 // fork child, or briefly under AppImageEnvGuard).
 //
-// AppImageEnvGuard: save → sanitize → restore on scope exit so the RetComM
+// AppImageEnvGuard: save → sanitize → restore on scope exit so the Retro
 // AppImage parent keeps its bundled libs for SDL/UI.
 void sanitize_env_for_external_child();
 

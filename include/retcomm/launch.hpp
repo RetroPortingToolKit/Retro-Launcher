@@ -26,7 +26,7 @@ bool set_psxrecomp_settings_disc(const fs::path& settings_path, const fs::path& 
 
 namespace fs = std::filesystem;
 
-// How RetComM boots a title. Default opens the game's dedicated recomp-ui
+// How Retro boots a title. Default opens the game's dedicated recomp-ui
 // launcher. Netplay is reserved for a future lobby frontend.
 enum class LaunchMode {
     Default, // dedicated launcher / normal UI (--launcher)

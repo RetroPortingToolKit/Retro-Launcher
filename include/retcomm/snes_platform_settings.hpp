@@ -16,7 +16,7 @@ inline bool is_snes_platform(const std::string& platform) {
     return platform == "snes" || platform == "sfc" || platform == "supernintendo";
 }
 
-// Global RetComM Super Nintendo prefs (Display / Audio / Input / Hotkeys).
+// Global Retro Super Nintendo prefs (Display / Audio / Input / Hotkeys).
 // Persisted under data_dir/platform/snes/{config.ini,keybinds.ini}, in the
 // exact vocabulary the snesrecomp runner reads next to its exe
 // (runner/src/desktop/mmx_config.c + runner/src/keybinds.c), so a merged

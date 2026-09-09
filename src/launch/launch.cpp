@@ -494,7 +494,7 @@ std::string format_argv(const std::vector<std::string>& argv) {
     return oss.str();
 }
 
-// RetComM local-build tree: apps/<title>/src/current (game.toml + SDK CLI).
+// Retro local-build tree: apps/<title>/src/current (game.toml + SDK CLI).
 // Staged Play binaries live under releases/<tag>/, so the game must be told
 // where Generate & rebuild can find the project (PSXRECOMP_PROJECT_ROOT).
 fs::path retcomm_src_current_root(const fs::path& install_root) {
@@ -928,7 +928,7 @@ LaunchResult launch_title(const Paths& paths, const Title& title, const LaunchOp
             // Disc: never keep a stale disc.cfg (often a prior .bin path).
             if (is_disc_platform(title.platform)) {
                 result.message = result.plan.message + "  error: " + err + "\n" +
-                                 "  tip: chown the install dir so RetComM can write disc.cfg\n";
+                                 "  tip: chown the install dir so Retro can write disc.cfg\n";
                 return result;
             }
             // Cart + --launcher seeds ONLY via rom.cfg. A stale file (often the
@@ -964,7 +964,7 @@ LaunchResult launch_title(const Paths& paths, const Title& title, const LaunchOp
                 path_for_guest(result.plan.media_path, result.plan.use_wine), &err)) {
             if (is_disc_platform(title.platform)) {
                 result.message = result.plan.message + "  error: " + err + "\n" +
-                                 "  tip: chown the install dir so RetComM can write settings.toml\n";
+                                 "  tip: chown the install dir so Retro can write settings.toml\n";
                 return result;
             }
             result.plan.message += "  warning: " + err + "\n";

@@ -1896,7 +1896,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 }
                 bool launcher_upd = false;
                 {
-                    set_status("Checking RetComM…");
+                    set_status("Checking Retro…");
                     auto lc = check_retcomm_update(paths);
                     append_log(lc.message);
                     std::lock_guard<std::mutex> lock(mu);
@@ -2100,7 +2100,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 // Stop background prefetch so exit is not blocked waiting on zip downloads.
                 cancel_prefetch_updates();
                 discard_followup_update_prompts();
-                set_status("Checking RetComM Launcher updates…");
+                set_status("Checking Retro Launcher updates…");
                 const auto install = retcomm_install_info();
                 append_log("Self-update: current=" + retcomm_app_version() +
                            " channel=" + install.channel_id + " repo=" + retcomm_github_slug());
@@ -2115,18 +2115,18 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 }
                 if (ur.ok && ur.restart_scheduled) {
                     discard_followup_update_prompts();
-                    set_status("Updating RetComM — restarting…");
+                    set_status("Updating Retro — restarting…");
                     request_exit.store(true);
                     job_running = false;
                     job = HubJob::None;
                     return;
                 }
                 if (ur.ok && ur.skipped)
-                    set_status("RetComM up to date (" + ur.current_tag + ")");
+                    set_status("Retro up to date (" + ur.current_tag + ")");
                 else if (ur.ok)
-                    set_status("RetComM update complete");
+                    set_status("Retro update complete");
                 else
-                    set_status("RetComM update failed");
+                    set_status("Retro update failed");
                 break;
             }
             case HubJob::RefreshCatalog: {
@@ -2393,8 +2393,8 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     set_status("No folder chosen");
                     break;
                 }
-                set_status("Moving RetComM folder…");
-                append_log("Changing RetComM folder to " + target.string());
+                set_status("Moving Retro folder…");
+                append_log("Changing Retro folder to " + target.string());
 
                 const RootMigrationResult res = migrate_data_root(
                     paths, target, data_root_mode, root_marker_dir(),
@@ -2405,7 +2405,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 if (!res.ok) {
                     append_log("Folder change failed: " + res.message);
                     set_status("Folder change failed — see Activity");
-                    show_toast("Could not change the RetComM folder");
+                    show_toast("Could not change the Retro folder");
                     pending_data_root.clear();
                     break;
                 }
@@ -2416,8 +2416,8 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 std::string relaunch_err;
                 if (!schedule_retcomm_relaunch(&relaunch_err)) {
                     append_log("Relaunch failed: " + relaunch_err);
-                    set_status("Folder changed — restart RetComM to use it");
-                    show_toast("Folder changed — restart RetComM");
+                    set_status("Folder changed — restart Retro to use it");
+                    show_toast("Folder changed — restart Retro");
                     pending_data_root.clear();
                     break;
                 }
@@ -2492,8 +2492,8 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 return;
             }
             case HubJob::UninstallEverything: {
-                set_status("Uninstalling RetComM…");
-                append_log("Uninstall: removing all RetComM data and the app itself",
+                set_status("Uninstalling Retro…");
+                append_log("Uninstall: removing all Retro data and the app itself",
                            LogLevel::Warn);
 
                 // Recompute rather than trusting the UI copy: the modal may have
@@ -2513,8 +2513,8 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     break;
                 }
 
-                append_log("Uninstall scheduled — closing RetComM", LogLevel::Good);
-                set_status("Closing — RetComM is being removed…");
+                append_log("Uninstall scheduled — closing Retro", LogLevel::Good);
+                set_status("Closing — Retro is being removed…");
                 discard_followup_update_prompts();
                 request_exit.store(true);
                 job_running = false;
@@ -2845,7 +2845,7 @@ void HubModel::open_setup() {
 
 bool HubModel::complete_setup(std::string* error) {
     // First run deliberately created nothing at startup. The user has now chosen
-    // where RetComM's files live, so build the tree here — before the marker is
+    // where Retro's files live, so build the tree here — before the marker is
     // written into it.
     try {
         ensure_dirs(paths);
@@ -2975,7 +2975,7 @@ void HubModel::apply_pending_folder_pick() {
     } else if (target == FolderPickTarget::DataRoot) {
         copy_buf(data_root_input, sizeof(data_root_input), path);
         data_root_plan_dirty = true;
-        set_status("RetComM folder selected");
+        set_status("Retro folder selected");
     } else if (target == FolderPickTarget::InstallRoot) {
         if (folder_pick_install_index >= 0 &&
             folder_pick_install_index < static_cast<int>(settings.install_roots.size())) {
@@ -3657,9 +3657,9 @@ bool HubModel::set_title_preferred_disc(const std::string& title_id,
         }
     }
     if (!settings.empty()) {
-        // disc.cfg is the runtime's remembered pick and RetComM rewrites it on
+        // disc.cfg is the runtime's remembered pick and Retro rewrites it on
         // every Play. Updating settings.toml alone leaves the two disagreeing
-        // until the next launch — and a game started outside RetComM would read
+        // until the next launch — and a game started outside Retro would read
         // the stale disc.cfg if anything went wrong parsing settings.toml.
         const fs::path cfg = settings.parent_path() / "disc.cfg";
         {

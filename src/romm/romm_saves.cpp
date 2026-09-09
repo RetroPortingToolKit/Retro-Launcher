@@ -1098,7 +1098,7 @@ std::string title_library_folder_name(const Title& title) {
     return "unknown";
 }
 
-// Older RetComM builds used a flat saves_root/<platform>/ pool. Quarantine this
+// Older Retro builds used a flat saves_root/<platform>/ pool. Quarantine this
 // title's preferred / title-named files into saves_root/<platform>/<title_id>/.
 // Only called from promote/ensure/sync — never from hub refresh listing.
 int migrate_legacy_flat_library_saves(const Paths& paths, const AppConfig& cfg,

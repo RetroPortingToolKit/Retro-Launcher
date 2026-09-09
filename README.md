@@ -1,36 +1,36 @@
-# RetComM Launcher
+# Retro Launcher
 
-[![GitHub downloads (all assets, all releases)](https://img.shields.io/github/downloads/TechnicallyComputers/RetComM-Launcher/total)](https://github.com/TechnicallyComputers/RetComM-Launcher/releases)
-[![GitHub downloads (latest release)](https://img.shields.io/github/downloads/TechnicallyComputers/RetComM-Launcher/latest/total)](https://github.com/TechnicallyComputers/RetComM-Launcher/releases/latest)
-[![GitHub release](https://img.shields.io/github/v/release/TechnicallyComputers/RetComM-Launcher)](https://github.com/TechnicallyComputers/RetComM-Launcher/releases/latest)
+[![GitHub downloads (all assets, all releases)](https://img.shields.io/github/downloads/RetroPortingToolKit/Retro-Launcher/total)](https://github.com/RetroPortingToolKit/Retro-Launcher/releases)
+[![GitHub downloads (latest release)](https://img.shields.io/github/downloads/RetroPortingToolKit/Retro-Launcher/latest/total)](https://github.com/RetroPortingToolKit/Retro-Launcher/releases/latest)
+[![GitHub release](https://img.shields.io/github/v/release/RetroPortingToolKit/Retro-Launcher)](https://github.com/RetroPortingToolKit/Retro-Launcher/releases/latest)
 
-RetComM Launcher is currently applying for signing with the SignPath Foundation
+Retro Launcher is currently applying for signing with the SignPath Foundation
 
-**RetComM — Retro Compilation Manager** catalogs and installs recomps that
+**Retro — Retro Compilation Manager** catalogs and installs recomps that
 **self-compile on the end user’s machine**. For liability reasons we encourage
 releases that do **not** ship machine-generated C derived from proprietary
 software; users generate that code locally instead. First installs can take
 **5–10 minutes**, which is a lot to manage by hand — this hub exists to make
 that workflow practical.
 
-RetComM checks for updates, rebuilds with **existing build data** when
+Retro checks for updates, rebuilds with **existing build data** when
 possible, shares the same **portable toolchain** used by per-title self-compiling
 launchers, and automates BIOS/ROM wiring so you are not stuck in each game’s
 Generate & Build wizard.
 
 ```
-RetComM Launcher          →  catalog / install / queue / update / launch
+Retro Launcher          →  catalog / install / queue / update / launch
         │
         ▼
 each recomp/decomp exe    →  recomp-ui (settings, disc verify, PLAY)
 ```
 
 Windows, Linux, and macOS builds are available from
-[Releases](https://github.com/TechnicallyComputers/RetComM-Launcher/releases).
+[Releases](https://github.com/RetroPortingToolKit/Retro-Launcher/releases).
 Feedback is welcome while the project keeps evolving.
 
 <p align="center">
-  <img src="docs/screenshots/hub-and-game-launcher.png" alt="RetComM hub with a background build, next to a title’s recomp-ui launcher" width="900">
+  <img src="docs/screenshots/hub-and-game-launcher.png" alt="Retro hub with a background build, next to a title’s recomp-ui launcher" width="900">
 </p>
 
 ## Why self-compiling?
@@ -38,14 +38,14 @@ Feedback is welcome while the project keeps evolving.
 Shipping pre-generated recomp C from commercial ROMs is a legal grey area we
 prefer to avoid. Catalog titles that use **psxrecomp + recomp-ui** (and similar
 self-compiling stacks) ask each user to generate and compile on their own PC.
-RetComM’s job is to make that tolerable: shared toolchains, shared engine
+Retro’s job is to make that tolerable: shared toolchains, shared engine
 source (one `psxrecomp` / `recomp-ui` pin across titles), incremental rebuilds,
 queued installs, and automatic ROM/BIOS/save plumbing.
 
 Submit a title via the
-[catalog submission form](https://technicallycomputers.github.io/retcomm-catalog/submit/).
+[catalog submission form](https://retroportingtoolkit.github.io/Retro-Catalog/submit/).
 psxrecomp + recomp-ui projects can auto-fill most fields. Other self-compiling
-launchers can still be listed so RetComM fetches releases/updates and hands users
+launchers can still be listed so Retro fetches releases/updates and hands users
 off to that title’s install flow as gracefully as possible.
 
 ## Features
@@ -79,7 +79,7 @@ title.
 ### Library import & scan
 
 **Easy Install** scaffolds a common EmulationStation-style folder layout.
-Advanced users can point RetComM at an existing ES-DE / RomM-style library and
+Advanced users can point Retro at an existing ES-DE / RomM-style library and
 map platform folders. Import ROMs, saves, and BIOS dumps from **Add/Scan Files**;
 files are hashed, indexed, and stored in your library directories. Scan also picks up
 files you placed on disk manually.
@@ -102,14 +102,14 @@ for a later reinstall.
 ### BIOS, OpenBIOS, and hot-swap
 
 Install with bundled **OpenBIOS**, then add a retail dump such as `SCPH1001.BIN`
-later and RetComM can prompt a rebuild with SCPH support. After that, hot-swap
+later and Retro can prompt a rebuild with SCPH support. After that, hot-swap
 between BIOS choices in the hub (Play stages an empty `bios.cfg` for OpenBIOS so
 a prior SCPH pick cannot stick). Online lobbies settle one match BIOS: OpenBIOS
 unless every seated peer can run SCPH-1001 and nobody selected OpenBIOS.
 
 ### RomM integration
 
-With a RomM base URL + client API token, RetComM can:
+With a RomM base URL + client API token, Retro can:
 
 - Match catalog titles to your RomM library by hash (fast — RomM already hashed them)
 - Download matching ROMs and BIOS into your library
@@ -117,7 +117,7 @@ With a RomM base URL + client API token, RetComM can:
 
 ### Toolchain, rebuilds, and preservation
 
-RetComM uses the same portable toolchain packs as the per-title self-compiling
+Retro uses the same portable toolchain packs as the per-title self-compiling
 launchers. It preserves cmake/build intermediates when possible so updates rebuild
 faster, wires ROMs and BIOS automatically, and skips the per-game Generate & Build
 wizard when you manage installs through the hub.
@@ -125,7 +125,7 @@ wizard when you manage installs through the hub.
 ### Catalog, boxart, and power-user options
 
 Remote catalog from
-[`retcomm-catalog`](https://github.com/TechnicallyComputers/retcomm-catalog),
+[`Retro-Catalog`](https://github.com/RetroPortingToolKit/Retro-Catalog),
 automatic boxart (Libretro by default; optional RomM covers or local art),
 uninstall with keep-saves, and deeper options under **Menu** (library roots,
 exclude dirs, update checks, etc.).
@@ -141,7 +141,7 @@ from platform config**.
 
 ## Coming soon
 
-- **Mod management** and optional launcher bypass when RetComM owns configuration
+- **Mod management** and optional launcher bypass when Retro owns configuration
 - **Centralized netplay lobby** — stay in one lobby, hot-swap titles after a match,
   filter by player count / shared library, backwards compatible with each game’s
   built-in lobby
@@ -150,17 +150,17 @@ from platform config**.
 
 | Artifact | Platform |
 |---|---|
-| `RetComM-Launcher-linux-x86_64.AppImage` | Linux |
-| `RetComM-Launcher-windows-x64-setup.exe` | Windows installer |
-| `RetComM-Launcher-portable-windows.zip` | Windows portable (`RetComM Launcher.exe` inside) |
-| `RetComM-Launcher-macos-arm64.dmg` | macOS Apple Silicon |
-| `RetComM-Launcher-macos-x86_64.dmg` | macOS Intel |
+| `Retro-Launcher-linux-x86_64.AppImage` | Linux |
+| `Retro-Launcher-windows-x64-setup.exe` | Windows installer |
+| `Retro-Launcher-portable-windows.zip` | Windows portable (`Retro Launcher.exe` inside) |
+| `Retro-Launcher-macos-arm64.dmg` | macOS Apple Silicon |
+| `Retro-Launcher-macos-x86_64.dmg` | macOS Intel |
 
 Releases are published manually via Actions → **Release**. Leave **version**
 empty to auto-bump the next `x.x.x` from the latest `vX.Y.Z` tag (`bump`
-defaults to patch). Hub **Update RetComM** pulls the matching asset for your
-install channel. Windows portable: unzip and run `RetComM Launcher.exe` (hub),
-or `RetComM Launcher.exe cli <command>` for the CLI (same idea as the Linux
+defaults to patch). Hub **Update Retro** pulls the matching asset for your
+install channel. Windows portable: unzip and run `Retro Launcher.exe` (hub),
+or `Retro Launcher.exe cli <command>` for the CLI (same idea as the Linux
 AppImage `cli` dispatch).
 
 ## Build from source
@@ -214,14 +214,14 @@ hashes when identity digests are present. Results go to
 ## Catalog
 
 Titles live in
-[`retcomm-catalog`](https://github.com/TechnicallyComputers/retcomm-catalog),
+[`Retro-Catalog`](https://github.com/RetroPortingToolKit/Retro-Catalog),
 not this repo. The launcher caches `catalog.zip` under
 `~/.local/share/retcomm/catalog/` and can auto-update on startup.
 
 ```json
 "catalog": {
-  "url": "https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip",
-  "github_repo": "TechnicallyComputers/retcomm-catalog",
+  "url": "https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip",
+  "github_repo": "RetroPortingToolKit/Retro-Catalog",
   "auto_update": true
 }
 ```
@@ -253,4 +253,4 @@ packaging/              AppImage, DMG, Windows helpers
 
 ## License
 
-RetComM Launcher is released under the [MIT License](LICENSE).
+Retro Launcher is released under the [MIT License](LICENSE).

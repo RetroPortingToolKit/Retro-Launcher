@@ -38,7 +38,7 @@ namespace {
 
 void print_help(const char* argv0) {
     std::cout
-        << "RetComM Launcher — multi-title hub for recomp/decomp projects\n\n"
+        << "Retro Launcher — multi-title hub for recomp/decomp projects\n\n"
         << "Usage:\n"
         << "  " << argv0 << " [--catalog DIR] <command> [args]\n\n"
         << "Commands:\n"
@@ -85,7 +85,7 @@ void print_help(const char* argv0) {
         << "      --dry-run                Print argv/cwd only\n"
         << "  romm                         Show RomM config / stub ping\n"
         << "  catalog update [--force]     Download/update remote catalog cache\n"
-        << "  root [show|set DIR|reset]    Show / move the RetComM config+data folder\n"
+        << "  root [show|set DIR|reset]    Show / move the Retro config+data folder\n"
         << "      --move|--use-existing|--fresh   How to treat data already present\n"
         << "      --yes                           Skip the confirmation prompt\n"
         << "  help                         This message\n\n"
@@ -242,8 +242,8 @@ int cmd_config(const retcomm::Paths& paths, const retcomm::AppConfig& cfg) {
               << "    \"api_token\": \"…\"\n"
               << "  },\n"
               << "  \"catalog\": {\n"
-              << "    \"url\": \"https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip\",\n"
-              << "    \"github_repo\": \"TechnicallyComputers/retcomm-catalog\",\n"
+              << "    \"url\": \"https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip\",\n"
+              << "    \"github_repo\": \"RetroPortingToolKit/Retro-Catalog\",\n"
               << "    \"auto_update\": true\n"
               << "  }\n"
               << "}\n";
@@ -585,9 +585,9 @@ int cmd_pack_ensure(const retcomm::Paths& paths, const retcomm::Catalog& cat,
             return 1;
         }
     } else if (toolchain) {
-        // Default: shared RetComM toolchain repo.
+        // Default: shared Retro toolchain repo.
         pack.id = "cmake-clang-v1";
-        pack.github = "TechnicallyComputers/retcomm-toolchains";
+        pack.github = "RetroPortingToolKit/RetroPorting-Toolchains";
         pack.asset_glob_linux = "*cmake-clang-v1*linux*";
         pack.asset_glob_windows = "*cmake-clang-v1*windows*";
         pack.asset_glob_macos = "*cmake-clang-v1*macos*";
@@ -941,7 +941,7 @@ bool confirm_root_change(const retcomm::RootMigrationPlan& plan, retcomm::RootMi
                          bool assume_yes) {
     if (assume_yes) return true;
     if (!RETCOMM_ISATTY_STDIN()) {
-        std::cerr << "refusing to change the RetComM folder non-interactively; pass --yes\n";
+        std::cerr << "refusing to change the Retro folder non-interactively; pass --yes\n";
         return false;
     }
     if (mode == retcomm::RootMigrationMode::Move && plan.existing_bytes > 0)

@@ -165,7 +165,7 @@ bool activate_pack_tree(const fs::path& staging, const fs::path& dest, fs::path*
     return true;
 }
 
-// Mirror retcomm-toolchains install.sh: latest pointer + idempotent user PATH.
+// Mirror RetroPorting-Toolchains install.sh: latest pointer + idempotent user PATH.
 void maybe_publish_toolchain_path(const Paths& paths, const std::string& pack_id,
                                   bool toolchain, PackEnsureResult& r) {
     if (!toolchain || !r.ok || r.root.empty()) return;
@@ -2474,7 +2474,7 @@ void prune_build_tree_after_success(const fs::path& src_root, const fs::path& bu
     prune_embedded_toolchain(src_root);
 }
 
-// Pins must match retcomm-toolchains/pins.env (PYTHON_VERSION / PYTHON_PBS_TAG).
+// Pins must match RetroPorting-Toolchains/pins.env (PYTHON_VERSION / PYTHON_PBS_TAG).
 constexpr const char* kPythonVersion = "3.12.13";
 constexpr const char* kPythonPbsTag = "20260807";
 constexpr const char* kPythonStandalonePackId = "python-standalone";
@@ -5082,7 +5082,7 @@ ToolchainUpdateInfo check_toolchain_update(const Paths& paths, const std::string
     ToolchainUpdateInfo info;
     info.pack_id = pack_id.empty() ? "cmake-clang-v1" : pack_id;
     const std::string repo =
-        github.empty() ? "TechnicallyComputers/retcomm-toolchains" : github;
+        github.empty() ? "RetroPortingToolKit/RetroPorting-Toolchains" : github;
 
     const fs::path cached = find_cached_toolchain(paths, info.pack_id, {});
     if (!cached.empty()) {
@@ -5128,7 +5128,7 @@ PackEnsureResult update_toolchain_to_latest(const Paths& paths, BuildProgressFn 
                                             const std::string& github) {
     TitleBuildPack pack;
     pack.id = pack_id.empty() ? "cmake-clang-v1" : pack_id;
-    pack.github = github.empty() ? "TechnicallyComputers/retcomm-toolchains" : github;
+    pack.github = github.empty() ? "RetroPortingToolKit/RetroPorting-Toolchains" : github;
     pack.asset_glob_linux = "*cmake-clang-v1*linux*";
     pack.asset_glob_windows = "*cmake-clang-v1*windows*";
     pack.asset_glob_macos = "*cmake-clang-v1*macos*";

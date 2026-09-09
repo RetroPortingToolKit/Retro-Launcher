@@ -1,4 +1,4 @@
-# RetComM Launcher — multi-title hub for recomp/decomp projects.
+# Retro Launcher — multi-title hub for recomp/decomp projects.
 #
 #   cmake -G Ninja -S . -B build
 #   cmake --build build -j
@@ -19,14 +19,14 @@ if(APPLE)
     add_link_options(-Wl,-headerpad_max_install_names)
 endif()
 
-# Embedded in binaries for Update RetComM / about text.
-set(RETCOMM_VERSION "0.1.1" CACHE STRING "RetComM Launcher semantic version")
-set(RETCOMM_GITHUB_SLUG "TechnicallyComputers/RetComM-Launcher" CACHE STRING
+# Embedded in binaries for Update Retro / about text.
+set(RETCOMM_VERSION "0.1.1" CACHE STRING "Retro Launcher semantic version")
+set(RETCOMM_GITHUB_SLUG "RetroPortingToolKit/Retro-Launcher" CACHE STRING
     "GitHub owner/repo used for self-update")
-set(RETCOMM_CATALOG_GITHUB_REPO "TechnicallyComputers/retcomm-catalog" CACHE STRING
+set(RETCOMM_CATALOG_GITHUB_REPO "RetroPortingToolKit/Retro-Catalog" CACHE STRING
     "GitHub owner/repo for the title catalog")
 set(RETCOMM_CATALOG_DOWNLOAD_URL
-    "https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip"
+    "https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip"
     CACHE STRING "Default catalog.zip download URL")
 
 # Portable installs: look next to the binary first; baked path is a dev fallback.

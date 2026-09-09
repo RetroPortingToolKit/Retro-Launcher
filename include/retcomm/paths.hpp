@@ -9,7 +9,7 @@ namespace retcomm {
 
 namespace fs = std::filesystem;
 
-// XDG-style (and Windows-friendly) data/config roots for RetComM.
+// XDG-style (and Windows-friendly) data/config roots for Retro.
 //
 // A custom root (portable / another drive) replaces the two OS locations with
 // <root>/config and <root>/data; every member below keeps its relative shape,

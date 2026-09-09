@@ -1,4 +1,4 @@
-; RetComM Launcher — per-user Inno Setup installer (no admin).
+; Retro Launcher — per-user Inno Setup installer (no admin).
 ; Built by packaging/windows/package.ps1
 ;
 ; Defines (passed via ISCC):
@@ -17,9 +17,9 @@
   #define Arch "x64"
 #endif
 
-#define MyAppName "RetComM Launcher"
-#define MyAppPublisher "TechnicallyComputers"
-#define MyAppURL "https://github.com/TechnicallyComputers/RetComM-Launcher"
+#define MyAppName "Retro Launcher"
+#define MyAppPublisher "RetroPortingToolkit"
+#define MyAppURL "https://github.com/RetroPortingToolKit/Retro-Launcher"
 #define MyAppExeName "retcomm-hub.exe"
 
 ; VersionInfoVersion must be purely numeric. The release workflow accepts a
@@ -40,7 +40,7 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
-DefaultDirName={localappdata}\Programs\RetComM
+DefaultDirName={localappdata}\Programs\Retro
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -63,7 +63,7 @@ AppCopyright=Copyright (C) {#MyAppPublisher}. MIT licensed.
 UninstallDisplayName={#MyAppName}
 OutputDir={#OutputDir}
 ; Stable download name (no version): AppVersion still carries MyAppVersion.
-OutputBaseFilename=RetComM-Launcher-windows-{#Arch}-setup
+OutputBaseFilename=Retro-Launcher-windows-{#Arch}-setup
 SetupIconFile={#StageDir}\retcomm.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -93,7 +93,7 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\RetComM CLI"; Filename: "{app}\retcomm.exe"; WorkingDir: "{app}"
+Name: "{group}\Retro CLI"; Filename: "{app}\retcomm.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

@@ -14,8 +14,8 @@
   "filter_unsupported_titles": false,
   "github_token": "",
   "catalog": {
-    "url": "https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip",
-    "github_repo": "TechnicallyComputers/retcomm-catalog",
+    "url": "https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip",
+    "github_repo": "RetroPortingToolKit/Retro-Catalog",
     "auto_update": true
   },
   "romm": {

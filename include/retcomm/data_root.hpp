@@ -7,10 +7,10 @@ namespace retcomm {
 
 namespace fs = std::filesystem;
 
-// Where a custom RetComM root came from. Resolution order is the enum order
+// Where a custom Retro root came from. Resolution order is the enum order
 // below (Env wins, Default means "no override — use OS conventions").
 enum class DataRootSource : int {
-    Default = 0,   // XDG / AppData, exactly as RetComM has always behaved
+    Default = 0,   // XDG / AppData, exactly as Retro has always behaved
     Env,           // $RETCOMM_HOME
     ExeMarker,     // <exe_dir>/retcomm-root.json — travels with a portable build
     ConfigPointer, // <os_default_config>/retcomm/root.json — written by the wizard

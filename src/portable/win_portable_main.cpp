@@ -1,4 +1,4 @@
-// RetComM Windows portable stub — single .exe with appended zip payload.
+// Retro Windows portable stub — single .exe with appended zip payload.
 //
 // Trailer layout (little-endian):
 //   [PE stub bytes][zip payload][uint64 payload_size][magic "RCM1"]
@@ -12,7 +12,7 @@
 //   <exe_dir>\RetComM-Data\data\      apps, toolchains, engines, catalog, …
 // RETCOMM_HOME is exported to the child so it resolves the same folder.
 //
-// When setup moves the RetComM folder elsewhere, the hub records the new root
+// When setup moves the Retro folder elsewhere, the hub records the new root
 // in <exe_dir>\retcomm-root.json. We then unpack into <root>\runtime\ instead
 // and delete the old RetComM-Data, so the launcher ends up as a lone .exe with
 // one folder holding the runtime, config and data together.
@@ -52,7 +52,7 @@ namespace {
 // Trailer magic / layout: portable_trailer.hpp (shared with the hub's self-update).
 
 void fail(const std::wstring& msg) {
-    MessageBoxW(nullptr, msg.c_str(), L"RetComM Launcher", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, msg.c_str(), L"Retro Launcher", MB_OK | MB_ICONERROR);
 }
 
 std::string narrow(const std::wstring& s) {
@@ -326,7 +326,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     uint64_t payload_size = 0, payload_offset = 0;
     if (!read_trailer(self, &payload_size, &payload_offset)) {
         LocalFree(argv);
-        fail(L"This file is not a valid RetComM portable package (missing payload).");
+        fail(L"This file is not a valid Retro portable package (missing payload).");
         return 1;
     }
 
@@ -338,7 +338,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     fs::path base = default_base;
     bool portable_base = dir_is_writable(self.parent_path());
 
-    // Setup may have moved the RetComM folder elsewhere; retcomm-root.json
+    // Setup may have moved the Retro folder elsewhere; retcomm-root.json
     // beside this .exe records where. Unpack the runtime into that folder too,
     // so the whole install stays one directory and nothing is stranded next to
     // the launcher. Missing drive or unwritable target → fall back to the

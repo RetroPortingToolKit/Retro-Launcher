@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble a RetComM AppImage from a CMake install prefix.
+# Assemble a Retro AppImage from a CMake install prefix.
 #
 # Usage:
 #   packaging/linux/build-appimage.sh <install-prefix> <version> [arch]
@@ -7,7 +7,7 @@
 #   packaging/linux/build-appimage.sh "$PWD/out" 0.1.0 x86_64
 #
 # <version> is embedded (AppRun / linuxdeploy metadata). Output filename is
-# stable: dist/RetComM-Launcher-linux-<arch>.AppImage
+# stable: dist/Retro-Launcher-linux-<arch>.AppImage
 set -euo pipefail
 
 PREFIX="${1:?install prefix}"
@@ -15,7 +15,7 @@ VERSION="${2:?version}"
 ARCH="${3:-$(uname -m)}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="${ROOT}/dist"
-APPDIR="${OUT_DIR}/RetComM.AppDir"
+APPDIR="${OUT_DIR}/Retro.AppDir"
 TOOL_DIR="${OUT_DIR}/tools"
 
 rm -rf "${APPDIR}"
@@ -117,7 +117,7 @@ fi
 # Plugin optional — linuxdeploy still copies DT_NEEDED libs without it.
 # Stable filename (no version): self-update replaces the AppImage in place and
 # keeps the user's path, so a versioned name becomes stale after the first update.
-export LDAI_OUTPUT="${OUT_DIR}/RetComM-Launcher-linux-${ARCH}.AppImage"
+export LDAI_OUTPUT="${OUT_DIR}/Retro-Launcher-linux-${ARCH}.AppImage"
 export LINUXDEPLOY_OUTPUT_VERSION="${VERSION}"
 
 # linuxdeploy ships an old binutils strip that rejects modern ELF (RELR / .relr.dyn)
@@ -139,11 +139,11 @@ fi
   --output appimage
 
 # Normalize output name if linuxdeploy used a different default.
-APPIMAGE_OUT="${OUT_DIR}/RetComM-Launcher-linux-${ARCH}.AppImage"
+APPIMAGE_OUT="${OUT_DIR}/Retro-Launcher-linux-${ARCH}.AppImage"
 shopt -s nullglob
 for f in "${OUT_DIR}"/*.AppImage; do
   base="$(basename "$f")"
-  if [[ "${base}" != "RetComM-Launcher-linux-${ARCH}.AppImage" &&
+  if [[ "${base}" != "Retro-Launcher-linux-${ARCH}.AppImage" &&
         "${base}" != linuxdeploy* ]]; then
     mv -f "$f" "${APPIMAGE_OUT}"
   fi

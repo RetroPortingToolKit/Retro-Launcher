@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build RetComM Launcher.app from a CMake install prefix.
+# Build Retro Launcher.app from a CMake install prefix.
 #
 # Usage:
 #   packaging/macos/build-app.sh <install-prefix> <version> <arch>
@@ -12,7 +12,7 @@ VERSION="${2:?version}"
 ARCH="${3:?arch (arm64|x86_64)}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="${ROOT}/dist"
-APP_NAME="RetComM Launcher.app"
+APP_NAME="Retro Launcher.app"
 APP="${OUT_DIR}/${APP_NAME}"
 
 rm -rf "${APP}"
@@ -108,8 +108,8 @@ fi
 
 # Drag-to-Applications DMG (.app + /Applications symlink).
 # Stable filename (no version): version is in Info.plist / release tag only.
-DMG="${OUT_DIR}/RetComM-Launcher-macos-${ARCH}.dmg"
-VOLUME_NAME="RetComM Launcher"
+DMG="${OUT_DIR}/Retro-Launcher-macos-${ARCH}.dmg"
+VOLUME_NAME="Retro Launcher"
 STAGE="${OUT_DIR}/dmg-staging"
 RW_DMG="${OUT_DIR}/.retcomm-dmg-rw.dmg"
 MOUNT_DIR="${OUT_DIR}/dmg-mount"

@@ -277,11 +277,11 @@ RootMigrationPlan plan_root_migration(const Paths& current, const fs::path& new_
         return plan;
     }
     if (path_under(plan.to_data, plan.from_data) || path_under(plan.to_config, plan.from_config)) {
-        plan.blocker = "That folder is inside RetComM's current data folder — pick one outside it.";
+        plan.blocker = "That folder is inside Retro's current data folder — pick one outside it.";
         return plan;
     }
     if (path_under(plan.from_data, plan.to_data) || path_under(plan.from_config, plan.to_config)) {
-        plan.blocker = "RetComM's current data folder is inside that folder — pick a different one.";
+        plan.blocker = "Retro's current data folder is inside that folder — pick a different one.";
         return plan;
     }
 
@@ -302,7 +302,7 @@ RootMigrationPlan plan_root_migration(const Paths& current, const fs::path& new_
 
     if (plan.target_has_data)
         plan.warning = plan.to_data.string() +
-                       " already contains RetComM data. Moving will merge into it.";
+                       " already contains Retro data. Moving will merge into it.";
     return plan;
 }
 
@@ -392,8 +392,8 @@ RootMigrationResult migrate_data_root(const Paths& current, const fs::path& new_
 
     r.ok = true;
     r.message = plan.to_default
-                    ? "RetComM folder reset to the default (" + plan.to_data.string() + ")"
-                    : "RetComM folder set to " + plan.to_root.string();
+                    ? "Retro folder reset to the default (" + plan.to_data.string() + ")"
+                    : "Retro folder set to " + plan.to_root.string();
     return r;
 }
 

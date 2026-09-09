@@ -1,13 +1,13 @@
-# RetComM Launcher architecture
+# Retro Launcher architecture
 
 ## Two launchers, one job each
 
 | Layer | Repo | Job |
 |---|---|---|
-| Hub | **retcomm-launcher** (this) | Catalog, install/update, ROM/RomM match, recommend, spawn game |
+| Hub | **Retro-Launcher** (this) | Catalog, install/update, ROM/RomM match, recommend, spawn game |
 | Per-game | **recomp-ui** (submodule of each title) | Settings, verify, controllers, netplay, PLAY |
 
-RetComM never embeds a full `RecompLauncherCGameInfo` session. It installs a
+Retro never embeds a full `RecompLauncherCGameInfo` session. It installs a
 build, optionally stages a ROM path the game already understands (`rom.cfg` /
 argv), then `exec`s the title. The game opens its own `recomp-ui`.
 
@@ -47,13 +47,13 @@ play. Resolution happens once per process in `default_paths()`
 
 A marker may store a path relative to itself (`{"root": "RetComM-Data"}`) so a
 USB stick works whatever drive letter it gets. Set it in Advanced Setup step 1,
-in Library Settings → **RetComM data folder → Change…**, or with
+in Library Settings → **Retro data folder → Change…**, or with
 `retcomm root set <dir>` / `retcomm root reset`. Changing it moves the tree,
 repairs the absolute-target toolchain/engine links inside it, rebases
 `install_roots` in config.json, and restarts. See `src/paths/data_root.cpp` and
 `src/paths/data_root_migrate.cpp`.
 
-With a custom root RetComM does not write the user's shell rc or HKCU `Path`
+With a custom root Retro does not write the user's shell rc or HKCU `Path`
 (`publish_toolchain_user_env` skips it) — a portable install leaves no trace
 outside its own folder.
 
@@ -109,7 +109,7 @@ When catalog `build.enabled` is set, Hub **Build & Install** / `retcomm install`
 1. Require a library ROM matching `rom_identity`.
 2. Ensure toolchain + SDK packs (or `RETCOMM_TOOLCHAIN_DIR` /
    `RETCOMM_SDK_DIR` overrides). Toolchains come from
-   `TechnicallyComputers/retcomm-toolchains` (`cmake-clang-v1`).
+   `RetroPortingToolKit/RetroPorting-Toolchains` (`cmake-clang-v1`).
 3. Fetch game source zipball at `build.source.ref` (or `RETCOMM_SOURCE_DIR`).
 4. Run SDK CLI `generate --json-progress` (`snesrecomp_cli.py`,
    `psxrecomp_cli.py`, or `gbarecomp_cli.py` per `build.generate.engine` /

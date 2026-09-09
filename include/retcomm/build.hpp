@@ -76,14 +76,14 @@ PackEnsureResult ensure_pack(const Paths& paths, const TitleBuildPack& pack,
 // Compare shared-cache cmake-clang-v1 (or pack_id) to GitHub /releases/latest.
 ToolchainUpdateInfo check_toolchain_update(
     const Paths& paths, const std::string& pack_id = "cmake-clang-v1",
-    const std::string& github = "TechnicallyComputers/retcomm-toolchains");
+    const std::string& github = "RetroPortingToolKit/RetroPorting-Toolchains");
 
 // Ensure the latest toolchain pack is installed (skips download when already current),
 // then refresh PATH/latest.
 PackEnsureResult update_toolchain_to_latest(
     const Paths& paths, BuildProgressFn on_progress = {},
     const std::string& pack_id = "cmake-clang-v1",
-    const std::string& github = "TechnicallyComputers/retcomm-toolchains");
+    const std::string& github = "RetroPortingToolKit/RetroPorting-Toolchains");
 
 // Fetch release/zipball source into apps/<install>/src/current/ (or override).
 // Package updates overlay in place and preserve cmake build/, local generated/,

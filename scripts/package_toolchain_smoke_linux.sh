@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a minimal Linux "cmake-clang-v1" pack that wraps system tools.
-# For offline RetComM testing via RETCOMM_TOOLCHAIN_DIR or a local release asset.
+# For offline Retro testing via RETCOMM_TOOLCHAIN_DIR or a local release asset.
 #
 # Usage:
 #   scripts/package_toolchain_smoke_linux.sh [out-dir]
@@ -75,7 +75,7 @@ cat >"$STAGE/README.md" <<'EOF'
 # cmake-clang-v1 (Linux smoke pack)
 
 Thin wrappers around absolute host cmake / ninja / clang paths captured at
-packaging time (so RetComM PATH prepend cannot recurse). For local-build
+packaging time (so Retro PATH prepend cannot recurse). For local-build
 testing when a full redistributable toolchain is not yet published.
 
     export RETCOMM_TOOLCHAIN_DIR=/path/to/extracted/pack

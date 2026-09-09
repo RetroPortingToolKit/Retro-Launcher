@@ -84,7 +84,7 @@ enum class HubJob : int {
     MigrateDataRoot,
     // Wipe library/RomM config + indexes, clear setup marker, relaunch into wizard.
     HardResetLibrarySettings,
-    // Delete every RetComM data/config root plus the app itself, then exit for good.
+    // Delete every Retro data/config root plus the app itself, then exit for good.
     UninstallEverything,
 };
 
@@ -392,7 +392,7 @@ enum class FolderPickTarget : int {
     SavesRoot,
     EmulationRoot, // Easy setup: parent of roms/bios/saves
     InstallRoot,   // Library Settings → add/edit game install location
-    DataRoot,      // Advanced setup / Settings: RetComM's own config+data folder
+    DataRoot,      // Advanced setup / Settings: Retro's own config+data folder
 };
 
 // First-run wizard path after the Easy / Advanced chooser.
@@ -441,10 +441,10 @@ struct HubModel {
     bool show_snes_settings = false; // global Super Nintendo Configure page
     bool show_setup = false; // first-time library/BIOS/RomM wizard
     SetupPath setup_path = SetupPath::Chooser;
-    // Advanced wizard: 0 = RetComM data folder, 1 = library roots (+ optional
+    // Advanced wizard: 0 = Retro data folder, 1 = library roots (+ optional
     // RomM), 2 = platform folder mappings.
     int setup_step = 0;
-    // Step 0: where RetComM keeps config + data. Empty buffer = OS default.
+    // Step 0: where Retro keeps config + data. Empty buffer = OS default.
     bool setup_use_custom_data_root = false;
     char setup_data_root[1024]{};
     // Easy setup: Emulation parent folder (…/roms, …/bios, …/saves derived from this).
@@ -494,7 +494,7 @@ struct HubModel {
 
     // Shared cmake-clang-v1 toolchain update prompt (launch / Check Updates).
     std::atomic<bool> toolchain_prompt_pending{false};
-    // RetComM launcher self-update prompt (shown before toolchain on startup).
+    // Retro launcher self-update prompt (shown before toolchain on startup).
     std::atomic<bool> launcher_update_prompt_pending{false};
     std::string launcher_current_version;
     std::string launcher_latest_tag;
@@ -550,7 +550,7 @@ struct HubModel {
     bool folder_pick_busy = false;
     int folder_pick_install_index = -1; // InstallRoot row being browsed
 
-    // ---- RetComM data folder (portable / second-drive root) ----------------
+    // ---- Retro data folder (portable / second-drive root) ----------------
     // Change requested from Settings or wizard Finish; applied by
     // HubJob::MigrateDataRoot, which relaunches on success.
     bool show_data_root_dialog = false;
@@ -642,9 +642,9 @@ struct HubModel {
     void start_prefetch_updates(const std::vector<std::string>& title_ids = {});
     // Ask the prefetch thread to stop between titles (does not join).
     void cancel_prefetch_updates();
-    // After dismissing RetComM update with Later: show deferred game/toolchain prompts.
+    // After dismissing Retro update with Later: show deferred game/toolchain prompts.
     void release_deferred_followup_updates();
-    // Accepting RetComM self-update / restart: drop follow-up prompts so nothing else starts.
+    // Accepting Retro self-update / restart: drop follow-up prompts so nothing else starts.
     void discard_followup_update_prompts();
 
     // Build & Install with no local ROM → quick scan / RomM download chooser.

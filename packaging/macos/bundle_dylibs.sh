@@ -7,7 +7,7 @@
 # Executables use @rpath plus LC_RPATH=@executable_path/../Frameworks.
 #
 # Usage:
-#   packaging/macos/bundle_dylibs.sh <RetComM Launcher.app>
+#   packaging/macos/bundle_dylibs.sh <Retro Launcher.app>
 set -euo pipefail
 
 APP="${1:?path to .app bundle}"

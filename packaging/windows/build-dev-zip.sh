@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Windows x64 RetComM dev test build on Linux (mingw-w64 cross) and
+# Build a Windows x64 Retro dev test build on Linux (mingw-w64 cross) and
 # bundle it as a zip you can drop on a Windows box.
 #
 # Usage:
@@ -11,8 +11,8 @@
 #   STRIP=0 ./packaging/windows/build-dev-zip.sh            # keep symbols in the zip
 #
 # Output:
-#   dist/RetComM-Launcher-windows-x64-dev.zip
-#     └── RetComM-Launcher-windows-x64-dev/
+#   dist/Retro-Launcher-windows-x64-dev.zip
+#     └── Retro-Launcher-windows-x64-dev/
 #           retcomm-hub.exe, retcomm.exe, *.dll, fonts/, platforms/,
 #           controllers/, setup/, DEV-BUILD.txt
 #
@@ -20,7 +20,7 @@
 #
 # This is NOT the release path. Releases are MSVC + vcpkg + Inno Setup via
 # .github/workflows/release.yml → packaging/windows/package.ps1. A cross build
-# ships no channel.json, so Menu → Update RetComM stays disabled (by design:
+# ships no channel.json, so Menu → Update Retro stays disabled (by design:
 # a dev build must not overwrite itself with a release asset), and mingw has no
 # FreeType here, so ImGui color emoji are off.
 set -euo pipefail
@@ -44,7 +44,7 @@ SKIP_SDL_BUILD="${SKIP_SDL_BUILD:-0}"
 PORTABLE="${PORTABLE:-0}"
 STRIP="${STRIP:-1}"
 DIST="${ROOT}/dist"
-NAME="RetComM-Launcher-windows-x64-dev"
+NAME="Retro-Launcher-windows-x64-dev"
 STAGE="${DIST}/${NAME}"
 
 if [[ -n "${1:-}" ]]; then
@@ -76,7 +76,7 @@ if [[ ! -d "${SYSROOT}" ]]; then
   exit 1
 fi
 
-echo "==> RetComM Windows dev build ${VERSION}"
+echo "==> Retro Windows dev build ${VERSION}"
 echo "    triple: ${TRIPLE}"
 echo "    build:  ${BUILD_DIR}"
 echo "    prefix: ${PREFIX}"
@@ -122,7 +122,7 @@ else
 fi
 
 # --- Configure & build ------------------------------------------------------
-echo "==> Configure & build RetComM"
+echo "==> Configure & build Retro"
 rm -rf "${PREFIX}"
 mkdir -p "${PREFIX}"
 cmake -G Ninja -S "${ROOT}" -B "${BUILD_DIR}" \
@@ -224,7 +224,7 @@ fi
 
 # No channel.json on purpose — see the header comment.
 cat >"${STAGE}/DEV-BUILD.txt" <<EOF
-RetComM Launcher ${VERSION}
+Retro Launcher ${VERSION}
 Windows x64 dev test build — cross-compiled on Linux with ${TRIPLE}
 Built $(date -u '+%Y-%m-%d %H:%M:%S UTC') from $(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo 'unknown commit')
 
@@ -250,7 +250,7 @@ if [[ "${PORTABLE}" == "1" ]]; then
   rm -f "${PAYLOAD}"
   # Stub extracts the payload root next to itself, so the zip must be flat.
   (cd "${STAGE}" && zip -qr9 "${PAYLOAD}" .)
-  PORT_EXE="${DIST}/RetComM Launcher.exe"
+  PORT_EXE="${DIST}/Retro Launcher.exe"
   cp "${PREFIX}/bin/retcomm-portable.exe" "${PORT_EXE}"
   [[ "${STRIP}" == "1" ]] && "${TRIPLE}-strip" "${PORT_EXE}"
   cat "${PAYLOAD}" >>"${PORT_EXE}"

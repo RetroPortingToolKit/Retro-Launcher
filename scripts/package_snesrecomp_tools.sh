@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package a redistributable snesrecomp tools tree for RetComM local builds.
+# Package a redistributable snesrecomp tools tree for Retro local builds.
 # Does not include ROM dumps or game-generated src/gen.
 #
 # Usage:
@@ -60,7 +60,7 @@ EOF
 cat >"$STAGE/README.retcomm.md" <<EOF
 # snesrecomp-tools ($OS_TAG)
 
-Headless generate / verify-rom SDK for RetComM. Point the launcher at this
+Headless generate / verify-rom SDK for Retro. Point the launcher at this
 directory with \`RETCOMM_SDK_DIR\`, or publish as a GitHub release asset matching
 catalog \`build.sdk.asset_glob\`.
 

@@ -673,14 +673,14 @@ bool save_psx_platform_settings(const Paths& paths, const PsxPlatformSettings& s
 
     std::string toml = read_text_file(psx_platform_settings_toml_path(paths));
     if (toml.empty()) {
-        toml = "# RetComM global PlayStation settings — applied to titles on "
+        toml = "# Retro global PlayStation settings — applied to titles on "
                "install/update/launch.\n";
     }
     write_toml_body(toml, s, /*apply_multitap_analog=*/true);
     if (!write_text_file(psx_platform_settings_toml_path(paths), toml, error)) return false;
 
     std::string ini = read_text_file(psx_platform_settings_ini_path(paths));
-    if (ini.empty()) ini = "; RetComM global PlayStation hotkeys ([KeyMap]).\n";
+    if (ini.empty()) ini = "; Retro global PlayStation hotkeys ([KeyMap]).\n";
     write_ini_body(ini, s);
     return write_text_file(psx_platform_settings_ini_path(paths), ini, error);
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a RetComM Linux AppImage locally (same packaging path as CI).
+# Build a Retro Linux AppImage locally (same packaging path as CI).
 #
 # Usage:
 #   ./packaging/linux/build-local-appimage.sh
@@ -8,14 +8,14 @@
 #   JOBS=8 ./packaging/linux/build-local-appimage.sh
 #
 # Output:
-#   dist/RetComM-Launcher-linux-<arch>.AppImage
+#   dist/Retro-Launcher-linux-<arch>.AppImage
 #
 # Run (no install):
-#   ./dist/RetComM-Launcher-linux-*.AppImage
-#   ./dist/RetComM-Launcher-linux-*.AppImage cli list
+#   ./dist/Retro-Launcher-linux-*.AppImage
+#   ./dist/Retro-Launcher-linux-*.AppImage cli list
 #
 # If FUSE is unavailable:
-#   ./dist/RetComM-Launcher-linux-*.AppImage --appimage-extract-and-run
+#   ./dist/Retro-Launcher-linux-*.AppImage --appimage-extract-and-run
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -56,7 +56,7 @@ need_cmd ninja
 need_cmd curl
 need_cmd pkg-config
 
-echo "==> RetComM AppImage ${VERSION} (${ARCH})"
+echo "==> Retro AppImage ${VERSION} (${ARCH})"
 echo "    build:  ${BUILD_DIR}"
 echo "    prefix: ${PREFIX}"
 
@@ -131,7 +131,7 @@ else
   export CMAKE_PREFIX_PATH="${SDL_PREFIX}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
 fi
 
-echo "==> Configure & build RetComM"
+echo "==> Configure & build Retro"
 rm -rf "${PREFIX}"
 mkdir -p "${PREFIX}"
 CMAKE_ARGS=(
@@ -159,7 +159,7 @@ bundle_sdl_libs
 echo "==> Package AppImage"
 ./packaging/linux/build-appimage.sh "${PREFIX}" "${VERSION}" "${ARCH}"
 
-APPIMAGE="${ROOT}/dist/RetComM-Launcher-linux-${ARCH}.AppImage"
+APPIMAGE="${ROOT}/dist/Retro-Launcher-linux-${ARCH}.AppImage"
 if [[ ! -f "${APPIMAGE}" ]]; then
   echo "AppImage not found at ${APPIMAGE}" >&2
   exit 1

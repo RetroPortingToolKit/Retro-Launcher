@@ -1,6 +1,6 @@
 #pragma once
 
-// RetComM hub visual tokens — aligned with recomp-ui's LauncherTheme (CRT violet).
+// Retro hub visual tokens — aligned with recomp-ui's LauncherTheme (CRT violet).
 
 #include "imgui.h"
 

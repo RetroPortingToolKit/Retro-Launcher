@@ -1,4 +1,4 @@
-# Cross-compile RetComM for Windows x64 from Linux with mingw-w64.
+# Cross-compile Retro for Windows x64 from Linux with mingw-w64.
 #
 #   cmake -S . -B build-windows -G Ninja \
 #     -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-mingw-w64-x86_64.cmake

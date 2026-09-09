@@ -1,6 +1,6 @@
 #pragma once
 
-// Global PlayStation input profiles for RetComM — mirrors recomp-ui:
+// Global PlayStation input profiles for Retro — mirrors recomp-ui:
 //   platform/psx/input.ini     — GUID-keyed gamepad maps ([gamepads], [mapping.<guid>])
 //   platform/psx/keybinds.ini  — per-player keyboard maps ([playerN])
 

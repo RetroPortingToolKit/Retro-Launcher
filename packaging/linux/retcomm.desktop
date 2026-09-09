@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=RetComM Launcher
-Comment=Multi-title hub for RetComM recomp/decomp games
+Name=Retro Launcher
+Comment=Multi-title hub for Retro recomp/decomp games
 Exec=retcomm-hub
 Icon=retcomm
 Categories=Game;Emulator;

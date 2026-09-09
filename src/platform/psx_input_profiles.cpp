@@ -487,7 +487,7 @@ void write_kb_ini(const char* path) {
     std::ofstream out(path, std::ios::trunc);
     if (!out) return;
     out << "# PSXRecomp Keyboard Keybinds (keyboard -> DualShock).\n"
-           "# Written by RetComM (psx_keybinds.c-compatible format).\n\n";
+           "# Written by Retro (psx_keybinds.c-compatible format).\n\n";
     for (int p = 0; p < kMaxKbPlayers; ++p) {
         out << "[player" << (p + 1) << "]\n";
         for (int b = 0; b < kPsxPadButtonCount; ++b)

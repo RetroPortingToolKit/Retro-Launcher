@@ -21,7 +21,7 @@ std::string retcomm_github_slug();
 // launcher.json is metadata only and is not used for the UI version string.
 std::string retcomm_installed_tag(const Paths& paths);
 
-// First-class install channels that support Menu → Update RetComM.
+// First-class install channels that support Menu → Update Retro.
 enum class RetcommInstallChannel {
     Unsupported = 0, // dev build, loose binary, unknown layout
     LinuxAppImage,
@@ -56,7 +56,7 @@ struct SelfUpdateResult {
     std::string message;
 };
 
-// Check TechnicallyComputers/RetComM-Launcher (or RETCOMM_GITHUB_SLUG) for a
+// Check RetroPortingToolKit/Retro-Launcher (or RETCOMM_GITHUB_SLUG) for a
 // newer release, download the host-OS asset for this install channel, and
 // schedule an in-place replace after this process exits.
 //
@@ -80,7 +80,7 @@ SelfUpdateCheckInfo check_retcomm_update(const Paths& paths,
 // Relaunch the current hub/AppImage after this process exits (hard-reset, etc.).
 bool schedule_retcomm_relaunch(std::string* error = nullptr);
 
-// Full removal. Covers every RetComM tree this build can reach: the active
+// Full removal. Covers every Retro tree this build can reach: the active
 // config/data roots (custom root included), the OS-default AppData /
 // .local/share pair an earlier root move may have left behind, both data-root
 // markers, and the app itself when the install channel supports it.

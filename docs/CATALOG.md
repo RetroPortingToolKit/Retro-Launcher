@@ -1,7 +1,7 @@
 # Catalog
 
-RetComM does **not** ship title manifests. The canonical list lives in
-[`retcomm-catalog`](https://github.com/TechnicallyComputers/retcomm-catalog).
+Retro does **not** ship title manifests. The canonical list lives in
+[`Retro-Catalog`](https://github.com/RetroPortingToolKit/Retro-Catalog).
 The launcher downloads `catalog.zip` from the latest release into an on-device
 cache and refreshes it from there.
 
@@ -21,8 +21,8 @@ Optional `config.json`:
 
 ```json
 "catalog": {
-  "url": "https://github.com/TechnicallyComputers/retcomm-catalog/releases/latest/download/catalog.zip",
-  "github_repo": "TechnicallyComputers/retcomm-catalog",
+  "url": "https://github.com/RetroPortingToolKit/Retro-Catalog/releases/latest/download/catalog.zip",
+  "github_repo": "RetroPortingToolKit/Retro-Catalog",
   "auto_update": true
 }
 ```
@@ -34,7 +34,7 @@ Optional `config.json`:
 ```json
 {
   "schema_version": 1,
-  "name": "RetComM supported titles",
+  "name": "Retro supported titles",
   "catalog_date": "2026-07-29T18:41:00Z",
   "release_tag": "v2026.07.29.184100.12",
   "platform_defaults": {
@@ -114,7 +114,7 @@ configured digest matches the scanned file (authors may publish only the
 algorithm their gate uses).
 
 Identity should mirror what each game passes into `recomp-ui`
-(`known_sha1_hex` / `expected_crc` / MD5 tables / disc verify) so RetComM and
+(`known_sha1_hex` / `expected_crc` / MD5 tables / disc verify) so Retro and
 the game agree on “verified.”
 
 ### Submission-ready `rom_identity` template
@@ -139,10 +139,10 @@ subset without schema churn:
 ## Adding a title
 
 Submit via the
-[catalog submission form](https://technicallycomputers.github.io/retcomm-catalog/submit/)
+[catalog submission form](https://retroportingtoolkit.github.io/Retro-Catalog/submit/)
 (GitHub login; maintainers add the **`approved`** label to merge the title and
 publish `catalog.zip`), or open a PR on
-[`retcomm-catalog`](https://github.com/TechnicallyComputers/retcomm-catalog)
+[`Retro-Catalog`](https://github.com/RetroPortingToolKit/Retro-Catalog)
 (not this repo):
 
 1. Create `titles/<id>.json` in that repo.

@@ -186,7 +186,7 @@ void write_ini_body(std::string& body, const SnesPlatformSettings& s) {
 std::string keybinds_body(const SnesPlatformSettings& s) {
     std::string out =
         "# SNES Controller Keybinds\n"
-        "# Written by RetComM (snesrecomp keybinds.c-compatible format).\n"
+        "# Written by Retro (snesrecomp keybinds.c-compatible format).\n"
         "# Use SDL key names, or \"None\" to leave a button unbound.\n\n";
     for (int p = 0; p < kP; ++p) {
         out += "[player" + std::to_string(p + 1) + "]\n";
@@ -286,7 +286,7 @@ bool save_snes_platform_settings(const Paths& paths, const SnesPlatformSettings&
     s.apply_defaults_if_unset();
     std::string ini = read_text_file(snes_platform_settings_ini_path(paths));
     if (ini.empty())
-        ini = "# RetComM global Super Nintendo settings — merged into each title's "
+        ini = "# Retro global Super Nintendo settings — merged into each title's "
               "config.ini on install/update/launch.\n";
     write_ini_body(ini, s);
     if (!write_text_file(snes_platform_settings_ini_path(paths), ini, error)) return false;
