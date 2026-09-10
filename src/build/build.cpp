@@ -4142,6 +4142,24 @@ InstallResult build_title(const Paths& paths_in, const Title& title, const Build
         result.message = "catalog build recipe incomplete for " + title.id;
         return result;
     }
+    // The name stage_build_output will look for once the build finishes. It is
+    // checked here rather than in staging, because staging is far too late: generate and
+    // cmake have both already succeeded by then, and an empty name throws the
+    // whole build away with "launch binary not found after build: " -- nothing
+    // after the colon -- leaving a working executable in the build tree while the
+    // hub reports the install folder as having no launch binary.
+    //
+    // supports_local_build() above already declines a title that ships nothing
+    // for this host (both asset_glob.<os> and launch.<os> blank, as a
+    // Windows-only setup kit has). This catches the inconsistent manifest that
+    // passes that check with an installable asset_glob but no name to launch.
+    if (title.launch_binary_for_host().empty()) {
+        result.message = "catalog has no launch." + host_os_key() + " name for " + title.id +
+                         " — the build cannot be staged without the executable's name. "
+                         "Fix launch." + host_os_key() + " in the title manifest.";
+        return result;
+    }
+
     if (opts.rom_path.empty()) {
         result.message =
             "verified ROM required for local build — scan your library and match " + title.id;

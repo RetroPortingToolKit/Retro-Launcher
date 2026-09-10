@@ -2460,6 +2460,12 @@ InstallResult install_title(const Paths& paths_in, const Title& title, const Ins
         }
     }
     const std::string launch_name = title.launch_binary_for_os(target_os);
+    // A blank catalog name would otherwise render as an empty string in the two
+    // "not found" messages below, which reads as a truncated error rather than
+    // as the missing field it is.
+    const std::string launch_label =
+        launch_name.empty() ? ("(launch." + target_os + " is empty in the catalog)")
+                            : launch_name;
     if (!unwrap_nested_archives(staging, launch_name, &err)) {
         result.message = "nested extract failed: " + err;
         return result;
@@ -2471,7 +2477,7 @@ InstallResult install_title(const Paths& paths_in, const Title& title, const Ins
         const auto candidates = list_launch_candidates(staging);
         std::string place_err;
         if (!promote_staging_to_release(staging, release_dir, &place_err)) {
-            result.message = "launch binary not found after extract: " + launch_name +
+            result.message = "launch binary not found after extract: " + launch_label +
                              "\n  also failed to keep extract: " + place_err +
                              "\n  (look under " + staging.string() + " if it still exists)";
             return result;
@@ -2481,7 +2487,7 @@ InstallResult install_title(const Paths& paths_in, const Title& title, const Ins
         result.plan = inspect_install(paths, title);
         result.plan.latest_tag = rel.tag;
         result.message =
-            "launch binary not found after extract: " + launch_name + "\n" +
+            "launch binary not found after extract: " + launch_label + "\n" +
             "  kept extract at: " + release_dir.string() + "\n" +
             "  Open Folder in the hub to run first-time setup or rename the exe to match.\n" +
             "  Or fix catalog launch." + target_os +
