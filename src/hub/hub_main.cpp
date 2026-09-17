@@ -1,5 +1,6 @@
 #include "hub/hub_boxart.hpp"
 #include "hub/hub_model.hpp"
+#include "hub/hub_osk.hpp"
 #include "hub/hub_theme.hpp"
 
 #include "retcomm/catalog_sync.hpp"
@@ -682,6 +683,43 @@ void begin_export_activity_log(HubModel& hub, SDL_Window* window) {
                            hub.file_pick_default_location.c_str());
 }
 
+// ImGui opens a text field for editing only when the activation carries
+// ImGuiActivateFlags_PreferInput. A pad produces that on the north face button
+// alone: A is a "tweak", and tweaking a text field does nothing, so on a
+// controller the field simply refuses to open. A is the button a player will
+// press on a controller-first shell, so when the ring is on a text field and A
+// goes down, re-issue the activation as an input one and tell the on-screen
+// keyboard it is wanted. Must be called immediately after the widget, while it
+// is still the last item.
+void pad_a_opens_text_field() {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    if (g.NavInputSource != ImGuiInputSource_Gamepad) return;
+    const ImGuiID id = ImGui::GetItemID();
+    if (id == 0 || g.ActiveId == id || !ImGui::IsItemFocused()) return;
+    if (!ImGui::IsKeyPressed(ImGuiKey_NavGamepadActivate, false)) return;
+    // Queued rather than applied: NavUpdate has already run for this frame, so
+    // the field picks it up at the top of the next one.
+    g.NavNextActivateId = id;
+    g.NavNextActivateFlags =
+        ImGuiActivateFlags_PreferInput | ImGuiActivateFlags_TryToPreserveState;
+    retcomm::hub::osk_arm_for_pad();
+}
+
+// Every text field in the hub goes through these so the pad rule above holds
+// everywhere, rather than on whichever fields someone remembered.
+bool hub_input_text(const char* id, char* buf, size_t buf_n, ImGuiInputTextFlags flags = 0) {
+    const bool changed = ImGui::InputText(id, buf, buf_n, flags);
+    pad_a_opens_text_field();
+    return changed;
+}
+
+bool hub_input_text_hint(const char* id, const char* hint, char* buf, size_t buf_n,
+                         ImGuiInputTextFlags flags = 0) {
+    const bool changed = ImGui::InputTextWithHint(id, hint, buf, buf_n, flags);
+    pad_a_opens_text_field();
+    return changed;
+}
+
 // Path field + native Browse button. Returns true if the text field changed.
 bool path_field_with_browse(const char* label, const char* input_id, char* buf, size_t buf_n,
                             HubModel& hub, SDL_Window* window, FolderPickTarget target,
@@ -692,7 +730,7 @@ bool path_field_with_browse(const char* label, const char* input_id, char* buf, 
     const float input_w = ImGui::GetContentRegionAvail().x - browse_w - gap;
     bool changed = false;
     if (input_w > 80.f) ImGui::SetNextItemWidth(input_w);
-    changed = ImGui::InputText(input_id, buf, buf_n);
+    changed = hub_input_text(input_id, buf, buf_n);
     ImGui::SameLine();
     bool busy = false;
     {
@@ -1625,6 +1663,8 @@ void open_title_page(HubModel& hub, int index) {
     hub.library_nav = retcomm::hub::LibraryNav::Detail;
     hub.detail_scroll_top = true;
     hub.detail_focus_pending = true;
+    // Steam may have been edited from Steam itself since the last look.
+    hub.steam_state_valid = false;
 }
 
 // The band at the top of a body page: page name on the left, the platform's
@@ -2192,7 +2232,7 @@ void draw_detail_save_controls(HubModel& hub, const TitleRow& row, const Theme& 
     if (ps.renaming && has_file) {
         ImGui::Dummy(ImVec2(0, 12));
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputText("##rename_save", ps.rename_buf, sizeof(ps.rename_buf));
+        hub_input_text("##rename_save", ps.rename_buf, sizeof(ps.rename_buf));
         if (ImGui::Button("Confirm rename", ImVec2(-1, 0))) {
             std::string err;
             const std::string id = live->save_ids[static_cast<size_t>(ps.sel)];
@@ -2583,6 +2623,94 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
         }
     } else {
         ImGui::TextColored(th.text_muted, "No install folder or preserved data yet.");
+    }
+
+    // Add to Steam. A non-Steam shortcut is another way of pressing Play, so it
+    // belongs with the rest of this install's management rather than beside the
+    // button itself. The shortcut runs this launcher's CLI, not the game binary,
+    // so disc, BIOS, save and memory cards resolve exactly as they do here — and
+    // the CLI waits for the game, so Steam's session stays attached to it.
+    if (row.installed) {
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::TextColored(th.text_muted, "Steam");
+        if (!hub.steam_state_valid.load()) hub.refresh_steam_state();
+        const std::string steam_name = hub.steam_shortcut_name(row);
+        const bool in_steam = hub.steam_shortcut_ids.count(row.id) > 0;
+        const bool steam_busy = hub.steam_busy.load();
+        if (!hub.steam_found) {
+            ImGui::TextColored(th.text_muted, "%s", hub.steam_hint.c_str());
+        } else {
+            // Steam keeps its shortcut list in memory and writes it back on exit,
+            // so a write made while it runs is silently thrown away. Asked at the
+            // moment of the press, not shown as standing text, because it is only
+            // ever true or false right now.
+            static bool steam_confirm_remove = false;
+            ImGui::BeginDisabled(steam_busy);
+            const char* add_label = steam_busy ? "Working…"
+                                    : in_steam ? "Update Steam Entry"
+                                               : "Add to Steam";
+            if (good_button(add_label, th, ImVec2(-1, 0))) {
+                if (retcomm::steam_is_running()) {
+                    steam_confirm_remove = false;
+                    ImGui::OpenPopup("Steam is running###steam_running");
+                } else {
+                    hub.begin_steam_shortcut(row.id, false);
+                }
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "Creates a non-Steam shortcut called \"%s\" that starts this game "
+                    "through Retro Launcher,\nand fills Steam's library grid, hero and "
+                    "icon from this title's cover art.",
+                    steam_name.c_str());
+            }
+            if (in_steam) {
+                ImGui::BeginDisabled(steam_busy);
+                if (ImGui::Button("Remove from Steam", ImVec2(-1, 0))) {
+                    if (retcomm::steam_is_running()) {
+                        steam_confirm_remove = true;
+                        ImGui::OpenPopup("Steam is running###steam_running");
+                    } else {
+                        hub.begin_steam_shortcut(row.id, true);
+                    }
+                }
+                ImGui::EndDisabled();
+            }
+            if (row.boxart_path.empty()) {
+                ImGui::TextColored(th.text_muted,
+                                   "No cover art for this title yet, so the Steam entry "
+                                   "would have none either.");
+            }
+
+            if (ImGui::IsPopupOpen("Steam is running###steam_running")) {
+                constexpr float kCW = 400.f;
+                center_modal_next();
+                ImGui::SetNextWindowSizeConstraints(ImVec2(kCW, 0.f), ImVec2(kCW, FLT_MAX));
+                if (ImGui::BeginPopupModal("Steam is running###steam_running", nullptr,
+                                           ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + kCW - 40.f);
+                    ImGui::TextWrapped(
+                        "Steam holds its shortcut list in memory and writes the whole "
+                        "file back when it exits, so anything written now is discarded "
+                        "the moment you close Steam.");
+                    ImGui::Dummy(ImVec2(0, 4));
+                    ImGui::TextWrapped(
+                        "Close Steam and try again to be sure, or continue and restart "
+                        "Steam straight afterwards so it reloads the file.");
+                    ImGui::PopTextWrapPos();
+                    ImGui::Dummy(ImVec2(0, 8));
+                    const float half = (kCW - 40.f - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+                    if (ImGui::Button("Continue anyway", ImVec2(half, 0))) {
+                        hub.begin_steam_shortcut(row.id, steam_confirm_remove);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel", ImVec2(half, 0))) ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
+            }
+        }
     }
 
     ImGui::Dummy(ImVec2(0, 8));
@@ -3214,7 +3342,29 @@ struct ModsPageState {
     std::string sel_package;      // which feature the right panel describes
     std::string sel_feature;
     char search[96]{};
+    // Hand-offs between the two panels. ImGui's directional nav only accepts a
+    // candidate lying in the pressed direction's quadrant, so a row near the
+    // bottom of the list can never reach a setting near the top of the detail
+    // column: nothing overlaps it horizontally. The panels therefore pass the
+    // ring to each other explicitly.
+    bool focus_detail = false;    // set by the list, consumed the same frame
+    bool focus_list = false;      // set by the detail column, consumed next frame
+    bool pending_rescan = false;  // a write landed; re-read once the panel is done
 };
+
+// Right / Left as a player produces them: d-pad, left stick, or the arrow keys
+// when driving the same UI from a keyboard.
+bool nav_right_pressed() {
+    return ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
+}
+
+bool nav_left_pressed() {
+    return ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false);
+}
 
 ModsPageState& mods_page_state() {
     static ModsPageState s;
@@ -3310,8 +3460,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.f);
-    ImGui::InputTextWithHint("##mods_search", "Search features, groups, packages…", st.search,
-                             sizeof(st.search));
+    hub_input_text_hint("##mods_search", "Search features, groups, packages…", st.search,
+                        sizeof(st.search));
     ImGui::Dummy(ImVec2(0, 6));
 
     const std::string needle = st.search;
@@ -3323,7 +3473,12 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
                               std::max(kListMinW, total_w - kDetailMinW - gap));
 
     // ---- left: features, grouped -------------------------------------------
-    ImGui::BeginChild("mods_list", ImVec2(list_w, 0), ImGuiChildFlags_Borders,
+    // NavFlattened, like every other page's panels: a non-flattened child is a
+    // single nav item, so a pad lands on the border and the D-pad stops there
+    // until A is pressed to step inside. Flattened, Down walks straight from the
+    // toolbar into the rows and Right crosses into the detail panel.
+    ImGui::BeginChild("mods_list", ImVec2(list_w, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
                       page_wheel_flags(hub));
     if (!st.scan.root_exists) {
         ImGui::TextWrapped("No mods folder yet. The engine creates mods/bundled at build time; "
@@ -3357,6 +3512,10 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
     }
     std::sort(groups.begin(), groups.end());
 
+    // Opening the page hands the ring to the first togglable row, the way the
+    // grid hands it to the selected card. Only one row may claim it.
+    bool focus_handed = false;
+
     for (const std::string& g : groups) {
         std::vector<ModRowRef> rows;
         for (size_t pi = 0; pi < st.scan.packages.size(); ++pi) {
@@ -3383,6 +3542,13 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
 
                 ImGui::PushID(static_cast<int>(r.pkg * 1000 + (is_feature ? r.feat : 999)));
                 bool on = is_feature ? f->enabled : p.enabled;
+                if (hub.mods_focus_pending && !focus_handed && !p.builtin &&
+                    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+                    hub.mods_focus_pending = false;
+                    focus_handed = true;
+                    ImGui::SetKeyboardFocusHere();
+                    ImGui::SetNavCursorVisible(true);
+                }
                 // A built-in provider's mods are the game's to switch; a
                 // checkbox here would write state.toml, which it never reads.
                 ImGui::BeginDisabled(p.builtin);
@@ -3397,16 +3563,40 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
                     break;          // the vectors were just rebuilt under us
                 }
                 ImGui::EndDisabled();
+                // The right panel follows the ring, the way the library grid's
+                // detail follows the focused card: a pad walking the list should
+                // not have to also press A to find out what a row does. Down/Up
+                // land on the checkbox, Right steps onto the label, so both
+                // items claim the row.
+                const bool checkbox_focused = ImGui::IsItemFocused();
                 ImGui::SameLine();
                 // Two lines per row, as the engines' list shows: what the
                 // feature is, and which package it came from.
                 const bool selected = st.sel_package == p.id && st.sel_feature == fid;
                 const std::string label = (is_feature ? f->name : p.name) + "##row";
-                if (ImGui::Selectable(label.c_str(), selected,
-                                      ImGuiSelectableFlags_AllowOverlap)) {
+                const bool clicked = ImGui::Selectable(label.c_str(), selected,
+                                                       ImGuiSelectableFlags_AllowOverlap);
+                const bool row_focused = ImGui::IsItemFocused();
+                if (clicked || checkbox_focused || row_focused) {
                     st.sel_package = p.id;
                     st.sel_feature = fid;
                 }
+                // Left out of the settings column returns the ring to the row it
+                // was reading, not to the top of the list. SetKeyboardFocusHere()
+                // cannot do this: it only queues a request, and ImGui::SetNavWindow()
+                // clears every pending request — which the still-focused control in
+                // the column, drawn after this panel, calls each frame from its own
+                // NavProcessItem(). So the request never survives to be applied. Set
+                // the focus outright instead.
+                if (st.focus_list && selected) {
+                    st.focus_list = false;
+                    ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                    ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+                    ImGui::SetNavCursorVisible(true);
+                }
+                // The label runs to the panel edge, so Right has nowhere else to
+                // go inside the list: cross into this feature's settings.
+                if (row_focused && nav_right_pressed()) st.focus_detail = true;
                 ImGui::Indent(ImGui::GetFrameHeight() + 8.f);
                 ImGui::TextColored(th.text_muted, "%s", p.name.c_str());
                 ImGui::Unindent(ImGui::GetFrameHeight() + 8.f);
@@ -3420,7 +3610,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
 
     // ---- right: the selected feature ---------------------------------------
     ImGui::SameLine(0.f, gap);
-    ImGui::BeginChild("mods_detail", ImVec2(0, 0), ImGuiChildFlags_Borders,
+    ImGui::BeginChild("mods_detail", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
                       page_wheel_flags(hub));
     const retcomm::ModPackageInfo* sp = nullptr;
     const retcomm::ModFeatureInfo* sf = nullptr;
@@ -3472,11 +3663,14 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
             ImGui::TextColored(th.accent, "%s",
                                sf && !sf->group.empty() ? sf->group.c_str() : "Settings");
             const std::string feat_for_opts = sf ? sf->id : std::string();
+            // The rescan is deferred: it reassigns st.scan, and everything the
+            // rest of this panel is walking — sp, the option, its choices, the
+            // opts vector — points into the packages it replaces.
             auto write_option = [&](const retcomm::ModOptionInfo& o, const std::string& v) {
                 std::string err;
                 if (retcomm::set_mod_option(title_game_dir(hub, row), sp->id, feat_for_opts,
                                             o.id, v, &err))
-                    refresh_mods_page(hub, row);
+                    st.pending_rescan = true;
                 else
                     hub.append_log("Mod option failed: " + err);
             };
@@ -3493,6 +3687,16 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
                 ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kOptW));
                 ImGui::SetNextItemWidth(kOptW);
 
+                // The list handed the ring over; land it on the first setting.
+                // Consume the request either way, so a feature whose settings
+                // are all read-only does not leave it armed for a later frame.
+                if (st.focus_detail && oi == 0) {
+                    st.focus_detail = false;
+                    if (!sp->builtin) {
+                        ImGui::SetKeyboardFocusHere();
+                        ImGui::SetNavCursorVisible(true);
+                    }
+                }
                 // A built-in provider keeps its own state, so its rows are
                 // readouts; everything else is editable.
                 ImGui::BeginDisabled(sp->builtin);
@@ -3526,11 +3730,14 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
                 } else {
                     char buf[128];
                     std::snprintf(buf, sizeof(buf), "%s", cur.c_str());
-                    if (ImGui::InputText("##opt", buf, sizeof(buf),
-                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                    if (hub_input_text("##opt", buf, sizeof(buf),
+                                       ImGuiInputTextFlags_EnterReturnsTrue))
                         write_option(o, buf);
                 }
                 ImGui::EndDisabled();
+                // Settings sit hard against the panel's right edge, so Left has
+                // nowhere to go inside the column: go back to the feature list.
+                if (ImGui::IsItemFocused() && nav_left_pressed()) st.focus_list = true;
 
                 if (o.type == "integer" && o.has_range)
                     ImGui::TextColored(th.text_muted, "%ld\xe2\x80\x93%ld", o.min, o.max);
@@ -3548,7 +3755,15 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
         ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();
+    // Unclaimed because the selected feature has no settings at all: forget it
+    // rather than let it fire on whatever the next selection turns out to be.
+    st.focus_detail = false;
     ImGui::EndChild();
+
+    if (st.pending_rescan) {
+        st.pending_rescan = false;
+        refresh_mods_page(hub, row);
+    }
 }
 
 // Right column of a title page: every control that used to live in the detail
@@ -3997,8 +4212,8 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
 
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::TextColored(th.text_muted, "Exclude dirs (comma-separated basenames)");
-    if (ImGui::InputText("##exclude_dirs", hub.settings.exclude_dirs,
-                         sizeof(hub.settings.exclude_dirs)))
+    if (hub_input_text("##exclude_dirs", hub.settings.exclude_dirs,
+                       sizeof(hub.settings.exclude_dirs)))
         hub.settings.dirty = true;
 
     ImGui::Dummy(ImVec2(0, 10));
@@ -4038,7 +4253,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Default for new installs");
             ImGui::TableNextColumn();
             ImGui::SetNextItemWidth(-1.f);
-            if (ImGui::InputText("##label", row.label, sizeof(row.label)))
+            if (hub_input_text("##label", row.label, sizeof(row.label)))
                 hub.settings.dirty = true;
             ImGui::TableNextColumn();
             {
@@ -4046,7 +4261,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                 const float gap = ImGui::GetStyle().ItemSpacing.x;
                 const float input_w = ImGui::GetContentRegionAvail().x - browse_w - gap;
                 if (input_w > 40.f) ImGui::SetNextItemWidth(input_w);
-                if (ImGui::InputText("##path", row.path, sizeof(row.path)))
+                if (hub_input_text("##path", row.path, sizeof(row.path)))
                     hub.settings.dirty = true;
                 ImGui::SameLine();
                 bool busy = false;
@@ -4186,8 +4401,8 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::Dummy(ImVec2(0, 10));
     ImGui::TextColored(th.text_muted, "GitHub token (optional)");
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::InputText("##github_token", hub.settings.github_token,
-                         sizeof(hub.settings.github_token), ImGuiInputTextFlags_Password))
+    if (hub_input_text("##github_token", hub.settings.github_token,
+                       sizeof(hub.settings.github_token), ImGuiInputTextFlags_Password))
         hub.settings.dirty = true;
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped(
@@ -4450,8 +4665,8 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
             ImGui::Dummy(ImVec2(0, 10));
             ImGui::TextColored(th.text_muted, "Type UNINSTALL to confirm:");
             ImGui::SetNextItemWidth(240.f);
-            ImGui::InputText("##uninstall_confirm", hub.uninstall_confirm,
-                             sizeof(hub.uninstall_confirm));
+            hub_input_text("##uninstall_confirm", hub.uninstall_confirm,
+                           sizeof(hub.uninstall_confirm));
 
             ImGui::Dummy(ImVec2(0, 10));
             const bool busy = hub.job_running.load();
@@ -4492,10 +4707,10 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                 ImGui::PushID(i);
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                if (ImGui::InputText("##plat", row.platform, sizeof(row.platform)))
+                if (hub_input_text("##plat", row.platform, sizeof(row.platform)))
                     hub.settings.dirty = true;
                 ImGui::TableNextColumn();
-                if (ImGui::InputText("##folders", row.folders, sizeof(row.folders)))
+                if (hub_input_text("##folders", row.folders, sizeof(row.folders)))
                     hub.settings.dirty = true;
                 ImGui::TableNextColumn();
                 if (ImGui::Button("X")) {
@@ -5063,13 +5278,13 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 6));
         ImGui::TextColored(th.text_muted, "RomM Instance URL");
-        if (ImGui::InputText("##setup_romm_base_url", hub.romm_settings.base_url,
-                             sizeof(hub.romm_settings.base_url)))
+        if (hub_input_text("##setup_romm_base_url", hub.romm_settings.base_url,
+                           sizeof(hub.romm_settings.base_url)))
             hub.romm_settings.dirty = true;
         ImGui::Dummy(ImVec2(0, 6));
         ImGui::TextColored(th.text_muted, "RomM Client API Key");
-        if (ImGui::InputText("##setup_romm_api_token", hub.romm_settings.api_token,
-                             sizeof(hub.romm_settings.api_token), ImGuiInputTextFlags_Password))
+        if (hub_input_text("##setup_romm_api_token", hub.romm_settings.api_token,
+                           sizeof(hub.romm_settings.api_token), ImGuiInputTextFlags_Password))
             hub.romm_settings.dirty = true;
         ImGui::EndChild();
 
@@ -5127,10 +5342,10 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
                 ImGui::PushID(i);
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                if (ImGui::InputText("##plat", row.platform, sizeof(row.platform)))
+                if (hub_input_text("##plat", row.platform, sizeof(row.platform)))
                     hub.settings.dirty = true;
                 ImGui::TableNextColumn();
-                if (ImGui::InputText("##folders", row.folders, sizeof(row.folders)))
+                if (hub_input_text("##folders", row.folders, sizeof(row.folders)))
                     hub.settings.dirty = true;
                 ImGui::TableNextColumn();
                 if (ImGui::Button("X")) {
@@ -5320,14 +5535,14 @@ void draw_romm_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::Separator();
 
     ImGui::TextColored(th.text_muted, "RomM Instance URL");
-    if (ImGui::InputText("##romm_base_url", hub.romm_settings.base_url,
-                         sizeof(hub.romm_settings.base_url)))
+    if (hub_input_text("##romm_base_url", hub.romm_settings.base_url,
+                       sizeof(hub.romm_settings.base_url)))
         hub.romm_settings.dirty = true;
 
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::TextColored(th.text_muted, "RomM Client API Key");
-    if (ImGui::InputText("##romm_api_token", hub.romm_settings.api_token,
-                         sizeof(hub.romm_settings.api_token), ImGuiInputTextFlags_Password))
+    if (hub_input_text("##romm_api_token", hub.romm_settings.api_token,
+                       sizeof(hub.romm_settings.api_token), ImGuiInputTextFlags_Password))
         hub.romm_settings.dirty = true;
 
     ImGui::Dummy(ImVec2(0, 10));
@@ -6684,9 +6899,9 @@ void draw_psx_configure_modal(HubModel& hub, const Theme& th, const std::vector<
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextUnformatted("Display name for this gamepad profile:");
             ImGui::SetNextItemWidth(320.f);
-            const bool enter = ImGui::InputText("##rename_pad", draft.rename_buf,
-                                                sizeof(draft.rename_buf),
-                                                ImGuiInputTextFlags_EnterReturnsTrue);
+            const bool enter = hub_input_text("##rename_pad", draft.rename_buf,
+                                              sizeof(draft.rename_buf),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::Button("Cancel", ImVec2(120, 0))) {
                 draft.rename_open = false;
                 ImGui::CloseCurrentPopup();
@@ -7724,7 +7939,7 @@ void draw_snes_configure_modal(HubModel& hub, const Theme& th, BoxartCache& boxa
     }
     ImGui::SameLine(0, kGap);
     ImGui::SetNextItemWidth(180.f);
-    ImGui::InputTextWithHint("##snes_pname", "profile name", name_buf, sizeof(name_buf));
+    hub_input_text_hint("##snes_pname", "profile name", name_buf, sizeof(name_buf));
 
     auto current = [&]() -> retcomm::SnesPadProfile {
         retcomm::SnesPadProfile pr;
@@ -8506,6 +8721,9 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 int main(int argc, char** argv) {
     (void)argc;
 
+    // Steam only reads its screen-keyboard hint at startup.
+    retcomm::hub::osk_configure_hints();
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -8771,6 +8989,7 @@ int main(int argc, char** argv) {
             hub.pending_open_mods = false;
             close_settings_pages(hub);
             hub.show_mods_page = true;
+            hub.mods_focus_pending = true;
         }
         if (hub.pending_open_library) {
             hub.pending_open_library = false;
@@ -9429,6 +9648,16 @@ int main(int argc, char** argv) {
 
         ImGui::End();
 
+        // Keep any spawned keyboard in step with ImGui's text-input state. The
+        // hint SDL reads inside SDL_StartTextInput() is set earlier, when the
+        // pad arms the field, because EndFrame() (inside Render) is where the
+        // backend makes that call.
+        {
+            const std::string osk_note =
+                retcomm::hub::osk_sync(window, ImGui::GetIO().WantTextInput);
+            if (!osk_note.empty()) hub.append_log(osk_note);
+        }
+
         ImGui::Render();
         int fb_w = 0, fb_h = 0;
         SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
@@ -9447,6 +9676,7 @@ int main(int argc, char** argv) {
         if (hub.prefetch_worker.joinable()) hub.prefetch_worker.detach();
         if (hub.worker.joinable()) hub.worker.detach();
         if (hub.launch_worker.joinable()) hub.launch_worker.detach();
+        if (hub.steam_worker.joinable()) hub.steam_worker.detach();
         hub_close_all_gamepads();
         SDL_Quit();
 #if defined(_WIN32)

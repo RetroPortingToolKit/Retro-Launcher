@@ -6,10 +6,9 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#define STBI_ONLY_JPEG
-#define STBI_NO_THREAD_LOCALS
+// Implementation (and its STBI_* options) lives in src/core/image_compose.cpp,
+// which the Steam-shortcut art path also needs; this is a declarations-only
+// include that links against it.
 #include "stb_image.h"
 
 #include <algorithm>

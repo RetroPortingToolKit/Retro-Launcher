@@ -13,6 +13,7 @@
 #include "retcomm/self_update.hpp"
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/http.hpp"
+#include "retcomm/image_compose.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -2539,6 +2540,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
 void HubModel::join_worker() {
     if (worker.joinable()) worker.join();
     if (launch_worker.joinable()) launch_worker.join();
+    if (steam_worker.joinable()) steam_worker.join();
     if (prefetch_worker.joinable()) {
         // Self-update apply scripts wait for this PID. Never block exit on prefetch.
         if (request_exit.load()) {
@@ -3223,6 +3225,132 @@ void HubModel::add_install_root_row() {
     row.path[0] = '\0';
     settings.install_roots.push_back(row);
     settings.dirty = true;
+}
+
+
+// --- Steam shortcuts -------------------------------------------------------
+
+std::string HubModel::steam_shortcut_name(const TitleRow& row) const {
+    return row.name.empty() ? row.id : row.name;
+}
+
+void HubModel::refresh_steam_state() {
+    const SteamInstall install = find_steam_install();
+    steam_found = install.found;
+    steam_hint = install.hint;
+    steam_shortcut_ids.clear();
+    if (install.found) {
+        for (const std::string& owner : steam_shortcut_owner_ids(install)) {
+            const std::string prefix = "retcomm:";
+            if (owner.rfind(prefix, 0) == 0) steam_shortcut_ids.insert(owner.substr(prefix.size()));
+        }
+    }
+    steam_state_valid = true;
+}
+
+bool HubModel::begin_steam_shortcut(const std::string& title_id, bool remove) {
+    if (steam_busy.load()) return false;
+    TitleRow row;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        for (const TitleRow& r : rows)
+            if (r.id == title_id) {
+                row = r;
+                found = true;
+                break;
+            }
+    }
+    if (!found) {
+        append_log("Steam shortcut: unknown title " + title_id);
+        return false;
+    }
+
+    fs::path exe;
+    std::string args_prefix;
+    std::string why;
+    if (!remove && !steam_launcher_command(&exe, &args_prefix, &why)) {
+        append_log("Steam shortcut failed: " + why);
+        set_status("Steam shortcut failed");
+        return false;
+    }
+
+    if (steam_busy.exchange(true)) return false;
+    if (steam_worker.joinable()) steam_worker.join();
+    set_status(remove ? "Removing Steam shortcut…" : "Adding to Steam…");
+    const fs::path art_dir = paths.data_dir / "steam-art" / row.id;
+    steam_worker = std::thread([this, row, exe, args_prefix, remove, art_dir] {
+        try {
+            const SteamInstall install = find_steam_install();
+            SteamShortcutSpec spec;
+            spec.app_name = steam_shortcut_name(row);
+            spec.exe = exe;
+            spec.start_dir = exe.parent_path();
+            spec.launch_options = args_prefix + row.id;
+            spec.owner_id = steam_shortcut_owner_id(row.id);
+            if (!row.platform.empty()) spec.tags.push_back(row.platform);
+
+            std::string err;
+            SteamShortcutResult result;
+            if (remove) {
+                result = steam_remove_shortcut(install, spec, &err);
+            } else {
+                // Cover art is square-ish for a jewel case and landscape for a
+                // cartridge box; none of it matches Steam's slots, so each one
+                // is composed rather than copied.
+                SteamArtSet art;
+                if (!row.boxart_path.empty()) {
+                    struct Slot {
+                        fs::path* out;
+                        const char* name;
+                        int w, h;
+                        bool blur;
+                    };
+                    fs::path portrait, capsule, hero, icon;
+                    const Slot slots[] = {
+                        {&portrait, "portrait.png", 600, 900, true},
+                        {&capsule, "capsule.png", 460, 215, true},
+                        {&hero, "hero.png", 1920, 620, true},
+                        {&icon, "icon.png", 256, 256, false},
+                    };
+                    for (const Slot& s : slots) {
+                        ImageComposeRequest req;
+                        req.source = row.boxart_path;
+                        req.dest = art_dir / s.name;
+                        req.width = s.w;
+                        req.height = s.h;
+                        req.blur_background = s.blur;
+                        std::string ierr;
+                        if (compose_image(req, &ierr))
+                            *s.out = req.dest;
+                        else
+                            append_log("Steam art: " + ierr);
+                    }
+                    art.portrait = portrait;
+                    art.capsule = capsule;
+                    art.hero = hero;
+                    art.icon = icon;
+                }
+                result = steam_write_shortcut(install, spec, art, &err);
+                if (result.ok && art.portrait.empty())
+                    append_log(
+                        "Steam shortcut has no art: this title has no cover yet. "
+                        "Fetch box art, then add it again.");
+            }
+            append_log(result.message);
+            if (result.ok && steam_is_running())
+                append_log(
+                    "Steam is running: it rewrites shortcuts.vdf from memory when it "
+                    "exits, which discards this. Restart Steam to keep it.");
+            set_status(result.ok ? "Ready" : "Steam shortcut failed");
+        } catch (const std::exception& e) {
+            append_log(std::string("Steam shortcut error: ") + e.what());
+            set_status("Steam shortcut failed");
+        }
+        steam_state_valid = false;
+        steam_busy = false;
+    });
+    return true;
 }
 
 bool HubModel::begin_install(const std::string& title_id) {

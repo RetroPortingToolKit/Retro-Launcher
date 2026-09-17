@@ -56,6 +56,8 @@ set(RETCOMM_CORE_SOURCES
     src/build/disc_stage.cpp
     src/update/self_update.cpp
     src/launch/launch.cpp
+    src/core/image_compose.cpp
+    src/steam/steam_shortcut.cpp
     src/platform/psx_platform_settings.cpp
     src/platform/psx_input_profiles.cpp
     src/platform/snes_platform_settings.cpp
@@ -95,6 +97,10 @@ add_library(retcomm_core STATIC ${RETCOMM_CORE_SOURCES})
 target_include_directories(retcomm_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    # stb_image/stb_image_write: implemented once in src/core/image_compose.cpp,
+    # included for declarations by the hub's boxart cache. PUBLIC so both see
+    # the same header.
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 target_compile_definitions(retcomm_core PUBLIC
     "RETCOMM_VERSION=\"${RETCOMM_VERSION}\""
@@ -329,6 +335,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_main.cpp
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
+            src/hub/hub_osk.cpp
             ${RETCOMM_RC_HUB}
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
@@ -345,6 +352,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_main.cpp
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
+            src/hub/hub_osk.cpp
         )
     endif()
     target_include_directories(retcomm-hub PRIVATE

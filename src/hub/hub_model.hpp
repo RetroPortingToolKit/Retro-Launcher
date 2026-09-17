@@ -13,12 +13,14 @@
 #include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_fetch.hpp"
 #include "retcomm/self_update.hpp"
+#include "retcomm/steam_shortcut.hpp"
 #include "retcomm/texture_packs.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -498,6 +500,9 @@ struct HubModel {
     // Same for the title page: the ring lands on its first action (Play /
     // Install) so a pad can act without hunting for the column.
     bool detail_focus_pending = false;
+    // Same for the mods page: the ring lands on the first togglable row rather
+    // than on the toolbar, so a pad opens the page already on a mod.
+    bool mods_focus_pending = false;
     // After setup Finish: ask whether to scan the library now.
     bool show_setup_scan_prompt = false;
     // Activity log collapsed by default; expand from the bottom bar.
@@ -535,6 +540,18 @@ struct HubModel {
     bool job_fetch_romm_first = false;
     std::thread worker;
     std::thread launch_worker;
+    // Steam shortcuts. Composing four images and rewriting shortcuts.vdf takes
+    // about a second, so it runs off the UI thread the way a launch does.
+    std::thread steam_worker;
+    std::atomic<bool> steam_busy{false};
+    // Read by the UI every frame, so it is refreshed on the main thread and
+    // never touches the disk from the draw code. The worker only invalidates it.
+    std::atomic<bool> steam_state_valid{false};
+    bool steam_found = false;
+    std::string steam_hint;
+    // Title ids Retro has an entry for, not display names: two titles can
+    // share a name, and a player may rename one in Steam.
+    std::set<std::string> steam_shortcut_ids;
     // Install/Update/scan backlog while the main worker is busy (guarded by mu).
     std::deque<QueuedHubJob> job_queue;
     std::string launcher_version; // display: running binary version (RETCOMM_VERSION)
@@ -711,6 +728,18 @@ struct HubModel {
     // Start Install: may open install-root chooser. Returns true if job started
     // (or ROM prompt shown); false if waiting on install-root modal.
     bool begin_install(const std::string& title_id);
+    // Re-read Steam's install, profiles and shortcut list. Cheap (one small
+    // binary file per profile); call it when a title page opens.
+    void refresh_steam_state();
+    // The name Retro gives this title in the Steam library.
+    std::string steam_shortcut_name(const TitleRow& row) const;
+    // The hidden identity Retro stamps on the entry, so updates and removals
+    // find the right one however the player renames it.
+    static std::string steam_shortcut_owner_id(const std::string& title_id) {
+        return "retcomm:" + title_id;
+    }
+    // Compose the art and write (or delete) the shortcut, off the UI thread.
+    bool begin_steam_shortcut(const std::string& title_id, bool remove);
     // Open install-root chooser to relocate an existing install / preserved tree.
     bool begin_move_install(const std::string& title_id);
     void confirm_install_root_and_continue();
