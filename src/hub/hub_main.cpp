@@ -10,6 +10,7 @@
 #include "retcomm/psx_input_profiles.hpp"
 #include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_saves.hpp"
+#include "retcomm/mods.hpp"
 #include "retcomm/self_update.hpp"
 
 #include "imgui.h"
@@ -44,6 +45,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -911,6 +913,7 @@ bool romm_button(const char* label, const Theme& /*th*/, const ImVec2& size = Im
 // ever disagreeing about what Cancel throws away.
 void cancel_psx_bind_capture(HubModel& hub);
 void cancel_snes_bind_capture(HubModel& hub);
+void cancel_snes_gesture_capture(HubModel& hub);
 
 bool any_settings_page_open(const HubModel& hub) {
     return hub.show_settings || hub.show_romm_settings || hub.show_psx_settings ||
@@ -955,10 +958,36 @@ bool save_active_settings(HubModel& hub) {
     return true;
 }
 
+// Hand the nav ring back to whichever body page is in front. Each page owns a
+// separate child window, so the flag has to name the page rather than "content".
+void request_page_focus(HubModel& hub) {
+    switch (hub.library_nav) {
+        case retcomm::hub::LibraryNav::Platforms: hub.home_focus_pending = true; break;
+        case retcomm::hub::LibraryNav::Titles: hub.grid_focus_pending = true; break;
+        case retcomm::hub::LibraryNav::Detail: hub.detail_focus_pending = true; break;
+    }
+}
+
+// Home = the platform cards, the page the hub starts on.
+void go_home(HubModel& hub) {
+    hub.library_nav = retcomm::hub::LibraryNav::Platforms;
+    hub.library_platform.clear();
+    hub.home_focus_pending = true;
+}
+
+// Leave a title page for the grid it was opened from.
+void go_back_to_titles(HubModel& hub) {
+    hub.library_nav = retcomm::hub::LibraryNav::Titles;
+    hub.grid_focus_pending = true;
+}
+
 // Leave every settings page and drop the drafts. Also ends any in-progress key
 // or pad capture — walking away from the page must not leave the next keypress
 // bound to a button the user can no longer see.
 void close_settings_pages(HubModel& hub) {
+    request_page_focus(hub);
+    hub.show_mods_page = false;
+    hub.show_library_panel = false;
     hub.show_settings = false;
     hub.show_romm_settings = false;
     hub.show_psx_settings = false;
@@ -972,7 +1001,60 @@ void close_settings_pages(HubModel& hub) {
     cancel_psx_bind_capture(hub);
     hub.snes_settings.dirty = false;
     hub.snes_settings.capturing_hotkey = -1;
+    hub.snes_settings.configuring_player = -1;
     cancel_snes_bind_capture(hub);
+    cancel_snes_gesture_capture(hub);
+}
+
+// Panel width. Shared by the slide, the dim and the click-outside test.
+float nav_drawer_width() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    return std::min(360.f, vp->WorkSize.x * 0.85f);
+}
+
+// While the drawer is over the page, the wheel must not scroll what is behind
+// it. BeginDisabled covers hover, clicks and nav, but not scrolling, so the
+// page's scrolling children opt out of the wheel for the duration.
+ImGuiWindowFlags page_wheel_flags(const HubModel& hub) {
+    return hub.drawer_t > 0.f ? ImGuiWindowFlags_NoScrollWithMouse : 0;
+}
+
+void open_nav_drawer(HubModel& hub) {
+    hub.drawer_open = true;
+    hub.drawer_focus_pending = true;
+}
+
+void close_nav_drawer(HubModel& hub) {
+    if (!hub.drawer_open) return;
+    hub.drawer_open = false;
+    hub.hub_refocus_pending = true;
+    // Send the ring back to the page content. ImGui's nav init would otherwise
+    // put it on the window's first item — the hamburger — so the next A press
+    // reopened the drawer that was just closed.
+    request_page_focus(hub);
+}
+
+void toggle_nav_drawer(HubModel& hub) {
+    if (hub.drawer_open) close_nav_drawer(hub);
+    else open_nav_drawer(hub);
+}
+
+// Advance the drawer slide and return the eased position (0 = gone, 1 = open).
+// Ticked before the page is drawn, so the page can be made inert by the same
+// value that places the panel.
+float tick_nav_drawer(HubModel& hub) {
+    if (hub.pending_open_menu) {
+        hub.pending_open_menu = false;
+        open_nav_drawer(hub);
+    }
+    const float target = hub.drawer_open ? 1.f : 0.f;
+    constexpr float kSlideSeconds = 0.16f;
+    const float dt = ImGui::GetIO().DeltaTime;
+    const float step = dt > 0.f ? dt / kSlideSeconds : 1.f;
+    if (hub.drawer_t < target) hub.drawer_t = std::min(target, hub.drawer_t + step);
+    else if (hub.drawer_t > target) hub.drawer_t = std::max(target, hub.drawer_t - step);
+    const float inv = 1.f - hub.drawer_t;
+    return 1.f - inv * inv * inv;  // ease-out cubic
 }
 
 void draw_marquee(HubModel& hub, const Theme& th, float width) {
@@ -992,11 +1074,36 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
                                 ImGui::ColorConvertFloat4ToU32(th.accent));
 
     ImGui::Dummy(ImVec2(width, h));
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + 20.f, p0.y + 14.f));
+    const bool in_settings = any_settings_page_open(hub);
+
+    // Hamburger, top-left: the one place every page keeps. Disabled while a
+    // settings page holds edits, because switching pages would drop them.
+    constexpr float kHamburger = 40.f;
+    constexpr float kBrandX = 16.f + kHamburger + 16.f;
+    {
+        const float ham_y = p0.y + (h - kHamburger) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + 16.f, ham_y));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+        ImGui::BeginDisabled(in_settings);
+        if (ImGui::Button("##hamburger", ImVec2(kHamburger, kHamburger))) toggle_nav_drawer(hub);
+        ImGui::EndDisabled();
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip(in_settings ? "Save or cancel the open settings page first"
+                                          : "Menu  (Start on a controller)");
+        const ImVec2 c(p0.x + 16.f + kHamburger * 0.5f, ham_y + kHamburger * 0.5f);
+        const ImU32 bar = ImGui::ColorConvertFloat4ToU32(in_settings ? th.text_muted : th.text);
+        for (int i = -1; i <= 1; ++i) {
+            const float yy = c.y + static_cast<float>(i) * 6.f;
+            dl->AddLine(ImVec2(c.x - 9.f, yy), ImVec2(c.x + 9.f, yy), bar, 2.f);
+        }
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX, p0.y + 14.f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.good);
-    ImGui::TextUnformatted("Retro");
+    ImGui::TextUnformatted("Retro Launcher");
     ImGui::PopStyleColor();
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + 20.f, p0.y + 40.f));
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX, p0.y + 40.f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextUnformatted("Retro Compilation Manager");
     ImGui::PopStyleColor();
@@ -1044,11 +1151,11 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         const float chip_pad_y = 5.f;
         const float chip_w = chip_sz.x + chip_pad_x * 2.f;
         const float chip_h = chip_sz.y + chip_pad_y * 2.f;
-        // Clear of both brand lines (title + subtitle), not just "Retro".
+        // Clear of both brand lines (title + subtitle), not just the name.
         const float brand_w =
-            std::max(ImGui::CalcTextSize("Retro").x,
+            std::max(ImGui::CalcTextSize("Retro Launcher").x,
                      ImGui::CalcTextSize("Retro Compilation Manager").x);
-        const float chip_x = p0.x + 20.f + brand_w + 28.f;
+        const float chip_x = p0.x + kBrandX + brand_w + 28.f;
         const float chip_y = p0.y + (h - chip_h) * 0.5f;
         const ImVec2 c0(chip_x, chip_y);
         const ImVec2 c1(chip_x + chip_w, chip_y + chip_h);
@@ -1084,12 +1191,21 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
     // carries the commit/discard choice rather than a bare way out.
     constexpr float kMenuH = 36.f;
     constexpr float kBtnGap = 8.f;
-    const bool in_settings = any_settings_page_open(hub);
     const float btn_y = p0.y + (h - kMenuH) * 0.5f;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.f, 8.f));
     const float frame_pad_x = ImGui::GetStyle().FramePadding.x;
 
-    if (in_settings) {
+    if (hub.show_library_panel) {
+        // Add/Scan Files has nothing to commit, so it gets a way out rather
+        // than Save/Cancel — and Check for Updates would be the wrong action to
+        // leave under the cursor on a page about importing files.
+        const char* cancel_label = "Cancel";
+        const float cancel_w =
+            std::max(96.f, ImGui::CalcTextSize(cancel_label).x + frame_pad_x * 2.f);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + width - 16.f - cancel_w, btn_y));
+        if (ImGui::Button(cancel_label, ImVec2(cancel_w, kMenuH)))
+            hub.show_library_panel = false;
+    } else if (in_settings) {
         const char* save_label = "Save";
         const char* cancel_label = "Cancel";
         const float save_w =
@@ -1115,26 +1231,36 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         ImGui::SetCursorScreenPos(ImVec2(cancel_x, btn_y));
         if (ImGui::Button(cancel_label, ImVec2(cancel_w, kMenuH))) close_settings_pages(hub);
     } else {
-        const char* btn_label = "Menu";
-        const char* library_label = "Add/Scan Files";
+        // Add/Scan Files and the old Menu button moved into the drawer; the
+        // header keeps only the one action people reach for between sessions —
+        // plus Back, which belongs beside it in the corner rather than down in
+        // the page's own header band.
+        float right_x = p0.x + width - 16.f;
+        const bool show_back =
+            hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms;
+        if (show_back) {
+            const char* back_label = "Back";
+            const float back_w =
+                std::max(96.f, ImGui::CalcTextSize(back_label).x + frame_pad_x * 2.f);
+            right_x -= back_w;
+            ImGui::SetCursorScreenPos(ImVec2(right_x, btn_y));
+            if (ImGui::Button(back_label, ImVec2(back_w, kMenuH))) {
+                if (hub.show_mods_page) hub.show_mods_page = false;
+                else if (hub.library_nav == retcomm::hub::LibraryNav::Detail)
+                    go_back_to_titles(hub);
+                else go_home(hub);
+            }
+            right_x -= kBtnGap;
+        }
+
         const char* updates_label = "Check for Updates";
-        const float menu_w =
-            std::max(88.f, ImGui::CalcTextSize(btn_label).x + frame_pad_x * 2.f);
-        const float library_w =
-            std::max(100.f, ImGui::CalcTextSize(library_label).x + frame_pad_x * 2.f);
         const float updates_w =
             std::max(120.f, ImGui::CalcTextSize(updates_label).x + frame_pad_x * 2.f);
-        const float btn_x = p0.x + width - 16.f - menu_w;
-        ImGui::SetCursorScreenPos(ImVec2(btn_x - kBtnGap - updates_w - kBtnGap - library_w, btn_y));
-        if (ImGui::Button(library_label, ImVec2(library_w, kMenuH)))
-            hub.pending_open_library = true;
-        ImGui::SetCursorScreenPos(ImVec2(btn_x - kBtnGap - updates_w, btn_y));
+        ImGui::SetCursorScreenPos(ImVec2(right_x - updates_w, btn_y));
         ImGui::BeginDisabled(hub.job_running.load());
         if (ImGui::Button(updates_label, ImVec2(updates_w, kMenuH)))
             hub.start_job(HubJob::CheckUpdates);
         ImGui::EndDisabled();
-        ImGui::SetCursorScreenPos(ImVec2(btn_x, btn_y));
-        if (ImGui::Button(btn_label, ImVec2(menu_w, kMenuH))) hub.pending_open_menu = true;
     }
     ImGui::PopStyleVar();
 
@@ -1293,12 +1419,76 @@ void draw_rom_ready_overlay(ImDrawList* dl, const ImVec2& art0, const ImVec2& ar
     dl->AddLine(b, d, ink, 2.6f);
 }
 
+// ---- Card lift -------------------------------------------------------------
+// A focused or hovered card grows a few percent over ~an eighth of a second.
+// The grid slot never changes size, so neighbours stay put; only the paint and
+// the focus ring expand around the slot's centre.
+constexpr float kTileGrow = 0.06f;   // fraction of the card's size at full lift
+constexpr float kTileRise = 0.11f;   // seconds, rest → lifted
+constexpr float kTileFall = 0.15f;   // seconds, lifted → rest
+
+struct TilePop {
+    float t = 0.f;        // 0 = resting, 1 = fully lifted
+    bool active = false;  // focus/hover as of the frame that last drew this card
+    int frame = -1;
+};
+std::unordered_map<std::string, TilePop> g_tile_pop;
+
+// Advance this card's lift and report the scale to paint it at. The driving
+// focus/hover is only known *after* the card's button is submitted, so the
+// state read here is the one tile_pop_end() stored last frame — a frame of lag
+// no one can see in a 110 ms ramp.
+float tile_pop_begin(const std::string& key) {
+    auto it = g_tile_pop.find(key);
+    if (it == g_tile_pop.end()) return 1.f;  // first sight: rest, created by _end
+    TilePop& e = it->second;
+    const int frame = ImGui::GetFrameCount();
+    // Off-screen since before last frame (another page was in front): a card
+    // must come back resting, not still lifted from whenever it left.
+    if (e.frame < frame - 1) {
+        e.t = 0.f;
+        e.active = false;
+    }
+    const float dt = ImGui::GetIO().DeltaTime > 0.f ? ImGui::GetIO().DeltaTime : 0.f;
+    e.t = e.active ? std::min(1.f, e.t + dt / kTileRise)
+                   : std::max(0.f, e.t - dt / kTileFall);
+    e.frame = frame;
+    const float ease = e.t * e.t * (3.f - 2.f * e.t);  // smoothstep
+    return 1.f + kTileGrow * ease;
+}
+
+void tile_pop_end(const std::string& key, bool active) {
+    const int frame = ImGui::GetFrameCount();
+    TilePop& e = g_tile_pop[key];
+    e.active = active;
+    e.frame = frame;
+    // The working set is whatever grid is on screen; drop the rest rather than
+    // letting a big library leave an entry per title behind forever.
+    if (g_tile_pop.size() > 1024) {
+        for (auto it = g_tile_pop.begin(); it != g_tile_pop.end();)
+            it = (it->second.frame < frame - 4) ? g_tile_pop.erase(it) : std::next(it);
+    }
+}
+
+// The rectangle a card actually paints into once `pop` has lifted it: the slot
+// grown about its own centre.
+void tile_pop_rect(const ImVec2& tile_min, float tile_w, float tile_h, float pop,
+                   ImVec2* out_min, ImVec2* out_max) {
+    const float w = tile_w * pop;
+    const float h = tile_h * pop;
+    out_min->x = tile_min.x - (w - tile_w) * 0.5f;
+    out_min->y = tile_min.y - (h - tile_h) * 0.5f;
+    out_max->x = out_min->x + w;
+    out_max->y = out_min->y + h;
+}
+
 float draw_grid_tile(const ImVec2& tile_min, float tile_w, bool selected, const Theme& th,
                      const BoxartTexture* tex, float art_aspect_wh, const char* title,
                      const char* subtitle, const ImVec4* badge_col, bool busy_spinner = false,
                      bool dim_art = false, bool update_overlay = false,
                      TileStatusIcon status_icon = TileStatusIcon::None,
-                     bool queued_overlay = false, bool rom_ready_overlay = false) {
+                     bool queued_overlay = false, bool rom_ready_overlay = false,
+                     float pop = 1.f) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     constexpr float kArtPad = 8.f;
     constexpr float kLabelGap = 6.f;
@@ -1314,20 +1504,25 @@ float draw_grid_tile(const ImVec2& tile_min, float tile_w, bool selected, const 
         title_block_h + (subtitle && subtitle[0] ? line_h + 2.f : 0.f) + 8.f;
 
     // Art frame height follows platform/boxart aspect (width fixed by grid column).
-    const float art_box_w = tile_w;
-    const float art_box_h = art_box_w / std::max(0.35f, art_aspect_wh);
-    const float tile_h = art_box_h + kLabelGap + label_h;
-    const ImVec2 tile_max(tile_min.x + tile_w, tile_min.y + tile_h);
+    // `tile_h` is the resting height — what the grid lays out with. Painting
+    // happens inside the lifted rect, which grows about the slot's centre; the
+    // label keeps its type size, so only the art absorbs the extra height.
+    const float rest_art_h = tile_w / std::max(0.35f, art_aspect_wh);
+    const float tile_h = rest_art_h + kLabelGap + label_h;
+    ImVec2 box_min, tile_max;
+    tile_pop_rect(tile_min, tile_w, tile_h, pop, &box_min, &tile_max);
+    const float art_box_w = tile_max.x - box_min.x;
+    const float art_box_h = std::max(8.f, (tile_max.y - box_min.y) - kLabelGap - label_h);
 
     const ImU32 bg = ImGui::ColorConvertFloat4ToU32(selected ? th.panel_hovered : th.panel);
-    dl->AddRectFilled(tile_min, tile_max, bg, th.radius_sm);
+    dl->AddRectFilled(box_min, tile_max, bg, th.radius_sm);
 
     // Clip all inner content so it cannot paint over the frame edge.
-    dl->PushClipRect(ImVec2(tile_min.x + kFrameInset, tile_min.y + kFrameInset),
+    dl->PushClipRect(ImVec2(box_min.x + kFrameInset, box_min.y + kFrameInset),
                      ImVec2(tile_max.x - kFrameInset, tile_max.y - kFrameInset), true);
 
-    const ImVec2 art0(tile_min.x, tile_min.y);
-    const ImVec2 art1(tile_min.x + art_box_w, tile_min.y + art_box_h);
+    const ImVec2 art0(box_min.x, box_min.y);
+    const ImVec2 art1(box_min.x + art_box_w, box_min.y + art_box_h);
     dl->AddRectFilled(art0, art1, ImGui::ColorConvertFloat4ToU32(th.control), th.radius_sm,
                       ImDrawFlags_RoundCornersTop);
 
@@ -1379,19 +1574,19 @@ float draw_grid_tile(const ImVec2& tile_min, float tile_w, bool selected, const 
             draw_status_badge_glyph(dl, c, r, status_icon, status_glyph_ink(*badge_col, th));
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(tile_min.x + 4.f, tile_min.y + art_box_h + kLabelGap));
-    draw_wrapped_title_centered(title, tile_w - 8.f, th.text, kTitleScale);
+    ImGui::SetCursorScreenPos(ImVec2(box_min.x + 4.f, box_min.y + art_box_h + kLabelGap));
+    draw_wrapped_title_centered(title, art_box_w - 8.f, th.text, kTitleScale);
     if (subtitle && subtitle[0]) {
         ImGui::SetCursorScreenPos(
-            ImVec2(tile_min.x + 4.f, tile_min.y + art_box_h + kLabelGap + title_block_h));
-        draw_ellipsized_centered(subtitle, tile_w - 8.f, th.text_muted);
+            ImVec2(box_min.x + 4.f, box_min.y + art_box_h + kLabelGap + title_block_h));
+        draw_ellipsized_centered(subtitle, art_box_w - 8.f, th.text_muted);
     }
 
     dl->PopClipRect();
 
     // Frame stroke last so selection/border always sits above clipped content.
     const float border_t = selected ? 2.5f : 1.5f;
-    dl->AddRect(tile_min, tile_max,
+    dl->AddRect(box_min, tile_max,
                 ImGui::ColorConvertFloat4ToU32(selected ? th.accent : th.border), th.radius_sm,
                 0, border_t);
     return tile_h;
@@ -1410,6 +1605,7 @@ void select_first_visible_title(HubModel& hub) {
 }
 
 void enter_platform_titles(HubModel& hub, const char* platform_id) {
+    hub.grid_focus_pending = true;
     if (!platform_id || !platform_id[0]) return;
     hub.library_nav = retcomm::hub::LibraryNav::Titles;
     hub.library_platform = platform_id;
@@ -1422,86 +1618,113 @@ void enter_platform_titles(HubModel& hub, const char* platform_id) {
     if (!ok) select_first_visible_title(hub);
 }
 
+// A card press opens that title's own page; the grid no longer shares the
+// window with a detail column, so selecting and opening are one gesture.
+void open_title_page(HubModel& hub, int index) {
+    hub.selected = index;
+    hub.library_nav = retcomm::hub::LibraryNav::Detail;
+    hub.detail_scroll_top = true;
+    hub.detail_focus_pending = true;
+}
+
+// The band at the top of a body page: page name on the left, the platform's
+// Configure button and Back on the right.
+//
+// One function, not one per page: the grid and the title page sit either side
+// of a single press, so any difference in band height or type size shows up as
+// the header jumping. They were two copies of the same block, and the title
+// page's copy had already lost the Configure button.
+//
+// `config_platform` empty → no Configure button. Back is not here: it lives in
+// the top bar beside Check for Updates, where the eye already goes for the
+// window's own controls.
+enum class PageHeaderAction { None, Configure };
+
+PageHeaderAction draw_page_header(const Theme& th, const char* header,
+                                  const std::string& config_platform) {
+    PageHeaderAction action = PageHeaderAction::None;
+
+    constexpr float kHeaderScale = 1.45f;
+    constexpr float kBtnPadX = 14.f;
+    constexpr float kBtnPadY = 6.f;
+    // Height of a padded button in this band, measured off a line of text.
+    const float btn_h = ImGui::GetTextLineHeight() + kBtnPadY * 2.f;
+
+    ImGui::SetWindowFontScale(kHeaderScale);
+    const float title_h = ImGui::GetTextLineHeight();
+    ImGui::SetWindowFontScale(1.f);
+    // Same band on every page — tall enough for the padded controls.
+    const float row_h = std::max(title_h, btn_h);
+
+    const ImVec2 row0 = ImGui::GetCursorScreenPos();
+    const float content_right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, row_h));
+
+    const bool show_configure =
+        !config_platform.empty() && retcomm::platform_has_config_section(config_platform);
+    const char* cfg_label =
+        show_configure ? retcomm::platform_config_button_label(config_platform) : "";
+    const float cfg_w =
+        show_configure ? ImGui::CalcTextSize(cfg_label).x + kBtnPadX * 2.f : 0.f;
+
+    // Clip the name to whatever Configure leaves: at this type size a long
+    // platform name would otherwise run under it on a narrow window.
+    ImGui::SetWindowFontScale(kHeaderScale);
+    const ImVec2 title_sz = ImGui::CalcTextSize(header);
+    const float name_right = content_right - cfg_w - 12.f;
+    ImGui::SetCursorScreenPos(ImVec2(row0.x, row0.y + (row_h - title_sz.y) * 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::PushClipRect(ImVec2(row0.x, row0.y),
+                        ImVec2((std::max)(row0.x + 16.f, name_right), row0.y + row_h), true);
+    ImGui::TextUnformatted(header);
+    ImGui::PopClipRect();
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.f);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kBtnPadX, kBtnPadY));
+    if (show_configure) {
+        const bool snes = retcomm::is_snes_platform(config_platform);
+        ImGui::SetCursorScreenPos(
+            ImVec2(content_right - cfg_w, row0.y + (row_h - btn_h) * 0.5f));
+        if (accent_button(cfg_label, th, ImVec2(cfg_w, btn_h)))
+            action = PageHeaderAction::Configure;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "Global %s settings (Display, Audio, Input, Hotkeys).\n"
+                "Applied to titles on install, update, and launch unless excluded.",
+                snes ? "Super Nintendo" : "PlayStation");
+        }
+    }
+    ImGui::PopStyleVar();
+
+    ImGui::SetCursorScreenPos(ImVec2(row0.x, row0.y + row_h + 4.f));
+    ImGui::Separator();
+    return action;
+}
+
 void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
     const bool job_busy = hub.job_running.load();
     const bool install_busy = job_busy && retcomm::hub::hub_job_is_install(hub.job);
     std::string busy_title_id;
     if (install_busy) busy_title_id = hub.job_title_id;
-    ImGui::BeginChild("library", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("library", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      page_wheel_flags(hub));
 
-    // Header: LIBRARY on platform picker; platform display name on title grid.
-    // Fixed row height so the divider matches with/without Back (Back still fits).
+    // Header: HOME on the platform picker; the platform's own name on its grid.
     {
-        const bool show_back = hub.library_nav == retcomm::hub::LibraryNav::Titles;
-        const char* header = "LIBRARY";
-        if (show_back && !hub.library_platform.empty())
+        const bool on_titles = hub.library_nav == retcomm::hub::LibraryNav::Titles;
+        const char* header = "HOME";
+        if (on_titles && !hub.library_platform.empty())
             header = platform_display_name(hub.library_platform);
-
-        constexpr float kHeaderScale = 1.25f;
-        constexpr float kBackPadX = 14.f;
-        constexpr float kBackPadY = 6.f;
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kBackPadX, kBackPadY));
-        const ImVec2 back_txt = ImGui::CalcTextSize("Back");
-        const float back_w = back_txt.x + kBackPadX * 2.f;
-        const float back_h = back_txt.y + kBackPadY * 2.f;
-        ImGui::PopStyleVar();
-
-        ImGui::SetWindowFontScale(kHeaderScale);
-        const float title_h = ImGui::GetTextLineHeight();
-        ImGui::SetWindowFontScale(1.f);
-        // Same band on both screens — tall enough for the padded Back control.
-        const float row_h = std::max(title_h, back_h);
-
-        const ImVec2 row0 = ImGui::GetCursorScreenPos();
-        const float content_right =
-            ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-        ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, row_h));
-
-        ImGui::SetWindowFontScale(kHeaderScale);
-        const ImVec2 title_sz = ImGui::CalcTextSize(header);
-        ImGui::SetCursorScreenPos(
-            ImVec2(row0.x, row0.y + (row_h - title_sz.y) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-        ImGui::TextUnformatted(header);
-        ImGui::PopStyleColor();
-        ImGui::SetWindowFontScale(1.f);
-
-        if (show_back) {
-            const bool show_configure =
-                retcomm::platform_has_config_section(hub.library_platform);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kBackPadX, kBackPadY));
-            float right_x = content_right - back_w;
-            if (show_configure) {
-                const bool snes = retcomm::is_snes_platform(hub.library_platform);
-                const char* cfg_label =
-                    retcomm::platform_config_button_label(hub.library_platform);
-                const ImVec2 cfg_txt = ImGui::CalcTextSize(cfg_label);
-                const float cfg_w = cfg_txt.x + kBackPadX * 2.f;
-                constexpr float kCfgGap = 8.f;
-                ImGui::SetCursorScreenPos(
-                    ImVec2(right_x - kCfgGap - cfg_w, row0.y + (row_h - back_h) * 0.5f));
-                if (accent_button(cfg_label, th, ImVec2(cfg_w, back_h))) {
-                    if (snes) hub.open_snes_settings();
-                    else hub.open_psx_settings();
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-                    ImGui::SetTooltip(
-                        "Global %s settings (Display, Audio, Input, Hotkeys).\n"
-                        "Applied to titles on install, update, and launch unless excluded.",
-                        snes ? "Super Nintendo" : "PlayStation");
-                }
-            }
-            ImGui::SetCursorScreenPos(
-                ImVec2(right_x, row0.y + (row_h - back_h) * 0.5f));
-            if (ImGui::Button("Back", ImVec2(back_w, back_h))) {
-                hub.library_nav = retcomm::hub::LibraryNav::Platforms;
-                hub.library_platform.clear();
-            }
-            ImGui::PopStyleVar();
+        const std::string config_platform = on_titles ? hub.library_platform : std::string();
+        switch (draw_page_header(th, header, config_platform)) {
+            case PageHeaderAction::Configure:
+                if (retcomm::is_snes_platform(hub.library_platform)) hub.open_snes_settings();
+                else hub.open_psx_settings();
+                break;
+            case PageHeaderAction::None:
+                break;
         }
-
-        ImGui::SetCursorScreenPos(ImVec2(row0.x, row0.y + row_h + 4.f));
-        ImGui::Separator();
     }
 
     std::lock_guard<std::mutex> lock(hub.mu);
@@ -1514,15 +1737,35 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
             queued_titles.insert(q.title_id);
     }
 
-    constexpr float kGap = 12.f;
-    const float avail_w = ImGui::GetContentRegionAvail().x;
+    // Cards sit at their intended size and spend the leftover width on the gap
+    // between them rather than stretching to fill the row — a page of covers
+    // reads better with air around each one, and the lift needs somewhere to go.
+    constexpr float kGapMin = 20.f;
+    constexpr float kGapMax = 36.f;
+    // Slack kept at the grid's edges so a lifted card in the first/last column
+    // is not clipped by the child window.
+    const float pop_pad = 10.f;
+    const float avail_w = std::max(80.f, ImGui::GetContentRegionAvail().x - pop_pad * 2.f);
 
-    // Wrapping grid: fixed column width; tile height follows boxart aspect.
-    auto begin_grid = [&](float prefer_tile_w, int min_cols, int max_cols) -> float {
-        int cols = (std::max)(min_cols, static_cast<int>((avail_w + kGap) / (prefer_tile_w + kGap)));
+    // Wrapping grid: tile width capped at the preferred size, gap takes the rest.
+    struct GridMetrics {
+        float tile_w;
+        float gap;
+        int cols;
+    };
+    auto begin_grid = [&](float prefer_tile_w, int min_cols, int max_cols) -> GridMetrics {
+        int cols =
+            (std::max)(min_cols, static_cast<int>((avail_w + kGapMin) / (prefer_tile_w + kGapMin)));
         cols = (std::clamp)(cols, min_cols, max_cols);
-        const float tile_w = (avail_w - kGap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-        return (std::max)(72.f, tile_w);
+        const float fcols = static_cast<float>(cols);
+        float tile_w = (avail_w - kGapMin * (fcols - 1.f)) / fcols;
+        float gap = kGapMin;
+        if (tile_w > prefer_tile_w) {
+            tile_w = prefer_tile_w;
+            if (cols > 1)
+                gap = (std::clamp)((avail_w - tile_w * fcols) / (fcols - 1.f), kGapMin, kGapMax);
+        }
+        return {(std::max)(72.f, tile_w), gap, cols};
     };
 
     if (hub.library_nav == retcomm::hub::LibraryNav::Platforms) {
@@ -1548,52 +1791,127 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
                              std::to_string(n) + (n == 1 ? " title" : " titles")});
         }
 
-        // Platform tiles: portrait cards (~ES style).
-        const float tile_w = begin_grid(148.f, 2, 8);
-        const float start_x = ImGui::GetCursorPosX();
-        float x = 0.f;
-        float y = ImGui::GetCursorPosY();
+        // Home tiles: portrait cards (~ES style), larger than the title grid
+        // and centred on both axes so the page reads as a dashboard from a
+        // couch, not a list hugging the top-left corner.
+        const GridMetrics g = begin_grid(176.f, 1, 6);
+        const float tile_w = g.tile_w;
+        const float gap = g.gap;
+        const int cols = g.cols;
+        const int n = static_cast<int>(cards.size());
+        const int rows = n > 0 ? (n + cols - 1) / cols : 0;
+        const int used_cols = std::min(cols, std::max(n, 1));
+        const float grid_w =
+            static_cast<float>(used_cols) * tile_w + static_cast<float>(used_cols - 1) * gap;
+        // Tile height comes out of draw_grid_tile; use last frame's measure to
+        // centre vertically (one frame top-aligned on first draw is invisible).
+        static float s_home_tile_h = 0.f;
+        const float grid_h =
+            rows > 0 ? static_cast<float>(rows) * s_home_tile_h + static_cast<float>(rows - 1) * gap
+                     : 0.f;
+        const float avail_h = ImGui::GetContentRegionAvail().y;
+        const float start_x =
+            ImGui::GetCursorPosX() + pop_pad + std::max(0.f, (avail_w - grid_w) * 0.5f);
+        const float start_y = ImGui::GetCursorPosY() + std::max(0.f, (avail_h - grid_h) * 0.5f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 focus_col = ImGui::ColorConvertFloat4ToU32(th.focus);
+        const ImU32 hover_col = ImGui::ColorConvertFloat4ToU32(th.accent);
         float row_h = 0.f;
+        float y = start_y;
 
-        for (const auto& card : cards) {
-            if (x > 0.f && x + tile_w > avail_w + 0.5f) {
-                x = 0.f;
-                y += row_h + kGap;
+        for (int i = 0; i < n; ++i) {
+            const auto& card = cards[static_cast<size_t>(i)];
+            const int col = i % cols;
+            if (i > 0 && col == 0) {
+                y += row_h + gap;
                 row_h = 0.f;
             }
             ImGui::PushID(card.id.c_str());
-            ImGui::SetCursorPos(ImVec2(start_x + x, y));
+            ImGui::SetCursorPos(ImVec2(start_x + static_cast<float>(col) * (tile_w + gap), y));
             const ImVec2 tile_min = ImGui::GetCursorScreenPos();
+
+            const std::string pop_key = "platform:" + card.id;
+            const float pop = tile_pop_begin(pop_key);
 
             const fs::path icon = platform_icon_path(card.id);
             const BoxartTexture* tex =
                 icon.empty() ? nullptr : boxart.get(std::string("platform:") + card.id, icon);
             // Controller icons are landscape; tile frame is portrait — contain, no stretch.
             constexpr float kPlatAspect = 0.78f;
-            const float tile_h =
-                draw_grid_tile(tile_min, tile_w, false, th, tex, kPlatAspect, card.title.c_str(),
-                               card.subtitle.c_str(), nullptr);
+            const float tile_h = draw_grid_tile(
+                tile_min, tile_w, false, th, tex, kPlatAspect, card.title.c_str(),
+                card.subtitle.c_str(), nullptr, false, false, false, TileStatusIcon::None, false,
+                false, pop);
 
             ImGui::SetCursorScreenPos(tile_min);
-            if (ImGui::InvisibleButton("##plat", ImVec2(tile_w, tile_h)))
+            // First card is where the focus ring starts, so A on a pad goes
+            // straight into the library. SetItemDefaultFocus only works on an
+            // appearing window and the rows load after it appeared, so hand
+            // the focus over explicitly: a tabbing request onto the next item,
+            // and the cursor made visible because activation is gated on it.
+            if (i == 0 && hub.home_focus_pending &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+                hub.home_focus_pending = false;
+                ImGui::SetKeyboardFocusHere();
+                ImGui::SetNavCursorVisible(true);
+            }
+            // InvisibleButton opts out of nav unless told otherwise (1.90+);
+            // without EnableNav a controller could never reach a card.
+            if (ImGui::InvisibleButton("##plat", ImVec2(tile_w, tile_h),
+                                       ImGuiButtonFlags_EnableNav))
                 enter_platform_titles(hub, card.id.c_str());
+            // InvisibleButton draws no nav cursor of its own; ring the card so
+            // a controller always knows where it is. Hover gets a softer ring.
+            // The ring follows the lifted rect, not the slot.
+            const bool lifted = ImGui::IsItemFocused() || ImGui::IsItemHovered();
+            tile_pop_end(pop_key, lifted);
+            ImVec2 ring_min, ring_max;
+            tile_pop_rect(tile_min, tile_w, tile_h, pop, &ring_min, &ring_max);
+            if (ImGui::IsItemFocused())
+                dl->AddRect(ring_min, ring_max, focus_col, th.radius_sm, 0, 3.f);
+            else if (ImGui::IsItemHovered())
+                dl->AddRect(ring_min, ring_max, hover_col, th.radius_sm, 0, 2.f);
 
             row_h = (std::max)(row_h, tile_h);
-            x += tile_w + kGap;
+            s_home_tile_h = tile_h;
             ImGui::PopID();
         }
-        ImGui::SetCursorPos(ImVec2(start_x, y + row_h + kGap));
+        ImGui::SetCursorPos(ImVec2(start_x, y + row_h + gap));
         ImGui::Dummy(ImVec2(0, 0));
     } else {
         // Title cover grid for one platform (no mixed "All" view).
         const std::string& plat_filter = hub.library_platform;
         const float filter_aspect = platform_boxart_aspect(plat_filter);
-        const float prefer_w = (filter_aspect >= 0.95f) ? 140.f : 120.f;
-        const float tile_w = begin_grid(prefer_w, 2, 10);
+        const float prefer_w = (filter_aspect >= 0.95f) ? 208.f : 174.f;
+        const GridMetrics g = begin_grid(prefer_w, 1, 7);
+        const float tile_w = g.tile_w;
+        const float gap = g.gap;
+        const int cols = g.cols;
 
-        const float start_x = ImGui::GetCursorPosX();
-        float x = 0.f;
-        float y = ImGui::GetCursorPosY();
+        // The ring is handed to the selected card, not to card zero: Back from a
+        // title page has to return to the card it was opened from. Pin the
+        // selection to something this grid actually draws first, or the hand-off
+        // would never find its target and the ring would be left behind.
+        {
+            bool sel_drawn = false;
+            int first_drawn = -1;
+            for (int i = 0; i < static_cast<int>(hub.rows.size()); ++i) {
+                const TitleRow& r = hub.rows[static_cast<size_t>(i)];
+                if (r.platform != plat_filter) continue;
+                if (!title_passes_library_filter(r, hub)) continue;
+                if (first_drawn < 0) first_drawn = i;
+                if (i == hub.selected) sel_drawn = true;
+            }
+            if (!sel_drawn) hub.selected = first_drawn >= 0 ? first_drawn : 0;
+        }
+
+        // Centre the block of columns and leave the lift room at the top, the
+        // same way Home does — a grid pinned to the left edge reads as a list.
+        const float grid_w = static_cast<float>(cols) * tile_w + static_cast<float>(cols - 1) * gap;
+        const float start_x =
+            ImGui::GetCursorPosX() + pop_pad + std::max(0.f, (avail_w - grid_w) * 0.5f);
+        int col = 0;
+        float y = ImGui::GetCursorPosY() + pop_pad;
         float row_h = 0.f;
 
         for (int i = 0; i < static_cast<int>(hub.rows.size()); ++i) {
@@ -1603,14 +1921,14 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
 
             const float aspect = filter_aspect;
 
-            if (x > 0.f && x + tile_w > avail_w + 0.5f) {
-                x = 0.f;
-                y += row_h + kGap;
+            if (col >= cols) {
+                col = 0;
+                y += row_h + gap;
                 row_h = 0.f;
             }
 
             ImGui::PushID(r.id.c_str());
-            ImGui::SetCursorPos(ImVec2(start_x + x, y));
+            ImGui::SetCursorPos(ImVec2(start_x + static_cast<float>(col) * (tile_w + gap), y));
             const ImVec2 tile_min = ImGui::GetCursorScreenPos();
             const bool selected = (hub.selected == i);
             const bool title_busy = install_busy && r.id == busy_title_id;
@@ -1627,15 +1945,35 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
                 badge = th.focus;
                 status = TileStatusIcon::Queued;
             }
+            const float pop = tile_pop_begin(r.id);
             const float tile_h = draw_grid_tile(
                 tile_min, tile_w, selected, th, tex, aspect, r.name.c_str(), nullptr, &badge,
                 title_busy, dim_art, needs_update && !title_queued, status, title_queued,
-                rom_ready && !title_queued);
+                rom_ready && !title_queued, pop);
 
             ImGui::SetCursorScreenPos(tile_min);
-            if (ImGui::InvisibleButton("##row", ImVec2(tile_w, tile_h))) {
-                hub.selected = i;
-                hub.detail_scroll_top = true;
+            if (hub.grid_focus_pending && selected &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+                hub.grid_focus_pending = false;
+                ImGui::SetKeyboardFocusHere();
+                ImGui::SetNavCursorVisible(true);
+            }
+            if (ImGui::InvisibleButton("##row", ImVec2(tile_w, tile_h),
+                                       ImGuiButtonFlags_EnableNav))
+                open_title_page(hub, i);
+            tile_pop_end(r.id, ImGui::IsItemFocused() || ImGui::IsItemHovered());
+            if (ImGui::IsItemFocused()) {
+                ImVec2 ring_min, ring_max;
+                tile_pop_rect(tile_min, tile_w, tile_h, pop, &ring_min, &ring_max);
+                ImGui::GetWindowDrawList()->AddRect(
+                    ring_min, ring_max, ImGui::ColorConvertFloat4ToU32(th.focus), th.radius_sm, 0,
+                    3.f);
+                // Keep the selection under the ring: Back from a title page
+                // returns the ring to the card the page was opened from.
+                if (hub.selected != i) {
+                    hub.selected = i;
+                    hub.detail_scroll_top = true;
+                }
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                 ImGui::SetTooltip("%s\n%s · %s\n%s", r.name.c_str(),
@@ -1644,12 +1982,21 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
             }
 
             row_h = (std::max)(row_h, tile_h);
-            x += tile_w + kGap;
+            ++col;
             ImGui::PopID();
         }
-        ImGui::SetCursorPos(ImVec2(start_x, y + row_h + kGap));
+        ImGui::SetCursorPos(ImVec2(start_x, y + row_h + gap));
         ImGui::Dummy(ImVec2(0, 0));
     }
+    // B (or Escape) on a title grid goes back to Home, unless something modal
+    // or the drawer is in front and owns that key.
+    if (hub.library_nav == retcomm::hub::LibraryNav::Titles && !hub.drawer_open &&
+        !hub.log_overlay_open &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        !ImGui::IsAnyItemActive() &&
+        (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+         ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+        go_home(hub);
     ImGui::EndChild();
 }
 
@@ -2285,83 +2632,197 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
     ImGui::EndPopup();
 }
 
-void draw_menu_popup(HubModel& hub, const Theme& th, SDL_Window* /*window*/) {
-    if (hub.pending_open_menu) {
-        ImGui::OpenPopup("Menu###hub_menu_panel");
-        hub.pending_open_menu = false;
-    }
+// `t` is the eased slide from tick_nav_drawer(), already advanced this frame.
+void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
+    if (hub.drawer_t <= 0.f) return;
 
-    if (!ImGui::IsPopupOpen("Menu###hub_menu_panel")) return;
-    constexpr float kMenuW = 420.f;
-    center_modal_next();
-    // Fixed width — AlwaysAutoResize alone starts wide then shrinks on the next frame.
-    ImGui::SetNextWindowSizeConstraints(ImVec2(kMenuW, 0.f), ImVec2(kMenuW, FLT_MAX));
-    ImGui::SetNextWindowSize(ImVec2(kMenuW, 0.f), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Menu###hub_menu_panel", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-        return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float w = nav_drawer_width();
+    const ImVec2 vp_max(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
 
-    ImGui::TextColored(th.text_muted, "Settings");
-    // Settings stay reachable during Build & Install / library jobs.
-    if (ImGui::Button("Library Settings", ImVec2(-1, 0))) {
-        hub.open_settings();
-        ImGui::CloseCurrentPopup();
-    }
-    if (romm_button("RomM Sync Settings", th, ImVec2(-1, 0))) {
-        hub.open_romm_settings();
-        ImGui::CloseCurrentPopup();
-    }
-
-    ImGui::Dummy(ImVec2(0, 10));
+    // Panel.
+    const float x = vp->WorkPos.x - w * (1.f - t);
+    ImGui::SetNextWindowPos(ImVec2(x, vp->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(w, vp->WorkSize.y));
+    if (hub.drawer_focus_pending) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, th.background2);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.f, 20.f));
+    ImGui::Begin("##nav_drawer", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
     {
-        const std::string ver = retcomm::retcomm_app_version();
-        const retcomm::RetcommInstallInfo install = retcomm::retcomm_install_info();
-        std::string tc_line;
-        bool tc_upd = false;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const ImVec2 ws = ImGui::GetWindowSize();
+
+        // Shade the page behind the panel. This is painted from the drawer's
+        // own draw list — the panel is the front-most window, so it is the one
+        // surface guaranteed to land on top of the page. A separate full-screen
+        // scrim window used to do this and never worked: a window carrying
+        // NoBringToFrontOnFocus sinks below ##hub in ImGui's display order no
+        // matter when it is created, so its rect was painted over by the page
+        // and its hit box never saw a click. The panel's own strip is left out
+        // of the rect rather than drawn over.
+        dl->PushClipRectFullScreen();
+        dl->AddRectFilled(ImVec2(wp.x + ws.x, vp->WorkPos.y), vp_max,
+                          IM_COL32(0, 0, 0, static_cast<int>(165.f * t)));
+        dl->PopClipRect();
+
+        // Neon edge, same gradient as the header underline.
+        dl->AddRectFilledMultiColor(ImVec2(wp.x + ws.x - 3.f, wp.y), ImVec2(wp.x + ws.x, wp.y + ws.y),
+                                    ImGui::ColorConvertFloat4ToU32(th.accent),
+                                    ImGui::ColorConvertFloat4ToU32(th.accent),
+                                    ImGui::ColorConvertFloat4ToU32(th.good),
+                                    ImGui::ColorConvertFloat4ToU32(th.good));
+
+        ImGui::PushStyleColor(ImGuiCol_Text, th.good);
+        ImGui::TextUnformatted("Retro Launcher");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(ws.x - 20.f - 32.f);
+        // The close mark is drawn, not typed. As a text label the font's "X"
+        // sits off-centre in a square frame (its glyph box is not the frame's)
+        // and is too light a stroke at this size to read as a close control.
         {
-            std::lock_guard<std::mutex> lock(hub.mu);
-            tc_upd = hub.toolchain_update_available;
-            tc_line = hub.toolchain_status;
-            if (tc_line.empty() && !hub.toolchain_current_version.empty())
-                tc_line = "Toolchain " + hub.toolchain_current_version;
+            constexpr float kClose = 32.f;
+            constexpr float kMarkPad = 9.f;    // equal inset on all four sides
+            constexpr float kMarkThick = 2.6f;
+            if (ImGui::Button("##drawer_close", ImVec2(kClose, kClose))) close_nav_drawer(hub);
+            // Span the frame ImGui actually laid out, inset equally, so the
+            // mark's box is the button's box minus the same padding on every
+            // side — no centre arithmetic to drift.
+            const ImVec2 bmin = ImGui::GetItemRectMin();
+            const ImVec2 bmax = ImGui::GetItemRectMax();
+            const float x0 = bmin.x + kMarkPad, x1 = bmax.x - kMarkPad;
+            const float y0 = bmin.y + kMarkPad, y1 = bmax.y - kMarkPad;
+            const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+                ImGui::IsItemHovered() || ImGui::IsItemFocused() ? th.text : th.text_muted);
+            // PathStroke, not AddLine: AddLine adds (+0.5,+0.5) to both
+            // endpoints to pixel-align hairlines, which shifted the whole mark
+            // down and right inside the frame — the reason it read as
+            // off-centre however the endpoints were computed.
+            ImDrawList* mark = ImGui::GetWindowDrawList();
+            mark->PathLineTo(ImVec2(x0, y0));
+            mark->PathLineTo(ImVec2(x1, y1));
+            mark->PathStroke(col, 0, kMarkThick);
+            mark->PathLineTo(ImVec2(x0, y1));
+            mark->PathLineTo(ImVec2(x1, y0));
+            mark->PathStroke(col, 0, kMarkThick);
         }
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(th.text_muted, "Launcher %s", ver.c_str());
-        if (install.self_update_supported && !install.channel_id.empty())
-            ImGui::TextColored(th.text_muted, "Channel %s", install.channel_id.c_str());
-        if (!tc_line.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, tc_upd ? th.warn : th.text_muted);
-            ImGui::TextWrapped("%s", tc_line.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextUnformatted("Menu");
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 10.f));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 10.f));
+
+        // Tall targets: a thumb on a D-pad wants rows it cannot miss.
+        const ImVec2 item_sz(-FLT_MIN, 56.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18.f, 16.f));
+        // Hand the ring to the first item, and make the cursor visible: a
+        // mouse click on the hamburger hides it (ConfigNavCursorVisibleAuto),
+        // and ImGui gates activation on it — so without this, A on a pad did
+        // nothing on a drawer that had been opened by mouse.
+        if (hub.drawer_focus_pending &&
+            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+            hub.drawer_focus_pending = false;
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNavCursorVisible(true);
+        }
+        // Home first: the way back to the platform cards from anywhere,
+        // including a settings page that has nothing else to back out to.
+        if (accent_button("Home", th, item_sz)) {
+            close_settings_pages(hub);
+            go_home(hub);
+            close_nav_drawer(hub);
+        }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        // Settings stay reachable during Build & Install / library jobs.
+        if (ImGui::Button("Library Settings", item_sz)) {
+            close_nav_drawer(hub);
+            hub.open_settings();
+        }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (romm_button("RomM Sync Settings", th, item_sz)) {
+            close_nav_drawer(hub);
+            hub.open_romm_settings();
+        }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (ImGui::Button("Add/Scan Files", item_sz)) {
+            close_nav_drawer(hub);
+            hub.pending_open_library = true;
+        }
+        ImGui::PopStyleVar();
+
+        // Version block pinned to the bottom (was the Menu modal's footer).
+        std::vector<std::pair<std::string, bool>> lines;  // text, warn
+        {
+            const std::string ver = retcomm::retcomm_app_version();
+            const retcomm::RetcommInstallInfo install = retcomm::retcomm_install_info();
+            lines.emplace_back("Launcher " + ver, false);
+            if (install.self_update_supported && !install.channel_id.empty())
+                lines.emplace_back("Channel " + install.channel_id, false);
+            std::string tc_line;
+            bool tc_upd = false;
+            {
+                std::lock_guard<std::mutex> lock(hub.mu);
+                tc_upd = hub.toolchain_update_available;
+                tc_line = hub.toolchain_status;
+                if (tc_line.empty() && !hub.toolchain_current_version.empty())
+                    tc_line = "Toolchain " + hub.toolchain_current_version;
+            }
+            if (!tc_line.empty()) lines.emplace_back(tc_line, tc_upd);
+            lines.emplace_back("F11 fullscreen", false);
+            lines.emplace_back("` (tilde) console", false);
+        }
+        const float line_h = ImGui::GetTextLineHeightWithSpacing();
+        const float block_h = line_h * static_cast<float>(lines.size());
+        const float bottom_y = ws.y - 20.f - block_h;
+        if (ImGui::GetCursorPosY() < bottom_y) ImGui::SetCursorPosY(bottom_y);
+        ImGui::PushTextWrapPos(0.f);
+        for (const auto& [text, warn] : lines) {
+            ImGui::PushStyleColor(ImGuiCol_Text, warn ? th.warn : th.text_muted);
+            ImGui::TextUnformatted(text.c_str());
             ImGui::PopStyleColor();
         }
         ImGui::PopTextWrapPos();
     }
-    ImGui::Dummy(ImVec2(0, 10));
-    if (ImGui::Button("Close", ImVec2(-1, 0))) ImGui::CloseCurrentPopup();
-    close_modal_on_outside_click();
-    ImGui::EndPopup();
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
+
+    // Escape or B backs out, from wherever the focus is.
+    if (hub.drawer_open && !hub.log_overlay_open &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+        close_nav_drawer(hub);
+
+    // So does a click anywhere off the panel. Tested against the panel's own
+    // rect: the page behind is inert (BeginDisabled), so the click reaches
+    // nothing, and there is no hit box to miss.
+    if (hub.drawer_open && !hub.log_overlay_open &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::GetIO().MousePos.x > x + w)
+        close_nav_drawer(hub);
 }
 
-void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
-    if (hub.pending_open_library) {
-        // Prefill from the platform the user is browsing (Titles view).
-        if (hub.library_nav == retcomm::hub::LibraryNav::Titles &&
-            !hub.library_platform.empty()) {
-            hub.library_import_platform = hub.library_platform;
-            hub.scans_platform_filter = hub.library_platform;
-        }
-        ImGui::OpenPopup("Library###library_panel");
-        hub.pending_open_library = false;
-    }
-
-    // Only set next-window pos/size when this popup will actually begin — otherwise
-    // SetNextWindow* leaks onto the following modal in the frame.
-    if (!ImGui::IsPopupOpen("Library###library_panel")) return;
-    constexpr float kLibW = 420.f;
-    center_modal_next();
-    ImGui::SetNextWindowSizeConstraints(ImVec2(kLibW, 0.f), ImVec2(kLibW, FLT_MAX));
-    ImGui::SetNextWindowSize(ImVec2(kLibW, 0.f), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Library###library_panel", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-        return;
+// Add/Scan Files, as a page rather than a modal: two cards side by side in the
+// same frame the settings pages use, so importing a ROM and kicking off a scan
+// are things you do *in* the hub instead of through a dialog stacked over it.
+void draw_library_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
+    ImGui::BeginChild("library_panel", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextUnformatted("ADD / SCAN FILES");
+    ImGui::PopStyleColor();
+    ImGui::TextWrapped(
+        "Bring ROMs, save files, BIOS dumps and texture packs into your library, and "
+        "re-scan the folders Retro watches. Imports are copied into the library roots "
+        "set in Library Settings.");
+    ImGui::Separator();
 
     const bool busy = hub.job_running.load();
     bool file_busy = false;
@@ -2388,7 +2849,17 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
         std::find(plats.begin(), plats.end(), hub.scans_platform_filter) == plats.end())
         hub.scans_platform_filter.clear();
 
-    ImGui::TextColored(th.text_muted, "Add files");
+    // Two cards side by side, same frame the platform settings pages use. The
+    // footer row is reserved first so neither card runs under Close.
+    const float footer_h = ImGui::GetFrameHeight() + 24.f;
+    const float gap = 12.f;
+    const float card_w = std::max(280.f, (ImGui::GetContentRegionAvail().x - gap) * 0.5f);
+    const float card_h = std::max(140.f, ImGui::GetContentRegionAvail().y - footer_h);
+
+    ImGui::BeginChild("library_add", ImVec2(card_w, card_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "ADD FILES");
+    ImGui::Separator();
     {
         const char* preview = hub.library_import_platform.empty()
                                   ? "Select a Platform"
@@ -2409,19 +2880,16 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
             const auto exts = rom_exts_for_platform(hub.catalog, hub.library_import_platform);
             begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportRom,
                             hub.library_import_platform, "ROM files", exts, /*allow_many=*/true);
-            ImGui::CloseCurrentPopup();
         }
         if (ImGui::Button("Import save file", ImVec2(-1, 0))) {
             const auto exts = save_exts_for_platform(hub.catalog, hub.library_import_platform);
             begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportSave,
                             hub.library_import_platform, "Save files", exts, /*allow_many=*/false);
-            ImGui::CloseCurrentPopup();
         }
         if (ImGui::Button("Import BIOS", ImVec2(-1, 0))) {
             const auto exts = bios_exts_for_platform(hub.library_import_platform);
             begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportBios,
                             hub.library_import_platform, "BIOS files", exts, /*allow_many=*/false);
-            ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
         ImGui::EndDisabled();
@@ -2432,9 +2900,13 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
         ImGui::PopStyleColor();
     }
 
-    ImGui::Dummy(ImVec2(0, 10));
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.f, gap);
+    ImGui::BeginChild("library_scan", ImVec2(0, card_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "SCAN");
     ImGui::Separator();
-    ImGui::TextColored(th.text_muted, "Advanced");
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped(
         "For files you already placed in your folders, or to drop deleted entries.");
@@ -2477,7 +2949,6 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
                           ImVec2(-1, 0))) {
             hub.pending_scan_missing_rom_id.clear();
             hub.start_job(HubJob::ScanRoms);
-            ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
 
@@ -2487,7 +2958,6 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
                                          "Cleaning…", "Queue Clean missing files"),
                           ImVec2(-1, 0))) {
             hub.start_job(HubJob::PurgeMissingFiles);
-            ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
 
@@ -2500,9 +2970,8 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
         ImGui::EndDisabled();
     }
 
-    ImGui::Dummy(ImVec2(0, 10));
-    if (ImGui::Button("Close", ImVec2(-1, 0))) ImGui::CloseCurrentPopup();
-
+    // Same ID scope as the OpenPopup above: a popup opened inside a child
+    // window is keyed to that child, so beginning it outside never finds it.
     if (ImGui::BeginPopupModal("Full rebuild###confirm_full_rescan", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 360.f);
@@ -2542,9 +3011,13 @@ void draw_library_popup(HubModel& hub, const Theme& th, SDL_Window* window) {
         close_modal_on_outside_click();
         ImGui::EndPopup();
     }
+    ImGui::EndChild();
 
-    close_modal_on_outside_click();
-    ImGui::EndPopup();
+    ImGui::Dummy(ImVec2(0, 12));
+    if (ImGui::Button("Close", ImVec2(160, 0))) hub.show_library_panel = false;
+
+
+    ImGui::EndChild();
 }
 
 fs::path find_hub_logo_path() {
@@ -2582,7 +3055,7 @@ fs::path find_hub_logo_path() {
 }
 
 void draw_welcome_panel(BoxartCache& boxart, const Theme& th) {
-    ImGui::BeginChild("detail", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("detail", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float logo_max = std::min(220.f, std::min(avail.x - 24.f, avail.y * 0.45f));
 
@@ -2626,38 +3099,483 @@ void draw_welcome_panel(BoxartCache& boxart, const Theme& th) {
     ImGui::EndChild();
 }
 
-void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window) {
+// Left column of a title page: what the title *is*. Nothing here is pressable —
+// every control lives in the actions column, so a pad reaches them in one place.
+void draw_title_info_panel(HubModel& hub, const TitleRow& row, BoxartCache& boxart,
+                           const Theme& th) {
+    ImGui::BeginChild("title_info", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      page_wheel_flags(hub));
+    if (hub.detail_scroll_top) ImGui::SetScrollY(0.f);
+
+    // Cover art, centred and given real size — this column exists to be looked at.
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const BoxartTexture* tex =
+        row.boxart_path.empty() ? nullptr : boxart.get(row.id, row.boxart_path);
+    if (tex && tex->gl_id && tex->width > 0 && tex->height > 0) {
+        const ImVec2 fit = contain_size(static_cast<float>(tex->width),
+                                        static_cast<float>(tex->height),
+                                        std::min(avail_w, 380.f), 440.f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail_w - fit.x) * 0.5f));
+        ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), fit);
+        ImGui::Dummy(ImVec2(0, 14));
+    }
+
+    ImGui::SetWindowFontScale(1.3f);
+    ImGui::TextWrapped("%s", row.name.c_str());
+    ImGui::SetWindowFontScale(1.f);
+
+    ImGui::TextColored(th.text_muted, "%s \xC2\xB7 %s", platform_display_name(row.platform),
+                       row.kind.c_str());
+    ImGui::TextColored(chip_color(row, th), "%s", chip_label(row));
+
+    // App status: installed tag, a stalled install folder, or what a fresh
+    // install would restore.
+    ImGui::Dummy(ImVec2(0, 12));
+    ImGui::TextColored(th.text_muted, "App");
+    if (row.installed) {
+        const std::string& shown_tag =
+            !row.release_compare_tag.empty() ? row.release_compare_tag : row.installed_tag;
+        ImGui::TextColored(th.good, "Installed %s%s",
+                           shown_tag.empty() ? "" : shown_tag.c_str(),
+                           row.runtime == "wine" ? " (Wine)" : "");
+        if (row.update_available)
+            ImGui::TextColored(th.warn, "Update available: %s", row.latest_tag.c_str());
+    } else if (row.install_dir_present) {
+        ImGui::TextColored(th.warn, "Install folder present — launch binary not found");
+        if (!row.install_issue.empty()) ImGui::TextWrapped("%s", row.install_issue.c_str());
+        if (!row.expected_binary.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped(
+                "Looking for executable \"%s\". Use Reinstall to clear the install folder "
+                "and start over, or Manage Game Data → Open Folder to fix setup manually.",
+                row.expected_binary.c_str());
+            ImGui::PopStyleColor();
+        }
+    } else {
+        ImGui::TextColored(th.text_muted, "Not installed");
+        if (row.has_preserved_state) {
+            ImGui::TextColored(th.focus, "Preserved saves/config ready");
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped(
+                "Previous uninstall kept user data under preserved/. The next install "
+                "will restore it into the new release.");
+            ImGui::PopStyleColor();
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0, 12));
+    const char* author_label =
+        (row.kind == "decomp") ? "Decomp Author" : "Recomp Author";
+    ImGui::TextColored(th.text_muted, "%s", author_label);
+    if (!row.author.empty())
+        ImGui::Text("%s", row.author.c_str());
+    else
+        ImGui::TextColored(th.text_muted, "(unknown)");
+    if (!row.author_notes.empty()) {
+        ImGui::Dummy(ImVec2(0, 6));
+        ImGui::TextColored(th.text_muted, "Author's Notes");
+        ImGui::TextWrapped("%s", row.author_notes.c_str());
+    }
+
+    if (!row.description.empty()) {
+        ImGui::Dummy(ImVec2(0, 12));
+        ImGui::TextColored(th.text_muted, "About");
+        ImGui::TextWrapped("%s", row.description.c_str());
+    }
+
+    ImGui::EndChild();
+}
+
+// Where a game runs from, which is where its mods/ tree lives. For a build
+// install that is the release dir; for an AppImage it is the data dir AppRun
+// cds into, not the read-only payload.
+fs::path title_game_dir(const HubModel& hub, const TitleRow& row) {
+    if (row.binary_path.empty()) return {};
+    const fs::path bin(row.binary_path);
+    if (bin.filename() == "AppRun" && !row.install_root.empty()) {
+        if (const retcomm::Title* t = hub.catalog.find(row.id))
+            return retcomm::appimage_data_dir(*t, fs::path(row.install_root));
+    }
+    return bin.parent_path();
+}
+
+// The game's mod packages, read straight from their manifests, laid out the way
+// the engines' own mods window is: a grouped feature list on the left, the
+// selected feature's detail and settings on the right. A player moving between
+// the two should not have to relearn the screen.
+//
+// Toggling writes mods/state.toml; the engine still re-resolves at boot, so a
+// selection it refuses (guard mismatch, conflicting features) fails there
+// rather than being silently half-applied here.
+struct ModsPageState {
+    retcomm::ModScanResult scan;
+    std::string title_id;
+    std::string sel_package;      // which feature the right panel describes
+    std::string sel_feature;
+    char search[96]{};
+};
+
+ModsPageState& mods_page_state() {
+    static ModsPageState s;
+    return s;
+}
+
+void refresh_mods_page(HubModel& hub, const TitleRow& row) {
+    ModsPageState& st = mods_page_state();
+    st.scan = retcomm::scan_game_mods(title_game_dir(hub, row), fs::path(row.install_root));
+    st.title_id = row.id;
+}
+
+// Every (package, feature) pair, flattened and grouped the way the left panel
+// shows them. Kept as indices so a rescan cannot leave dangling pointers.
+struct ModRowRef {
+    size_t pkg = 0;
+    size_t feat = 0;              // npos for an all-or-nothing package
+    static constexpr size_t kNoFeature = static_cast<size_t>(-1);
+};
+
+bool mod_row_matches(const retcomm::ModPackageInfo& p, const retcomm::ModFeatureInfo* f,
+                     const std::string& needle) {
+    if (needle.empty()) return true;
+    auto has = [&](const std::string& hay) {
+        return std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+                           [](char a, char b) {
+                               return std::tolower(static_cast<unsigned char>(a)) ==
+                                      std::tolower(static_cast<unsigned char>(b));
+                           }) != hay.end();
+    };
+    if (has(p.name) || has(p.id)) return true;
+    if (f && (has(f->name) || has(f->id) || has(f->group))) return true;
+    return false;
+}
+
+void draw_mods_page(HubModel& hub, const Theme& th) {
+    ModsPageState& st = mods_page_state();
+
+    TitleRow row;
+    bool have_row = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        have_row = hub.selected >= 0 && hub.selected < static_cast<int>(hub.rows.size());
+        if (have_row) row = hub.rows[static_cast<size_t>(hub.selected)];
+    }
+    if (!have_row) {
+        hub.show_mods_page = false;
+        return;
+    }
+    if (st.title_id != row.id) refresh_mods_page(hub, row);
+
+    ImGui::BeginChild("mods_page", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextUnformatted("MODS");
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::TextUnformatted(row.name.c_str());
+    ImGui::TextColored(th.text_muted, "%s", st.scan.root.string().c_str());
+    ImGui::Separator();
+
+    auto set_all = [&](bool on) {
+        std::string err;
+        bool ok = true;
+        for (const retcomm::ModPackageInfo& p : st.scan.packages) {
+            if (p.has_features()) {
+                for (const retcomm::ModFeatureInfo& f : p.features)
+                    ok &= retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, f.id, on, &err);
+            } else {
+                ok &= retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, {}, on, &err);
+            }
+        }
+        if (!ok) hub.append_log("Mod toggle failed: " + err);
+        refresh_mods_page(hub, row);
+    };
+
+    ImGui::BeginDisabled(st.scan.packages.empty());
+    if (ImGui::Button("Enable all", ImVec2(120, 0))) set_all(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Disable all", ImVec2(120, 0))) set_all(false);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Rescan", ImVec2(100, 0))) refresh_mods_page(hub, row);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!st.scan.root_exists);
+    if (ImGui::Button("Open Folder", ImVec2(130, 0))) {
+        std::string err;
+        if (!retcomm::open_path_in_file_manager(st.scan.root, &err))
+            hub.append_log("Open folder failed: " + err);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::InputTextWithHint("##mods_search", "Search features, groups, packages…", st.search,
+                             sizeof(st.search));
+    ImGui::Dummy(ImVec2(0, 6));
+
+    const std::string needle = st.search;
+    constexpr float kListMinW = 300.f;
+    constexpr float kDetailMinW = 320.f;
+    const float total_w = ImGui::GetContentRegionAvail().x;
+    const float gap = 12.f;
+    float list_w = std::clamp(total_w * 0.40f, kListMinW,
+                              std::max(kListMinW, total_w - kDetailMinW - gap));
+
+    // ---- left: features, grouped -------------------------------------------
+    ImGui::BeginChild("mods_list", ImVec2(list_w, 0), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    if (!st.scan.root_exists) {
+        ImGui::TextWrapped("No mods folder yet. The engine creates mods/bundled at build time; "
+                           "mods/installed is where packages are added.");
+    } else if (st.scan.packages.empty()) {
+        ImGui::TextColored(th.text_muted, "No mod packages installed for this title.");
+    }
+    if (st.scan.packages.empty() && st.scan.unstaged_manifests > 0) {
+        ImGui::Dummy(ImVec2(0, 6));
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.warn,
+                           "%d manifest(s) sit in this title's build tree but were never staged "
+                           "into the release, so the game cannot load them either:",
+                           st.scan.unstaged_manifests);
+        for (const fs::path& u : st.scan.unstaged_roots)
+            ImGui::TextColored(th.text_muted, "%s", u.string().c_str());
+        ImGui::TextColored(th.text_muted, "Generate & Rebuild restages a build's own packages.");
+        ImGui::PopTextWrapPos();
+    }
+
+    // Group headings in first-seen order, so a manifest's own ordering shows.
+    std::vector<std::string> groups;
+    for (const retcomm::ModPackageInfo& p : st.scan.packages) {
+        if (p.has_features()) {
+            for (const retcomm::ModFeatureInfo& f : p.features)
+                if (std::find(groups.begin(), groups.end(), f.group) == groups.end())
+                    groups.push_back(f.group);
+        } else if (std::find(groups.begin(), groups.end(), "Packages") == groups.end()) {
+            groups.push_back("Packages");
+        }
+    }
+    std::sort(groups.begin(), groups.end());
+
+    for (const std::string& g : groups) {
+        std::vector<ModRowRef> rows;
+        for (size_t pi = 0; pi < st.scan.packages.size(); ++pi) {
+            const retcomm::ModPackageInfo& p = st.scan.packages[pi];
+            if (p.has_features()) {
+                for (size_t fi = 0; fi < p.features.size(); ++fi) {
+                    if (p.features[fi].group != g) continue;
+                    if (!mod_row_matches(p, &p.features[fi], needle)) continue;
+                    rows.push_back({pi, fi});
+                }
+            } else if (g == "Packages" && mod_row_matches(p, nullptr, needle)) {
+                rows.push_back({pi, ModRowRef::kNoFeature});
+            }
+        }
+        if (rows.empty()) continue;
+
+        ImGui::PushID(g.c_str());
+        if (ImGui::CollapsingHeader(g.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const ModRowRef& r : rows) {
+                const retcomm::ModPackageInfo& p = st.scan.packages[r.pkg];
+                const bool is_feature = r.feat != ModRowRef::kNoFeature;
+                const retcomm::ModFeatureInfo* f = is_feature ? &p.features[r.feat] : nullptr;
+                const std::string fid = is_feature ? f->id : std::string();
+
+                ImGui::PushID(static_cast<int>(r.pkg * 1000 + (is_feature ? r.feat : 999)));
+                bool on = is_feature ? f->enabled : p.enabled;
+                // A built-in provider's mods are the game's to switch; a
+                // checkbox here would write state.toml, which it never reads.
+                ImGui::BeginDisabled(p.builtin);
+                if (ImGui::Checkbox("##en", &on) && !p.builtin) {
+                    std::string err;
+                    if (retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, fid, on, &err))
+                        refresh_mods_page(hub, row);
+                    else
+                        hub.append_log("Mod toggle failed: " + err);
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    break;          // the vectors were just rebuilt under us
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                // Two lines per row, as the engines' list shows: what the
+                // feature is, and which package it came from.
+                const bool selected = st.sel_package == p.id && st.sel_feature == fid;
+                const std::string label = (is_feature ? f->name : p.name) + "##row";
+                if (ImGui::Selectable(label.c_str(), selected,
+                                      ImGuiSelectableFlags_AllowOverlap)) {
+                    st.sel_package = p.id;
+                    st.sel_feature = fid;
+                }
+                ImGui::Indent(ImGui::GetFrameHeight() + 8.f);
+                ImGui::TextColored(th.text_muted, "%s", p.name.c_str());
+                ImGui::Unindent(ImGui::GetFrameHeight() + 8.f);
+                ImGui::PopID();
+            }
+        }
+        ImGui::PopID();
+    }
+    for (const std::string& e : st.scan.errors) ImGui::TextColored(th.warn, "%s", e.c_str());
+    ImGui::EndChild();
+
+    // ---- right: the selected feature ---------------------------------------
+    ImGui::SameLine(0.f, gap);
+    ImGui::BeginChild("mods_detail", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    const retcomm::ModPackageInfo* sp = nullptr;
+    const retcomm::ModFeatureInfo* sf = nullptr;
+    for (const retcomm::ModPackageInfo& p : st.scan.packages) {
+        if (p.id != st.sel_package) continue;
+        sp = &p;
+        for (const retcomm::ModFeatureInfo& f : p.features)
+            if (f.id == st.sel_feature) sf = &f;
+        break;
+    }
+    if (!sp) {
+        ImGui::TextColored(th.text_muted, "Select a feature to see what it does.");
+    } else {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.accent, "%s", sf ? sf->name.c_str() : sp->name.c_str());
+        if (sf && !sf->group.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(th.text_muted, "%s", sf->group.c_str());
+        }
+        ImGui::TextColored(th.text_muted, "From %s %s", sp->name.c_str(), sp->version.c_str());
+        if (!sp->author.empty()) ImGui::TextColored(th.text_muted, "by: %s", sp->author.c_str());
+        ImGui::Dummy(ImVec2(0, 6));
+        const std::string& desc = sf ? sf->description : sp->description;
+        if (!desc.empty()) ImGui::TextWrapped("%s", desc.c_str());
+
+        ImGui::Dummy(ImVec2(0, 6));
+        const bool on = sf ? sf->enabled : sp->enabled;
+        ImGui::TextColored(on ? th.good : th.text_muted, "%s", on ? "Enabled" : "Disabled");
+        if (sf && sf->channel == "experimental")
+            ImGui::TextColored(th.warn, "Experimental — default-off and not validated here.");
+        if (sp->builtin) {
+            ImGui::TextColored(th.warn,
+                               "Built into the game. Switch it in the game's own Mods menu — "
+                               "it keeps its own state, not mods/state.toml.");
+        }
+        ImGui::TextColored(th.text_muted, "%s · %s", retcomm::mod_origin_name(sp->origin),
+                           sp->manifest.string().c_str());
+
+        // Settings. Read-only: their values live in a [feature.values]
+        // sub-table that the surgical enable/disable writer does not touch, and
+        // a half-written option is worse than one edited where the game already
+        // edits it.
+        std::vector<const retcomm::ModOptionInfo*> opts;
+        for (const retcomm::ModOptionInfo& o : sp->options)
+            if (!sf || o.feature_id == sf->id) opts.push_back(&o);
+        if (!opts.empty()) {
+            ImGui::Dummy(ImVec2(0, 10));
+            ImGui::Separator();
+            ImGui::TextColored(th.accent, "%s",
+                               sf && !sf->group.empty() ? sf->group.c_str() : "Settings");
+            const std::string feat_for_opts = sf ? sf->id : std::string();
+            auto write_option = [&](const retcomm::ModOptionInfo& o, const std::string& v) {
+                std::string err;
+                if (retcomm::set_mod_option(title_game_dir(hub, row), sp->id, feat_for_opts,
+                                            o.id, v, &err))
+                    refresh_mods_page(hub, row);
+                else
+                    hub.append_log("Mod option failed: " + err);
+            };
+
+            constexpr float kOptW = 220.f;
+            for (size_t oi = 0; oi < opts.size(); ++oi) {
+                const retcomm::ModOptionInfo& o = *opts[oi];
+                ImGui::PushID(static_cast<int>(oi));
+                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(o.label.c_str());
+                ImGui::SameLine();
+                const float right = ImGui::GetWindowContentRegionMax().x;
+                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kOptW));
+                ImGui::SetNextItemWidth(kOptW);
+
+                // A built-in provider keeps its own state, so its rows are
+                // readouts; everything else is editable.
+                ImGui::BeginDisabled(sp->builtin);
+                const std::string cur = o.value.empty() ? o.default_value : o.value;
+                if (!o.choices.empty()) {
+                    // Show the choice's label, write its value.
+                    const char* preview = cur.c_str();
+                    for (const retcomm::ModChoice& c : o.choices)
+                        if (c.value == cur) preview = c.label.c_str();
+                    if (ImGui::BeginCombo("##opt", preview)) {
+                        for (const retcomm::ModChoice& c : o.choices) {
+                            const bool selected = c.value == cur;
+                            if (ImGui::Selectable(c.label.c_str(), selected) && !selected)
+                                write_option(o, c.value);
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                } else if (o.type == "boolean") {
+                    bool on = cur == "true" || cur == "1" || cur == "yes";
+                    if (ImGui::Checkbox("##opt", &on)) write_option(o, on ? "true" : "false");
+                } else if (o.type == "integer") {
+                    int v = std::atoi(cur.c_str());
+                    const int lo = o.has_range ? static_cast<int>(o.min) : 0;
+                    const int hi = o.has_range ? static_cast<int>(o.max) : 0;
+                    if (ImGui::InputInt("##opt", &v, o.step ? static_cast<int>(o.step) : 1, 0,
+                                        ImGuiInputTextFlags_EnterReturnsTrue)) {
+                        if (o.has_range) v = std::clamp(v, lo, hi);
+                        write_option(o, std::to_string(v));
+                    }
+                } else {
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "%s", cur.c_str());
+                    if (ImGui::InputText("##opt", buf, sizeof(buf),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                        write_option(o, buf);
+                }
+                ImGui::EndDisabled();
+
+                if (o.type == "integer" && o.has_range)
+                    ImGui::TextColored(th.text_muted, "%ld\xe2\x80\x93%ld", o.min, o.max);
+                if (!o.description.empty())
+                    ImGui::TextColored(th.text_muted, "%s", o.description.c_str());
+                ImGui::PopID();
+            }
+            if (sp->builtin) {
+                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::TextColored(th.text_muted,
+                                   "Set these in the game's own Mods menu \xe2\x80\x94 the "
+                                   "provider keeps their values, not mods/state.toml.");
+            }
+        }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+// Right column of a title page: every control that used to live in the detail
+// strip beside the grid — Play/Install, disc, saves, data, texture packs, BIOS.
+void draw_title_actions_panel(HubModel& hub, const TitleRow& row, const Theme& th,
+                              SDL_Window* window) {
     const bool job_busy = hub.job_running.load();
     const bool install_op = job_busy && retcomm::hub::hub_job_is_install(hub.job);
     // Any exclusive worker job blocks starting another install/scan/mutate.
     const bool block_title_mutate = job_busy;
 
-    TitleRow row;
-    bool show_welcome = false;
-    {
-        std::lock_guard<std::mutex> lock(hub.mu);
-        show_welcome = hub.library_nav == retcomm::hub::LibraryNav::Platforms ||
-                       hub.rows.empty() || hub.selected < 0 ||
-                       hub.selected >= static_cast<int>(hub.rows.size());
-        if (!show_welcome) row = hub.rows[static_cast<size_t>(hub.selected)];
-    }
-    if (show_welcome) {
-        draw_welcome_panel(boxart, th);
-        return;
-    }
+    ImGui::BeginChild("title_actions", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      page_wheel_flags(hub));
+    if (hub.detail_scroll_top) ImGui::SetScrollY(0.f);
 
-    ImGui::BeginChild("detail", ImVec2(0, 0), ImGuiChildFlags_Borders);
-    if (hub.detail_scroll_top) {
-        ImGui::SetScrollY(0.f);
-        hub.detail_scroll_top = false;
+    // The ring lands on the primary action, so opening a title and pressing A
+    // plays it. Same hand-off the grid and the drawer use: the child arrives a
+    // frame after the window, so ImGui's own default focus never fires.
+    if (hub.detail_focus_pending &&
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        hub.detail_focus_pending = false;
+        ImGui::SetKeyboardFocusHere();
+        ImGui::SetNavCursorVisible(true);
     }
 
-    // Header = title name only.
-    ImGui::TextWrapped("%s", row.name.c_str());
-
-    ImGui::Dummy(ImVec2(0, 10));
-
-    // Primary actions under the title.
+    // Primary actions.
     const float btn_w = (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f;
     if (row.installed) {
         // OpenBIOS-only build + retail dump selected → rebuild with SCPH + OpenBIOS.
@@ -2765,6 +3683,29 @@ void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window
         ImGui::EndDisabled();
     }
 
+    // Skip Launcher, directly under Play: it changes what pressing Play lands
+    // you in. Per-install and engine-specific (settings.toml [launcher] for
+    // psxrecomp, config.ini [General] for snesrecomp), so it is read from and
+    // written to this title's own files rather than the platform defaults.
+    if (row.installed) {
+        const fs::path game_dir = title_game_dir(hub, row);
+        if (!game_dir.empty()) {
+            bool skip = retcomm::title_skip_launcher(game_dir, row.platform);
+            if (ImGui::Checkbox("Skip Launcher", &skip)) {
+                std::string err;
+                if (!retcomm::set_title_skip_launcher(game_dir, row.platform, skip, &err)) {
+                    hub.append_log("Skip Launcher failed: " + err);
+                    hub.set_status("Skip Launcher failed");
+                }
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "Boot straight into the game, past the engine's own launcher screen.\n"
+                    "Stored with this install, not the platform defaults.");
+            }
+        }
+    }
+
     // Disc selection under Play (multi-disc sets only). Writes the install's
     // settings.toml [disc], which is what the runtime boots, so the choice
     // holds whether the game is started from here or run directly.
@@ -2834,7 +3775,24 @@ void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window
         draw_detail_texture_packs_popup(hub, row, th, block_title_mutate, window);
     }
 
-    // Seldom-touched: BIOS just above author.
+    ImGui::Dummy(ImVec2(0, 6));
+    if (ImGui::Button("Mods", ImVec2(-1, 0))) hub.pending_open_mods = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(
+            "Mod packages installed for this title, read from their manifests under "
+            "the game's mods/ folder.");
+    }
+
+    if (!row.github_url.empty()) {
+        ImGui::Dummy(ImVec2(0, 6));
+        if (ImGui::Button("GitHub Source", ImVec2(-1, 0))) {
+            std::string err;
+            if (!retcomm::open_url_in_browser(row.github_url, &err))
+                hub.append_log("Open URL failed: " + err);
+        }
+    }
+
+    // Seldom-touched: BIOS last.
     if (row.needs_bios || row.supports_openbios) {
         ImGui::Dummy(ImVec2(0, 16));
         ImGui::TextColored(th.text_muted, "BIOS");
@@ -2898,73 +3856,80 @@ void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window
         }
     }
 
-    // Footer: author → GitHub → App status → About.
-    ImGui::Dummy(ImVec2(0, 12));
-    const char* author_label =
-        (row.kind == "decomp") ? "Decomp Author" : "Recomp Author";
-    ImGui::TextColored(th.text_muted, "%s", author_label);
-    if (!row.author.empty())
-        ImGui::Text("%s", row.author.c_str());
-    else
-        ImGui::TextColored(th.text_muted, "(unknown)");
-    if (!row.author_notes.empty()) {
-        ImGui::Dummy(ImVec2(0, 6));
-        ImGui::TextColored(th.text_muted, "Author's Notes");
-        ImGui::TextWrapped("%s", row.author_notes.c_str());
-    }
-    if (!row.github_url.empty()) {
-        ImGui::Dummy(ImVec2(0, 6));
-        if (ImGui::Button("GitHub Source", ImVec2(-1, 0))) {
-            std::string err;
-            if (!retcomm::open_url_in_browser(row.github_url, &err))
-                hub.append_log("Open URL failed: " + err);
-        }
-    }
-
-    ImGui::Dummy(ImVec2(0, 10));
-    ImGui::TextColored(th.text_muted, "App");
-    if (row.installed) {
-        const std::string& shown_tag =
-            !row.release_compare_tag.empty() ? row.release_compare_tag : row.installed_tag;
-        ImGui::TextColored(th.good, "Installed %s%s",
-                           shown_tag.empty() ? "" : shown_tag.c_str(),
-                           row.runtime == "wine" ? " (Wine)" : "");
-        if (row.update_available)
-            ImGui::TextColored(th.warn, "Update available: %s", row.latest_tag.c_str());
-    } else if (row.install_dir_present) {
-        ImGui::TextColored(th.warn, "Install folder present — launch binary not found");
-        if (!row.install_issue.empty()) ImGui::TextWrapped("%s", row.install_issue.c_str());
-        if (!row.expected_binary.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-            ImGui::TextWrapped(
-                "Looking for executable \"%s\". Use Reinstall to clear the install folder "
-                "and start over, or Manage Game Data → Open Folder to fix setup manually.",
-                row.expected_binary.c_str());
-            ImGui::PopStyleColor();
-        }
-    } else {
-        ImGui::TextColored(th.text_muted, "Not installed");
-        if (row.has_preserved_state) {
-            ImGui::TextColored(th.focus, "Preserved saves/config ready");
-            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-            ImGui::TextWrapped(
-                "Previous uninstall kept user data under preserved/. The next install "
-                "will restore it into the new release.");
-            ImGui::PopStyleColor();
-        }
-    }
-
-    if (!row.description.empty()) {
-        ImGui::Dummy(ImVec2(0, 10));
-        ImGui::TextColored(th.text_muted, "About");
-        ImGui::TextWrapped("%s", row.description.c_str());
-    }
-
     ImGui::EndChild();
 }
 
+// One title, full window: info on the left, everything pressable on the right.
+void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window) {
+    TitleRow row;
+    bool have_row = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        have_row = hub.selected >= 0 && hub.selected < static_cast<int>(hub.rows.size());
+        if (have_row) row = hub.rows[static_cast<size_t>(hub.selected)];
+    }
+    if (!have_row) {
+        // A rescan dropped the row out from under the page — fall back to the grid.
+        go_back_to_titles(hub);
+        draw_welcome_panel(boxart, th);
+        return;
+    }
+
+    ImGui::BeginChild("title_page", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+
+    // Same header the grid uses, Configure included: the platform's settings
+    // stay one press away whether you are picking a title or looking at one.
+    {
+        const char* header =
+            row.platform.empty() ? "LIBRARY" : platform_display_name(row.platform);
+        switch (draw_page_header(th, header, row.platform)) {
+            case PageHeaderAction::Configure:
+                if (retcomm::is_snes_platform(row.platform)) hub.open_snes_settings();
+                else hub.open_psx_settings();
+                break;
+            case PageHeaderAction::None:
+                break;
+        }
+    }
+
+    // Extra width goes to the info column; the actions column is flexible but
+    // capped so a maximised window does not stretch a stack of buttons.
+    constexpr float kActionsMaxW = 480.f;
+    constexpr float kActionsMinW = 300.f;
+    constexpr float kInfoMinW = 320.f;
+    const float total_w = ImGui::GetContentRegionAvail().x;
+    const float gap_x = ImGui::GetStyle().ItemSpacing.x;
+    float right_w = std::min(kActionsMaxW, total_w * 0.42f);
+    right_w = std::clamp(right_w, kActionsMinW,
+                         std::max(kActionsMinW, total_w - kInfoMinW - gap_x));
+    const float left_w = std::max(kInfoMinW, total_w - right_w - gap_x);
+
+    ImGui::BeginChild("title_info_host", ImVec2(left_w, 0), ImGuiChildFlags_NavFlattened);
+    draw_title_info_panel(hub, row, boxart, th);
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("title_actions_host", ImVec2(right_w, 0), ImGuiChildFlags_NavFlattened);
+    draw_title_actions_panel(hub, row, th, window);
+    ImGui::EndChild();
+
+    hub.detail_scroll_top = false;
+    ImGui::EndChild();
+
+    // B (or Escape) returns to the grid, unless something modal or the drawer
+    // is in front and owns that key.
+    if (!hub.drawer_open && !hub.log_overlay_open &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        !ImGui::IsAnyItemActive() &&
+        (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+         ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+        go_back_to_titles(hub);
+}
+
 void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
-    ImGui::BeginChild("settings", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextUnformatted("LIBRARY SETTINGS");
     ImGui::PopStyleColor();
@@ -4343,7 +5308,8 @@ void draw_setup_scan_prompt(HubModel& hub, const Theme& th) {
 }
 
 void draw_romm_settings_panel(HubModel& hub, const Theme& th) {
-    ImGui::BeginChild("romm_settings", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("romm_settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextUnformatted("ROMM SYNC SETTINGS");
     ImGui::PopStyleColor();
@@ -4418,10 +5384,110 @@ void draw_romm_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::EndChild();
 }
 
-void psx_settings_row_label(const char* text, const Theme& th, float col_w = 180.f) {
+// ---- Settings rows ---------------------------------------------------------
+// One row of a platform settings card: the label is pinned to the panel's left
+// edge, the control to its right edge. Reading down a card you get a column of
+// names and a column of controls, instead of a ragged middle that moves with
+// whatever the longest label happens to be.
+//
+// The caller submits its control immediately after; `ctrl_w` is that control's
+// width, and the item width is pre-set so a combo fills it exactly.
+// Returns the width the control actually got: a long label on a narrow card
+// squeezes it rather than pushing it off the right edge.
+float settings_row(const char* label, const Theme& th, float ctrl_w) {
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(th.text_muted, "%s", text);
-    ImGui::SameLine(col_w);
+    ImGui::TextColored(th.text_muted, "%s", label);
+    const float right = ImGui::GetWindowContentRegionMax().x;
+    ImGui::SameLine();
+    const float after = ImGui::GetCursorPosX() + 8.f;
+    float w = ctrl_w;
+    if (right - after < w) w = (std::max)(56.f, right - after);
+    ImGui::SetCursorPosX((std::max)(after, right - w));
+    ImGui::SetNextItemWidth(w);
+    return w;
+}
+
+// Width every dropdown in a settings card shares, so the right edge is a line
+// rather than a staircase.
+constexpr float kSettingsCtrlW = 190.f;
+
+// Right-aligned checkbox row. The label is the row's, not the checkbox's, so
+// `id` must be a "##"-prefixed identifier.
+bool settings_checkbox(const char* label, const char* id, const Theme& th, bool* value) {
+    settings_row(label, th, ImGui::GetFrameHeight());
+    return ImGui::Checkbox(id, value);
+}
+
+// Right-aligned dropdown over `count` labels; *value is the chosen index.
+bool settings_combo(const char* label, const char* id, const Theme& th,
+                    const char* const* items, int count, int* value,
+                    float w = kSettingsCtrlW) {
+    const int cur = std::clamp(*value, 0, count - 1);
+    settings_row(label, th, w);
+    bool changed = false;
+    if (ImGui::BeginCombo(id, items[cur])) {
+        for (int i = 0; i < count; ++i) {
+            const bool sel = (i == cur);
+            if (ImGui::Selectable(items[i], sel) && i != *value) {
+                *value = i;
+                changed = true;
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+// Right-aligned dropdown over a fixed set of values (window widths, sample
+// rates, rewind depths). An off-list *value previews as the first entry but is
+// left alone until the user picks something.
+bool settings_combo_values(const char* label, const char* id, const Theme& th,
+                           const char* const* items, const int* values, int count, int* value,
+                           float w = kSettingsCtrlW) {
+    int cur = 0;
+    for (int i = 0; i < count; ++i)
+        if (values[i] == *value) {
+            cur = i;
+            break;
+        }
+    settings_row(label, th, w);
+    bool changed = false;
+    if (ImGui::BeginCombo(id, items[cur])) {
+        for (int i = 0; i < count; ++i) {
+            const bool sel = (i == cur);
+            if (ImGui::Selectable(items[i], sel) && values[i] != *value) {
+                *value = values[i];
+                changed = true;
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+// Two-way dropdown for a setting that is a bool but reads as a choice
+// ("Nearest" / "Bilinear"), not as an on/off.
+bool settings_combo_bool(const char* label, const char* id, const Theme& th, const char* off_label,
+                         const char* on_label, bool* value, float w = kSettingsCtrlW) {
+    const char* items[2] = {off_label, on_label};
+    int idx = *value ? 1 : 0;
+    if (settings_combo(label, id, th, items, 2, &idx, w)) {
+        *value = idx != 0;
+        return true;
+    }
+    return false;
+}
+
+// Right-aligned binding button (hotkey / pad chord rows).
+bool settings_bind_button(const char* label, const Theme& th, const char* text, bool capturing,
+                          float w = kSettingsCtrlW) {
+    const float got = settings_row(label, th, w);
+    if (capturing) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
+    const bool hit = ImGui::Button(text, ImVec2(got, 0));
+    if (capturing) ImGui::PopStyleColor();
+    return hit;
 }
 
 SDL_Gamepad* gamepad_handle_for_id(SDL_JoystickID id);   /* defined below */
@@ -4470,10 +5536,12 @@ void poll_psx_pad_hotkey_capture(HubModel& hub) {
         while (((mask >> code) & 1u) == 0) ++code;
         value = code + 1;
     }
-    if (draft.capturing_pad_hotkey == 0)
-        draft.settings.hotkey_pad_rewind = value;
-    else
-        draft.settings.hotkey_pad_save_state_menu = value;
+    switch (draft.capturing_pad_hotkey) {
+        case 0: draft.settings.hotkey_pad_rewind = value; break;
+        case 1: draft.settings.hotkey_pad_save_state_menu = value; break;
+        case 2: draft.settings.hotkey_pad_fast_forward = value; break;
+        default: draft.settings.hotkey_pad_fast_forward_toggle = value; break;
+    }
     draft.dirty = true;
     draft.capturing_pad_hotkey = -1;
     draft.pad_hotkey_mask = 0;
@@ -5566,12 +6634,20 @@ void draw_psx_configure_modal(HubModel& hub, const Theme& th, const std::vector<
 
             ImGui::TableNextColumn();
             {
-                const bool dig = s.player_mode[static_cast<size_t>(p)] == 2;
-                const char* mode_lab = dig ? "Digital (D-Pad)" : "Analog (DualShock)";
+                static const char* kModes[] = {"Analog (DualShock)", "Digital (D-Pad)"};
+                int mode_idx = s.player_mode[static_cast<size_t>(p)] == 2 ? 1 : 0;
                 if (is_kb) ImGui::BeginDisabled();
-                if (ImGui::Button(mode_lab, ImVec2(-1.f, 0))) {
-                    s.player_mode[static_cast<size_t>(p)] = dig ? 1 : 2;
-                    dirty = true;
+                ImGui::SetNextItemWidth(-1.f);
+                if (ImGui::BeginCombo("##pmode", kModes[mode_idx])) {
+                    for (int m = 0; m < 2; ++m) {
+                        const bool sel = m == mode_idx;
+                        if (ImGui::Selectable(kModes[m], sel) && m != mode_idx) {
+                            s.player_mode[static_cast<size_t>(p)] = m == 1 ? 2 : 1;
+                            dirty = true;
+                        }
+                        if (sel) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
                 }
                 if (is_kb) {
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -5863,14 +6939,6 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
     }
     ImGui::Separator();
 
-    constexpr float kCol = 200.f;
-    auto cycle_btn = [&](const char* id, const char* label, float w = 160.f) -> bool {
-        ImGui::PushID(id);
-        const bool hit = ImGui::Button(label, ImVec2(w, 0));
-        ImGui::PopID();
-        return hit;
-    };
-
     // Reserve gap + Save/Cancel row so panes don't crowd the footer.
     const float footer_h = ImGui::GetFrameHeight() + 24.f;
     const float gap = 12.f;
@@ -5881,166 +6949,160 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
     if (gamepads) {
         draw_psx_gamepads_panel(hub, th, panel_h, boxart);
     } else {
-    ImGui::BeginChild("psx_display_audio", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders);
-    ImGui::TextColored(th.text_muted, "DISPLAY & AUDIO");
+    ImGui::BeginChild("psx_display_audio", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "DISPLAY");
     ImGui::Separator();
     {
+        static const char* kWidthLabels[] = {"960 px", "1280 px", "1600 px", "1920 px"};
         static const int kWidths[] = {960, 1280, 1600, 1920};
-        psx_settings_row_label("Window size", th, kCol);
-        char lbl[32];
-        std::snprintf(lbl, sizeof(lbl), "%d px", s.window_width);
-        if (cycle_btn("ww", lbl, 120.f)) {
-            int idx = 0;
-            for (int i = 0; i < 4; ++i)
-                if (kWidths[i] == s.window_width) {
-                    idx = i;
-                    break;
-                }
-            s.window_width = kWidths[(idx + 1) % 4];
+        if (settings_combo_values("Window size", "##ww", th, kWidthLabels, kWidths, 4,
+                                  &s.window_width))
             mark();
-        }
 
-        psx_settings_row_label("Renderer", th, kCol);
-        const char* rlab =
-            s.renderer == 0 ? "Software" : (s.renderer == 2 ? "Vulkan" : "OpenGL");
-        if (cycle_btn("ren", rlab, 160.f)) {
-            s.renderer = (s.renderer + 1) % 3;
+        static const char* kRenderer[] = {"Software", "OpenGL", "Vulkan"};
+        if (settings_combo("Renderer", "##ren", th, kRenderer, 3, &s.renderer)) mark();
+
+        static const char* kSsLabels[] = {"1x", "2x", "3x", "4x"};
+        static const int kSs[] = {1, 2, 3, 4};
+        if (settings_combo_values("Supersampling", "##ss", th, kSsLabels, kSs, 4,
+                                  &s.supersampling))
             mark();
-        }
 
-        psx_settings_row_label("Supersampling", th, kCol);
-        char ssl[16];
-        std::snprintf(ssl, sizeof(ssl), "%dx", s.supersampling);
-        if (cycle_btn("ss", ssl, 80.f)) {
-            s.supersampling = s.supersampling >= 4 ? 1 : s.supersampling + 1;
-            mark();
-        }
-
-        psx_settings_row_label("Fullscreen", th, kCol);
         static const char* kFs[] = {"Off", "Borderless", "Exclusive"};
-        if (cycle_btn("fs", kFs[std::clamp(s.fullscreen, 0, 2)], 140.f)) {
-            s.fullscreen = (std::clamp(s.fullscreen, 0, 2) + 1) % 3;
-            mark();
-        }
+        if (settings_combo("Fullscreen", "##fs", th, kFs, 3, &s.fullscreen)) mark();
 
-        psx_settings_row_label("View mode", th, kCol);
         static const char* kView[] = {"4:3 (Native)", "16:9 (Widescreen)", "21:9 (Ultrawide)",
                                       "Adaptive"};
-        if (cycle_btn("view", kView[std::clamp(s.view_mode, 0, 3)], 180.f)) {
-            s.view_mode = (std::clamp(s.view_mode, 0, 3) + 1) % 4;
-            mark();
-        }
+        if (settings_combo("View mode", "##view", th, kView, 4, &s.view_mode)) mark();
         if (s.view_mode != 0) {
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(th.warn, "⚠️ Experimental ⚠️");
+            // Its own line: the control column owns the right edge now, so a
+            // note cannot ride along beside the dropdown.
+            ImGui::TextColored(th.warn, "\xe2\x9a\xa0\xef\xb8\x8f Experimental \xe2\x9a\xa0\xef\xb8\x8f");
         }
 
-        psx_settings_row_label("Texture filtering", th, kCol);
-        if (cycle_btn("tf", s.texture_filter_bilinear ? "Bilinear" : "Nearest", 120.f)) {
-            s.texture_filter_bilinear = !s.texture_filter_bilinear;
+        if (settings_combo_bool("Texture filtering", "##tf", th, "Nearest", "Bilinear",
+                                &s.texture_filter_bilinear))
             mark();
-        }
 
-        psx_settings_row_label("Antialiasing", th, kCol);
-        if (cycle_btn("aa", s.antialiasing ? "On" : "Off", 80.f)) {
-            s.antialiasing = !s.antialiasing;
-            mark();
-        }
+        if (settings_checkbox("Antialiasing", "##aa", th, &s.antialiasing)) mark();
 
         // How a decoded FMV is scaled up. Separate from Texture filtering
         // above; with antialiasing off the runtime presents video with hard
-        // pixels regardless, so the row has nothing to offer then.
-        psx_settings_row_label("FMV filtering", th, kCol);
+        // pixels regardless, so the row previews Nearest and is disabled —
+        // what it would do, not what is stored.
         {
             static const char* kFmv[] = {"Nearest", "Bilinear", "Sharp", "Bicubic"};
-            const int cur = std::clamp(s.fmv_filter, 0, 3);
-            if (!s.antialiasing) ImGui::BeginDisabled();
-            if (cycle_btn("fmv", s.antialiasing ? kFmv[cur] : "Nearest", 120.f)) {
-                s.fmv_filter = (cur + 1) % 4;
-                mark();
-            }
-            if (!s.antialiasing) ImGui::EndDisabled();
-        }
-
-        psx_settings_row_label("Perspective textures", th, kCol);
-        if (ImGui::Checkbox("##persp", &s.perspective_texturing)) mark();
-
-        psx_settings_row_label("Screen model", th, kCol);
-        static const char* kScreen[] = {"Raw", "CRT", "Composite", "Trinitron"};
-        if (cycle_btn("scr", kScreen[std::clamp(s.screen_kind, 0, 3)], 140.f)) {
-            s.screen_kind = (std::clamp(s.screen_kind, 0, 3) + 1) % 4;
-            mark();
-        }
-
-        if (s.renderer != 0) {
-            psx_settings_row_label("Frame interpolation", th, kCol);
-            if (ImGui::Checkbox("##fi", &s.frame_interpolation)) mark();
-            if (s.frame_interpolation) {
-                psx_settings_row_label("Presentation target", th, kCol);
-                char fl[32];
-                if (s.frame_interpolation_fps <= 0)
-                    std::snprintf(fl, sizeof(fl), "Display");
-                else
-                    std::snprintf(fl, sizeof(fl), "%d fps", s.frame_interpolation_fps);
-                if (cycle_btn("fifps", fl, 120.f)) {
-                    static const int kFps[] = {0, 120, 144, 165, 240};
-                    int idx = 0;
-                    for (int i = 0; i < 5; ++i)
-                        if (kFps[i] == s.frame_interpolation_fps) {
-                            idx = i;
-                            break;
-                        }
-                    s.frame_interpolation_fps = kFps[(idx + 1) % 5];
-                    mark();
+            if (s.antialiasing) {
+                if (settings_combo("FMV filtering", "##fmv", th, kFmv, 4, &s.fmv_filter)) mark();
+            } else {
+                ImGui::BeginDisabled();
+                int shown = 0;
+                settings_combo("FMV filtering", "##fmv", th, kFmv, 4, &shown);
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip(
+                        "Antialiasing is off, so video is presented with hard pixels "
+                        "regardless.");
                 }
             }
         }
 
-        psx_settings_row_label("Skip FMVs", th, kCol);
-        if (ImGui::Checkbox("##skipfmv", &s.auto_skip_fmv)) mark();
+        if (settings_checkbox("Perspective textures", "##persp", th, &s.perspective_texturing))
+            mark();
 
-        psx_settings_row_label("Rewind buffer", th, kCol);
-        {
-            int d = s.rewind_depth;
-            if (d != 50 && d != 100 && d != 150 && d != 200) d = 50;
-            char lab[16];
-            std::snprintf(lab, sizeof(lab), "%d", d);
-            if (cycle_btn("rwbuf", lab, 80.f)) {
-                static const int kDepth[] = {50, 100, 150, 200};
-                int idx = 0;
-                for (int i = 0; i < 4; ++i)
-                    if (kDepth[i] == d) {
-                        idx = i;
-                        break;
-                    }
-                s.rewind_depth = kDepth[(idx + 1) % 4];
+        static const char* kScreen[] = {"Raw", "CRT", "Composite", "Trinitron"};
+        if (settings_combo("Screen model", "##scr", th, kScreen, 4, &s.screen_kind)) mark();
+
+        if (settings_checkbox("Scanlines", "##sl", th, &s.scanlines)) mark();
+        if (s.scanlines) {
+            int pct = std::clamp(static_cast<int>(s.scanline_strength * 100.f + 0.5f), 0, 100);
+            settings_row("Scanline strength", th, kSettingsCtrlW);
+            if (ImGui::SliderInt("##slstr", &pct, 0, 100, "%d%%")) {
+                s.scanline_strength = static_cast<float>(pct) / 100.f;
                 mark();
             }
+        }
+
+        if (settings_checkbox("Geometry correction", "##geo", th, &s.geometry_correction)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "[video] geometry_correction \xe2\x80\x94 correct the PS1's integer vertex "
+                "snapping, the source of the wobble on flat surfaces.");
+        }
+
+        if (s.renderer != 0) {
+            if (settings_checkbox("Frame interpolation", "##fi", th, &s.frame_interpolation))
+                mark();
+            if (s.frame_interpolation) {
+                static const char* kFpsLabels[] = {"Display", "120 fps", "144 fps", "165 fps",
+                                                  "240 fps"};
+                static const int kFps[] = {0, 120, 144, 165, 240};
+                if (settings_combo_values("Presentation target", "##fifps", th, kFpsLabels, kFps,
+                                          5, &s.frame_interpolation_fps))
+                    mark();
+            }
+        }
+
+        {
+            static const char* kVsyncLabels[] = {"On", "Off", "Adaptive"};
+            static const int kVsync[] = {1, 0, -1};
+            if (settings_combo_values("VSync", "##vs", th, kVsyncLabels, kVsync, 3, &s.vsync))
+                mark();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "On: the swap waits for the panel \xe2\x80\x94 no tearing.\n"
+                    "Off: swap immediately \xe2\x80\x94 lowest display "
+                    "latency, may tear.\n"
+                    "Adaptive: vsync while the game keeps up, immediate when it "
+                    "drops below the refresh rate.\n\n"
+                    "The runtime still paces frames to the console's own rate "
+                    "either way, so Off does not run the game fast.");
+            }
+        }
+
+        // What the machine does, as opposed to how it is drawn. Rewind's
+        // depth/interval live here with the switch that gates them.
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::TextColored(th.text_muted, "EMULATION");
+        if (settings_checkbox("Fast boot", "##fboot", th, &s.fast_boot)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("[video] fast_boot \xe2\x80\x94 skip the BIOS boot animation.");
+
+        if (settings_checkbox("Skip FMVs", "##skipfmv", th, &s.auto_skip_fmv)) mark();
+
+        if (settings_checkbox("Low-latency input", "##lli", th, &s.low_latency_input)) mark();
+
+        // Rewind's master switch. psxrecomp defaults [video] rewind to false,
+        // so the depth/interval rows below only mean anything once this is on.
+        if (settings_checkbox("Rewind", "##rewind", th, &s.rewind_enabled)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "Keep a ring of whole-machine snapshots so the Rewind hotkey can step "
+                "back through them.\n"
+                "Costs memory while a game runs (depth x ~3.5 MB). Applied when a title "
+                "launches.");
+        }
+
+        ImGui::BeginDisabled(!s.rewind_enabled);
+        {
+            static const char* kDepthLabels[] = {"50", "100", "150", "200"};
+            static const int kDepth[] = {50, 100, 150, 200};
+            if (settings_combo_values("Rewind buffer", "##rwbuf", th, kDepthLabels, kDepth, 4,
+                                      &s.rewind_depth))
+                mark();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                 ImGui::SetTooltip(
                     "How many local rewind snapshots to keep (50 / 100 / 150 / 200).\n"
                     "Applied when a title launches.");
             }
-        }
 
-        psx_settings_row_label("Rewind interval", th, kCol);
-        {
-            int iv = s.rewind_interval;
-            if (iv != 1 && iv != 4 && iv != 8 && iv != 12 && iv != 15) iv = 15;
-            char lab[16];
-            std::snprintf(lab, sizeof(lab), "%d", iv);
-            if (cycle_btn("rwint", lab, 80.f)) {
-                static const int kIv[] = {1, 4, 8, 12, 15};
-                int idx = 4;
-                for (int i = 0; i < 5; ++i)
-                    if (kIv[i] == iv) {
-                        idx = i;
-                        break;
-                    }
-                s.rewind_interval = kIv[(idx + 1) % 5];
+            static const char* kIvLabels[] = {"1", "4", "8", "12", "15"};
+            static const int kIv[] = {1, 4, 8, 12, 15};
+            if (settings_combo_values("Rewind interval", "##rwint", th, kIvLabels, kIv, 5,
+                                      &s.rewind_interval))
                 mark();
-            }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                 ImGui::SetTooltip(
                     "Frames between rewind snapshots (1 / 4 / 8 / 12 / 15).\n"
@@ -6048,63 +7110,40 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
                     "Applied when a title launches.");
             }
         }
-
-        psx_settings_row_label("Low-latency input", th, kCol);
-        if (ImGui::Checkbox("##lli", &s.low_latency_input)) mark();
-
-        psx_settings_row_label("VSync", th, kCol);
-        const char* vlab = s.vsync == 0 ? "Off" : (s.vsync < 0 ? "Adaptive" : "On");
-        if (cycle_btn("vs", vlab, 120.f)) {
-            if (s.vsync == 1) s.vsync = 0;
-            else if (s.vsync == 0) s.vsync = -1;
-            else s.vsync = 1;
-            mark();
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip(
-                "On: the swap waits for the panel \xe2\x80\x94 no tearing.\n"
-                "Off: swap immediately \xe2\x80\x94 lowest display "
-                "latency, may tear.\n"
-                "Adaptive: vsync while the game keeps up, immediate when it "
-                "drops below the refresh rate.\n\n"
-                "The runtime still paces frames to the console's own rate "
-                "either way, so Off does not run the game fast.");
-        }
+        ImGui::EndDisabled();
 
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::Separator();
         ImGui::TextColored(th.text_muted, "AUDIO");
-        psx_settings_row_label("High-quality SPU", th, kCol);
-        if (ImGui::Checkbox("##spuhq", &s.spu_hq)) mark();
+        if (settings_checkbox("High-quality SPU", "##spuhq", th, &s.spu_hq)) mark();
 
         // Output sample rate ([audio] frequency). Same four recomp-ui offers;
         // 32040 Hz is the SPU's own rate, so it resamples least.
-        psx_settings_row_label("Sample rate", th, kCol);
         {
+            static const char* kFreqLabels[] = {"32040 Hz", "32000 Hz", "44100 Hz", "48000 Hz"};
             static const int kFreq[] = {32040, 32000, 44100, 48000};
-            int idx = 2;
-            for (int i = 0; i < 4; ++i)
-                if (kFreq[i] == s.audio_freq) { idx = i; break; }
-            if (cycle_btn("freq", (std::to_string(kFreq[idx]) + " Hz").c_str(), 120.f)) {
-                s.audio_freq = kFreq[(idx + 1) % 4];
+            if (settings_combo_values("Sample rate", "##freq", th, kFreqLabels, kFreq, 4,
+                                      &s.audio_freq))
                 mark();
-            }
         }
     }
     ImGui::EndChild();
 
     ImGui::SameLine(0.f, gap);
-    ImGui::BeginChild("psx_input_hotkeys", ImVec2(0, panel_h), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("psx_input_hotkeys", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
     ImGui::TextColored(th.text_muted, "INPUT & HOTKEYS");
     ImGui::Separator();
     {
-        if (ImGui::Checkbox("Multitap", &s.multitap_enabled)) mark();
+        if (settings_checkbox("Multitap", "##multitap", th, &s.multitap_enabled)) mark();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip(
                 "Enable SCPH-1070 multitap for 3+ player seats. Off limits local play "
                 "to two native controller ports.");
         }
-        if (ImGui::Checkbox("Multitap analog (hack)", &s.multitap_analog)) mark();
+        if (settings_checkbox("Multitap analog (hack)", "##multitap_analog", th,
+                              &s.multitap_analog))
+            mark();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
             ImGui::SetTooltip(
                 "Allow DualShock sticks on multitap tap seats (not faithful). Not applied "
@@ -6120,22 +7159,22 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
             "(Esc cancels). Lets a player reach these from the couch.");
         ImGui::PopStyleColor();
         {
-            static const char* kPadHkLabel[2] = {"Rewind", "Save-state menu"};
-            for (int i = 0; i < 2; ++i) {
-                psx_settings_row_label(kPadHkLabel[i], th, kCol);
+            static const char* kPadHkLabel[4] = {"Rewind", "Save-state menu", "Fast-forward",
+                                                "Fast-forward (toggle)"};
+            for (int i = 0; i < 4; ++i) {
                 ImGui::PushID(1000 + i);
                 const bool cap = hub.psx_settings.capturing_pad_hotkey == i;
-                const int cur = (i == 0) ? s.hotkey_pad_rewind
-                                         : s.hotkey_pad_save_state_menu;
+                const int cur = (i == 0)   ? s.hotkey_pad_rewind
+                                : (i == 1) ? s.hotkey_pad_save_state_menu
+                                : (i == 2) ? s.hotkey_pad_fast_forward
+                                           : s.hotkey_pad_fast_forward_toggle;
                 const std::string lbl =
                     cap ? "[ hold buttons... ]"
                         : retcomm::PsxPlatformSettings::pad_bind_label(cur);
-                if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
-                if (ImGui::Button(lbl.c_str(), ImVec2(200.f, 0))) {
+                if (settings_bind_button(kPadHkLabel[i], th, lbl.c_str(), cap)) {
                     hub.psx_settings.capturing_pad_hotkey = i;
                     hub.psx_settings.pad_hotkey_mask = 0;
                 }
-                if (cap) ImGui::PopStyleColor();
                 ImGui::PopID();
             }
         }
@@ -6147,36 +7186,17 @@ void draw_psx_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart
         ImGui::TextWrapped("Click a binding, then press a key (Esc cancels).");
         ImGui::PopStyleColor();
 
-        float label_w = 0.f;
         for (int i = 0; i < retcomm::PsxPlatformSettings::kHotkeyCount; ++i) {
-            label_w = std::max(
-                label_w, ImGui::CalcTextSize(retcomm::PsxPlatformSettings::hotkey_label(i)).x);
-        }
-        label_w += 16.f;
-        if (ImGui::BeginTable("psx_hk", 1, ImGuiTableFlags_SizingStretchProp)) {
-            for (int i = 0; i < retcomm::PsxPlatformSettings::kHotkeyCount; ++i) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::PushID(i);
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(th.text_muted, "%s",
-                                   retcomm::PsxPlatformSettings::hotkey_label(i));
-                ImGui::SameLine(0.f, label_w - ImGui::CalcTextSize(
-                                                  retcomm::PsxPlatformSettings::hotkey_label(i))
-                                                  .x);
-                const bool cap = hub.psx_settings.capturing_hotkey == i;
-                const std::string& cur = s.hotkeys[static_cast<size_t>(i)];
-                const char* bl =
-                    cap ? "[ press... ]"
-                        : (cur.empty() ? retcomm::PsxPlatformSettings::hotkey_default(i)
-                                       : cur.c_str());
-                if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
-                if (ImGui::Button(bl, ImVec2(140.f, 0)))
-                    hub.psx_settings.capturing_hotkey = i;
-                if (cap) ImGui::PopStyleColor();
-                ImGui::PopID();
-            }
-            ImGui::EndTable();
+            ImGui::PushID(i);
+            const bool cap = hub.psx_settings.capturing_hotkey == i;
+            const std::string& cur = s.hotkeys[static_cast<size_t>(i)];
+            const char* bl = cap ? "[ press... ]"
+                                 : (cur.empty()
+                                        ? retcomm::PsxPlatformSettings::hotkey_default(i)
+                                        : cur.c_str());
+            if (settings_bind_button(retcomm::PsxPlatformSettings::hotkey_label(i), th, bl, cap))
+                hub.psx_settings.capturing_hotkey = i;
+            ImGui::PopID();
         }
     }
     ImGui::EndChild();
@@ -6354,9 +7374,599 @@ void draw_snes_player_source_combo(HubModel& hub, int p, const std::vector<HubGa
     ImGui::EndCombo();
 }
 
-void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
+// The renderer vocabulary snesrecomp offers, built by its own rules
+// (snesrecomp runner/src/desktop/host_main.c, RendererEnumerate +
+// RendererPretty): "auto" first, then the framework's native GL presenter,
+// then every SDL render driver this build actually has — minus SDL's own
+// opengl/opengles drivers, which are the native presenter's twins and would
+// otherwise list OpenGL twice.
+//
+// Enumerated from the launcher's own SDL, which is the same SDL family the
+// game links, so on this host the list is what the game will really find.
+// A build that lacks a listed driver falls back to Auto with a warning on
+// stderr rather than failing, so the setting is safe to carry between hosts.
+struct SnesRendererOpt {
+    std::string id;
+    std::string label;
+};
+
+const std::vector<SnesRendererOpt>& snes_renderer_options() {
+    static const std::vector<SnesRendererOpt> list = [] {
+        auto pretty = [](const std::string& id) -> std::string {
+            if (id == "direct3d") return "Direct3D 9";
+            if (id == "direct3d11") return "Direct3D 11";
+            if (id == "direct3d12") return "Direct3D 12";
+            if (id == "vulkan") return "Vulkan";
+            if (id == "metal") return "Metal";
+            if (id == "gpu") return "SDL3_GPU";
+            if (id == "software") return "Software";
+            return id;
+        };
+        std::vector<SnesRendererOpt> v;
+        v.push_back({"auto", "Auto"});
+        v.push_back({"opengl", "OpenGL"});
+        const int n = SDL_GetNumRenderDrivers();
+        for (int i = 0; i < n; ++i) {
+            const char* id = SDL_GetRenderDriver(i);
+            if (!id || !id[0]) continue;
+            const std::string sid = id;
+            if (sid == "opengl" || sid == "opengles2" || sid == "opengles") continue;
+            v.push_back({sid, pretty(sid)});
+        }
+        return v;
+    }();
+    return list;
+}
+
+// Empty Renderer follows the older OutputMethod key, the same fallback
+// snesrecomp's RendererChoice() applies.
+int snes_renderer_index(const retcomm::SnesPlatformSettings& s) {
+    std::string want = s.renderer;
+    if (want.empty()) {
+        want = s.output_method == 2 ? "opengl" : (s.output_method == 1 ? "software" : "auto");
+    }
+    const auto& opts = snes_renderer_options();
+    for (size_t i = 0; i < opts.size(); ++i)
+        if (opts[i].id == want) return static_cast<int>(i);
+    return 0;  // Auto
+}
+
+// Where each SNES button sits on assets/controllers/pad_snes.png, normalised
+// in that art's full 720x400 canvas (the same convention psx_pad_hits uses, so
+// the crop maths below is shared). Index order is the runner's Controls= order:
+// Up Down Left Right Select Start A B X Y L R.
+struct SnesPadHit {
+    int button;
+    float nx;
+    float ny;
+};
+
+const SnesPadHit* snes_pad_hits(int* count) {
+    static const SnesPadHit kHits[] = {
+        {0, 0.296f, 0.438f},   // Up
+        {1, 0.296f, 0.637f},   // Down
+        {2, 0.240f, 0.538f},   // Left
+        {3, 0.352f, 0.538f},   // Right
+        {4, 0.458f, 0.540f},   // Select
+        {5, 0.542f, 0.540f},   // Start
+        {6, 0.757f, 0.538f},   // A   (blue, right)
+        {7, 0.704f, 0.632f},   // B   (yellow, bottom)
+        {8, 0.704f, 0.443f},   // X   (green, top)
+        {9, 0.651f, 0.538f},   // Y   (red, left)
+        {10, 0.275f, 0.268f},  // L   (left shoulder tab)
+        {11, 0.725f, 0.268f},  // R   (right shoulder tab)
+    };
+    *count = static_cast<int>(sizeof(kHits) / sizeof(kHits[0]));
+    return kHits;
+}
+
+// The pad silhouette sits inside large empty margins; zoom the UV rect to the
+// controller so the panel is not mostly letterbox. Same treatment, and the same
+// reason, as draw_psx_mapping_panel.
+constexpr float kSnesCropU0 = 0.105f;
+constexpr float kSnesCropV0 = 0.150f;
+constexpr float kSnesCropU1 = 0.895f;
+constexpr float kSnesCropV1 = 0.850f;
+
+// The pad picture with a chip on every button. Clicking a chip starts a capture
+// for that button, exactly as the list rows did — a seat's map is a physical
+// thing, so it reads better on the shape of the pad than as twelve rows.
+void draw_snes_pad_map(HubModel& hub, const Theme& th, int player, bool is_pad,
+                       BoxartCache& boxart) {
+    using retcomm::SnesPlatformSettings;
+    auto& d = hub.snes_settings;
+    auto& s = d.settings;
+    const size_t pi = static_cast<size_t>(player);
+
+    fs::path art = find_hub_asset_file("controllers", "pad_snes.png");
+    const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("snes:pad", art);
+
+    ImGui::BeginChild("snes_map_panel", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::TextColored(th.text_muted, is_pad ? "GAMEPAD BINDINGS" : "KEYBOARD BINDINGS");
+    ImGui::TextColored(th.text_muted,
+                       is_pad ? "Click a button to pick which gamepad control drives it."
+                              : "Click a button, then press the key to bind (Esc cancels). "
+                                "Chips light while a bound key is held.");
+    ImGui::Separator();
+
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float avail_h = std::max(140.f, ImGui::GetContentRegionAvail().y - 4.f);
+    const float crop_w = kSnesCropU1 - kSnesCropU0;
+    const float crop_h = kSnesCropV1 - kSnesCropV0;
+    const float full_aspect = (tex && tex->width > 0 && tex->height > 0)
+                                  ? (static_cast<float>(tex->width) /
+                                     static_cast<float>(tex->height))
+                                  : (720.f / 400.f);
+    const float aspect = full_aspect * (crop_w / std::max(0.01f, crop_h));
+
+    constexpr float kEdgePad = 4.f;
+    float img_w = std::max(1.f, avail_w - kEdgePad * 2.f);
+    float img_h = img_w / aspect;
+    if (img_h > avail_h - kEdgePad * 2.f) {
+        img_h = std::max(1.f, avail_h - kEdgePad * 2.f);
+        img_w = img_h * aspect;
+    }
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float img_x = origin.x + (avail_w - img_w) * 0.5f;
+    const float img_y = origin.y + (avail_h - img_h) * 0.5f;
+
+    ImGui::Dummy(ImVec2(avail_w, avail_h));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (tex && tex->gl_id) {
+        dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)),
+                     ImVec2(img_x, img_y), ImVec2(img_x + img_w, img_y + img_h),
+                     ImVec2(kSnesCropU0, kSnesCropV0), ImVec2(kSnesCropU1, kSnesCropV1));
+    } else {
+        dl->AddRectFilled(ImVec2(img_x, img_y), ImVec2(img_x + img_w, img_y + img_h),
+                          ImGui::ColorConvertFloat4ToU32(th.control));
+        dl->AddText(ImVec2(img_x + 12.f, img_y + 12.f),
+                    ImGui::ColorConvertFloat4ToU32(th.warn),
+                    art.empty() ? "pad art missing (assets/controllers/pad_snes.png)"
+                                : "pad art failed to load");
+    }
+
+    int hit_n = 0;
+    const SnesPadHit* hits = snes_pad_hits(&hit_n);
+    const float ui_scale = std::clamp(img_w / 570.f, 0.95f, 2.1f);
+    const float chip_w = 60.f * ui_scale;
+    const float chip_h = 18.f * ui_scale;
+
+    int kb_nkeys = 0;
+    const bool* kb_keys = is_pad ? nullptr : SDL_GetKeyboardState(&kb_nkeys);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.f * ui_scale, 0.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f * ui_scale);
+    ImGui::SetWindowFontScale(0.74f * ui_scale);
+    for (int i = 0; i < hit_n; ++i) {
+        const int b = hits[i].button;
+        std::string bound;
+        if (is_pad) {
+            const std::string& tok = s.pad_controls[pi][static_cast<size_t>(b)];
+            bound = tok.empty() ? SnesPlatformSettings::button_default_pad_token(b) : tok;
+        } else {
+            bound = retcomm::sdl_scancode_name(s.kb_scancode[pi][static_cast<size_t>(b)]);
+        }
+
+        bool live_pressed = false;
+        if (!is_pad && kb_keys) {
+            const int sc = s.kb_scancode[pi][static_cast<size_t>(b)];
+            if (sc > 0 && sc < kb_nkeys) live_pressed = kb_keys[sc] != 0;
+        }
+
+        const float cx = img_x + ((hits[i].nx - kSnesCropU0) / crop_w) * img_w;
+        const float cy = img_y + ((hits[i].ny - kSnesCropV0) / crop_h) * img_h;
+        ImGui::SetCursorScreenPos(ImVec2(cx - chip_w * 0.5f, cy - chip_h * 0.5f));
+        ImGui::PushID(b);
+        const bool capturing =
+            !is_pad && d.capturing_player == player && d.capturing_bind == b;
+        const std::string chip =
+            capturing ? "[ ... ]" : (bound.empty() ? SnesPlatformSettings::button_label(b) : bound);
+
+        if (capturing) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
+        else if (live_pressed) ImGui::PushStyleColor(ImGuiCol_Button, th.good_button);
+        else
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImVec4(th.control.x, th.control.y, th.control.z, 0.9f));
+        if (ImGui::Button(chip.c_str(), ImVec2(chip_w, chip_h))) {
+            if (is_pad) {
+                ImGui::OpenPopup("##snes_tok");
+            } else {
+                d.capturing_hotkey = -1;
+                d.capturing_player = player;
+                d.capturing_bind = b;
+            }
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("%s\nBound: %s%s", SnesPlatformSettings::button_label(b),
+                              bound.empty() ? "(unbound)" : bound.c_str(),
+                              live_pressed ? "\n(pressed)" : "");
+        }
+        // A pad bind is a token from a fixed vocabulary, not a key to press, so
+        // it picks from a list rather than capturing input.
+        if (is_pad && ImGui::BeginPopup("##snes_tok")) {
+            ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::button_label(b));
+            ImGui::Separator();
+            auto& tok = s.pad_controls[pi][static_cast<size_t>(b)];
+            for (int t = 0; t < SnesPlatformSettings::pad_token_count(); ++t) {
+                const char* name = SnesPlatformSettings::pad_token(t);
+                if (ImGui::Selectable(name, tok == name)) {
+                    tok = name;
+                    d.dirty = true;
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::PopStyleVar(2);
+    ImGui::EndChild();
+}
+
+// One seat's controller page, as a modal over the seat list — the same shape
+// the PlayStation page uses, and for the same reasons: a three-up header row so
+// the labels sit above their controls instead of stretching across the window,
+// the pad picture inside a sized child so the chips cannot push anything below
+// them, and a fixed footer bar for the profile actions.
+void draw_snes_configure_modal(HubModel& hub, const Theme& th, BoxartCache& boxart) {
+    using retcomm::SnesPlatformSettings;
+    auto& d = hub.snes_settings;
+    if (d.configuring_player < 0 || d.configuring_player >= SnesPlatformSettings::kMaxPlayers)
+        return;
+    const int player = d.configuring_player;
+    const size_t pi = static_cast<size_t>(player);
+    auto& s = d.settings;
+    auto mark = [&] { d.dirty = true; };
+
+    static char name_buf[64]{};
+    static std::string selected;
+    static std::string status;
+
+    ImGui::OpenPopup("##snes_pad_cfg");
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
+                                    std::min(860.f, vp->WorkSize.y * 0.94f)),
+                             ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##snes_pad_cfg", nullptr, ImGuiWindowFlags_None)) return;
+
+    char title[64];
+    std::snprintf(title, sizeof(title), "CONTROLLER - PLAYER %d%s", player + 1,
+                  player < 2 ? "" : "  (multitap seat)");
+    ImGui::TextColored(th.accent, "%s", title);
+    ImGui::SameLine();
+    {
+        constexpr float kCloseW = 80.f;
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - kCloseW);
+        if (ImGui::Button("Close", ImVec2(kCloseW, 0))) {
+            cancel_snes_bind_capture(hub);
+            d.configuring_player = -1;
+            status.clear();
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            return;
+        }
+    }
+    ImGui::Separator();
+    ImGui::PushID(player);
+
+    // The map is the seat's device, always: a seat drives one device, so a
+    // control offering to show the other one only invites binding a map the
+    // seat will never read.
+    const bool is_pad = s.player_src[pi] != 1;
+
+    // Labels above their controls, on shared baselines across the columns.
+    if (ImGui::BeginTable("snes_cfg_top", 2,
+                          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(th.text_muted, "Input source");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(th.text_muted, "Deadzone (all seats)");
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        {
+            std::vector<HubGamepadOpt> pads;
+            collect_snes_gamepads(hub, pads);
+            ImGui::SetNextItemWidth(-1.f);
+            draw_snes_player_source_combo(hub, player, pads);
+        }
+        ImGui::TableNextColumn();
+        {
+            int pct = std::clamp((s.gamepad_deadzone * 100 + 16383) / 32767, 1, 100);
+            ImGui::SetNextItemWidth(-1.f);
+            if (ImGui::SliderInt("##seat_dz", &pct, 1, 100, "%d%%")) {
+                s.gamepad_deadzone = std::clamp((pct * 32767) / 100, 1, 32767);
+                mark();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "[GamepadMap] GamepadDeadzone \xe2\x80\x94 snesrecomp keeps one value for "
+                    "every seat, so this is shared.");
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    // Body in its own sized child: the chips are placed with SetCursorScreenPos
+    // and leave the cursor wherever the last one landed, so anything drawn after
+    // them in the same window lands on top of the pad. The child contains that.
+    const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.f + 14.f;
+    const float body_h = std::max(220.f, ImGui::GetContentRegionAvail().y - footer_h);
+    ImGui::BeginChild("snes_cfg_body", ImVec2(0, body_h), ImGuiChildFlags_None);
+    draw_snes_pad_map(hub, th, player, is_pad, boxart);
+    ImGui::EndChild();
+
+    // Footer: profile actions, fixed widths so nothing is clipped at the edge.
+    const auto profiles = retcomm::load_snes_pad_profiles(hub.paths);
+    constexpr float kBtnW = 92.f;
+    constexpr float kGap = 8.f;
+    ImGui::SetNextItemWidth(200.f);
+    const char* preview = selected.empty() ? "Profile\xe2\x80\xa6" : selected.c_str();
+    if (ImGui::BeginCombo("##snes_profile", preview)) {
+        if (profiles.empty()) ImGui::TextColored(th.text_muted, "(none saved yet)");
+        for (const auto& pr : profiles) {
+            if (ImGui::Selectable(pr.name.c_str(), pr.name == selected)) {
+                selected = pr.name;
+                std::snprintf(name_buf, sizeof(name_buf), "%s", pr.name.c_str());
+                s.pad_controls[pi] = pr.pad_controls;
+                for (int b = 0; b < SnesPlatformSettings::kButtonCount; ++b)
+                    if (pr.kb_scancode[static_cast<size_t>(b)] > 0)
+                        s.kb_scancode[pi][static_cast<size_t>(b)] =
+                            pr.kb_scancode[static_cast<size_t>(b)];
+                mark();
+                status = "Applied " + pr.name;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, kGap);
+    ImGui::SetNextItemWidth(180.f);
+    ImGui::InputTextWithHint("##snes_pname", "profile name", name_buf, sizeof(name_buf));
+
+    auto current = [&]() -> retcomm::SnesPadProfile {
+        retcomm::SnesPadProfile pr;
+        pr.name = name_buf;
+        pr.pad_controls = s.pad_controls[pi];
+        pr.kb_scancode = s.kb_scancode[pi];
+        return pr;
+    };
+
+    ImGui::SameLine(0, kGap);
+    ImGui::BeginDisabled(name_buf[0] == '\0');
+    if (accent_button("Save", th, ImVec2(kBtnW, 0))) {
+        std::string err;
+        if (retcomm::save_snes_pad_profile(hub.paths, current(), &err)) {
+            selected = name_buf;
+            status = "Saved " + selected;
+        } else {
+            status = "Save failed: " + err;
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine(0, kGap);
+    ImGui::BeginDisabled(selected.empty() || name_buf[0] == '\0' || selected == name_buf);
+    if (ImGui::Button("Rename", ImVec2(kBtnW, 0))) {
+        std::string err;
+        if (retcomm::rename_snes_pad_profile(hub.paths, selected, name_buf, &err)) {
+            status = "Renamed " + selected + " to " + name_buf;
+            selected = name_buf;
+        } else {
+            status = "Rename failed: " + err;
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine(0, kGap);
+    ImGui::BeginDisabled(selected.empty());
+    if (danger_button("Delete", th, ImVec2(kBtnW, 0))) {
+        std::string err;
+        if (retcomm::delete_snes_pad_profile(hub.paths, selected, &err)) {
+            status = "Deleted " + selected;
+            selected.clear();
+            name_buf[0] = '\0';
+        } else {
+            status = "Delete failed: " + err;
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine(0, kGap);
+    if (ImGui::Button("Reset", ImVec2(kBtnW, 0))) {
+        const SnesPlatformSettings def;
+        s.pad_controls[pi] = def.pad_controls[pi];
+        s.kb_scancode[pi] = def.kb_scancode[pi];
+        s.apply_defaults_if_unset();
+        mark();
+        status = "Reset player " + std::to_string(player + 1) + " to defaults";
+    }
+
+    if (!status.empty()) ImGui::TextColored(th.text_muted, "%s", status.c_str());
+
+    ImGui::PopID();
+    ImGui::EndPopup();
+}
+
+// The Gamepads tab: five seats across the whole window, each opening its own
+// controller page. Mirrors draw_psx_gamepads_panel — the two platform pages
+// should not want different gestures for the same job.
+void draw_snes_gamepads_panel(HubModel& hub, const Theme& th, float panel_h,
+                              BoxartCache& boxart) {
+    using retcomm::SnesPlatformSettings;
+    auto& d = hub.snes_settings;
+    auto& s = d.settings;
+    auto mark = [&] { d.dirty = true; };
+
+    ImGui::BeginChild("snes_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+
+    ImGui::TextColored(th.text_muted, "CONTROLLERS");
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped(
+        "Seats 1-5: the two native controller ports plus a Super Multitap. Each seat "
+        "carries its own device, keyboard binds and pad map \xe2\x80\x94 open it with "
+        "Configure.");
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 8));
+
+    std::vector<HubGamepadOpt> pads;
+    collect_snes_gamepads(hub, pads);
+
+    const float gap = th.spacing_md;
+    const float availw = ImGui::GetContentRegionAvail().x;
+    const float pref = 280.f;
+    int cols = static_cast<int>((availw + gap) / (pref + gap));
+    cols = std::clamp(cols, 1, 3);
+    float cardw = (availw - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+    if (cardw < 1.f) cardw = availw;
+
+    for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
+        if (p % cols) ImGui::SameLine(0, gap);
+        else if (p) ImGui::Dummy(ImVec2(0, gap));
+
+        ImGui::PushID(p);
+        ImGui::BeginChild("scard", ImVec2(cardw, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        ImGui::TextColored(th.text_muted, "PLAYER %d%s", p + 1, p < 2 ? "" : "  (multitap)");
+        ImGui::Dummy(ImVec2(0, 4));
+        draw_snes_player_source_combo(hub, p, pads);
+        ImGui::Dummy(ImVec2(0, 4));
+
+        // Configure beside a status light, the way the PlayStation seat cards
+        // read. Whether the runner opens a pad for this seat follows the seat's
+        // device — there is nothing a separate toggle could usefully disagree
+        // with — so [GamepadMap] EnableGamepad<n> is derived on write.
+        const float cw = ImGui::GetContentRegionAvail().x;
+        const float half = (cw - th.spacing_sm) * 0.5f;
+        constexpr float btnh = 32.f;
+        if (ImGui::Button("Configure", ImVec2(half, btnh))) {
+            cancel_snes_bind_capture(hub);
+            d.capturing_hotkey = -1;
+            d.configuring_player = p;
+        }
+        ImGui::SameLine(0, th.spacing_sm);
+        {
+            const int src = s.player_src[static_cast<size_t>(p)];
+            const bool live =
+                src == 2 && !s.player_guid[static_cast<size_t>(p)].empty() &&
+                std::any_of(pads.begin(), pads.end(), [&](const HubGamepadOpt& g) {
+                    return g.live && g.guid == s.player_guid[static_cast<size_t>(p)];
+                });
+            const char* st = live ? "connected" : (src == 1 ? "keyboard" : "not assigned");
+            const bool on = live || src == 1;
+            const float sw = 10.f + 8.f + ImGui::CalcTextSize(st).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                                 (btnh - ImGui::GetTextLineHeight()) * 0.5f);
+            const ImVec2 dot_c = ImGui::GetCursorScreenPos();
+            constexpr float r = 4.f;
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(dot_c.x + r, dot_c.y + ImGui::GetTextLineHeight() * 0.5f), r,
+                ImGui::ColorConvertFloat4ToU32(on ? th.good : th.text_muted));
+            ImGui::Dummy(ImVec2(r * 2.f + 6.f, 0));
+            ImGui::SameLine(0, 0);
+            ImGui::TextColored(on ? th.good : th.text_muted, "%s", st);
+        }
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    // Begun at this scope, outside the seat-list child — same placement the
+    // PlayStation page uses, and the OpenPopup that pairs with it lives in the
+    // same function, so the popup id resolves.
+    draw_snes_configure_modal(hub, th, boxart);
+}
+
+// Rewind's pad gesture (config.ini [Controller] RewindGesture). snesrecomp
+// parses a '+'-joined spec of its own token names, so a capture has to emit
+// those names rather than a bitmask the way the PlayStation chords do.
+//
+// The face-button mapping follows the runner's own shipped Controls= line,
+// whose comment says it plainly: SNES A is the pad's B and vice versa. l3 / r3
+// / back are pad-only controls the SNES pad never had, and snesrecomp accepts
+// them by those names.
+const char* snes_gesture_token(int sdl_button) {
+    switch (sdl_button) {
+        case SDL_GAMEPAD_BUTTON_EAST: return "a";
+        case SDL_GAMEPAD_BUTTON_SOUTH: return "b";
+        case SDL_GAMEPAD_BUTTON_NORTH: return "x";
+        case SDL_GAMEPAD_BUTTON_WEST: return "y";
+        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return "l";
+        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "r";
+        case SDL_GAMEPAD_BUTTON_BACK: return "select";
+        case SDL_GAMEPAD_BUTTON_START: return "start";
+        case SDL_GAMEPAD_BUTTON_LEFT_STICK: return "l3";
+        case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return "r3";
+        case SDL_GAMEPAD_BUTTON_DPAD_UP: return "up";
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return "down";
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return "left";
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "right";
+        default: return nullptr;
+    }
+}
+
+void cancel_snes_gesture_capture(HubModel& hub) {
+    hub.snes_settings.capturing_gesture = -1;
+    hub.snes_settings.rewind_gesture_mask = 0;
+}
+
+// Commits on RELEASE, like the PlayStation chords: a gesture is several buttons
+// held at once, so sampling the first button-down would record "select" every
+// time.
+void poll_snes_gesture_capture(HubModel& hub) {
+    auto& d = hub.snes_settings;
+    if (d.capturing_gesture < 0) return;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        cancel_snes_gesture_capture(hub);
+        return;
+    }
+
+    unsigned held = 0;
+    int count = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+        for (int i = 0; i < count; ++i) {
+            SDL_Gamepad* pad = gamepad_handle_for_id(ids[i]);
+            if (!pad) continue;
+            // Union across pads: which controller the player grabbed is not
+            // something they should have to tell us first.
+            for (int b = 0; b < 21; ++b) {
+                if (SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(b)))
+                    held |= (1u << b);
+            }
+        }
+        SDL_free(ids);
+    }
+
+    if (held) {
+        d.rewind_gesture_mask |= held;
+        return;                       // still holding — keep accumulating
+    }
+    if (!d.rewind_gesture_mask) return;   // nothing pressed yet
+
+    std::string spec;
+    for (int b = 0; b < 21; ++b) {
+        if (!((d.rewind_gesture_mask >> b) & 1u)) continue;
+        const char* tok = snes_gesture_token(b);
+        if (!tok) continue;           // a button snesrecomp cannot name
+        if (!spec.empty()) spec += "+";
+        spec += tok;
+    }
+    if (!spec.empty()) {
+        if (d.capturing_gesture == 0) d.settings.rewind_gesture = spec;
+        else d.settings.savestate_menu_gesture = spec;
+        d.dirty = true;
+    }
+    cancel_snes_gesture_capture(hub);
+}
+
+void draw_snes_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart) {
     using retcomm::SnesPlatformSettings;
     poll_snes_hotkey_capture(hub);
+    poll_snes_gesture_capture(hub);
     auto& d = hub.snes_settings;
     auto& s = d.settings;
     auto mark = [&] { d.dirty = true; };
@@ -6366,20 +7976,41 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextUnformatted("SUPER NINTENDO SETTINGS");
     ImGui::PopStyleColor();
-    ImGui::TextWrapped(
-        "Global Display, Audio, Input, and Hotkeys for Super Nintendo titles. Saved prefs "
-        "are merged into each game's config.ini / keybinds.ini on install, update, and "
-        "launch (unless excluded in Manage Game Data). Per-game keys such as Widescreen "
-        "and Shader are left untouched.");
+    // Same tab control the PlayStation page carries: the seats are a page of
+    // their own, not a column squeezed beside Display.
+    const bool gamepads = d.gamepads_tab;
+    constexpr float kTabW = 110.f;
+    {
+        const float right = ImGui::GetWindowContentRegionMax().x;
+        const float wrap_x =
+            ImGui::GetCursorPosX() + (right - ImGui::GetCursorPosX()) - kTabW - 12.f;
+        const float desc_y = ImGui::GetCursorPosY();
+        ImGui::PushTextWrapPos(wrap_x);
+        ImGui::TextWrapped(
+            "%s",
+            gamepads
+                ? "Controller seats for Super Nintendo titles. Assignments write "
+                  "[Controller] SourceP<n> / GuidP<n> and [GamepadMap] EnableGamepad<n> "
+                  "into the global config.ini, applied on install, update, and launch."
+                : "Global Display, Audio, Input, and Hotkeys for Super Nintendo titles. "
+                  "Saved prefs are merged into each game's config.ini / keybinds.ini on "
+                  "install, update, and launch (unless excluded in Manage Game Data). "
+                  "Per-game keys such as Widescreen and Shader are left untouched.");
+        ImGui::PopTextWrapPos();
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(desc_y);
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kTabW));
+        if (gamepads) {
+            if (good_button("System", th, ImVec2(kTabW, 0))) {
+                d.gamepads_tab = false;
+                d.configuring_player = -1;
+                cancel_snes_bind_capture(hub);
+            }
+        } else {
+            if (good_button("Gamepads", th, ImVec2(kTabW, 0))) d.gamepads_tab = true;
+        }
+    }
     ImGui::Separator();
-
-    constexpr float kCol = 200.f;
-    auto cycle_btn = [&](const char* id, const char* label, float w = 160.f) -> bool {
-        ImGui::PushID(id);
-        const bool hit = ImGui::Button(label, ImVec2(w, 0));
-        ImGui::PopID();
-        return hit;
-    };
 
     const float footer_h = ImGui::GetFrameHeight() + 24.f;
     const float gap = 12.f;
@@ -6387,199 +8018,220 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
     const float col_w = std::max(240.f, (avail_x - gap) * 0.42f);
     const float panel_h = std::max(120.f, ImGui::GetContentRegionAvail().y - footer_h);
 
-    ImGui::BeginChild("snes_display_audio", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders);
+    if (gamepads) {
+        draw_snes_gamepads_panel(hub, th, panel_h, boxart);
+    } else {
+    ImGui::BeginChild("snes_display_audio", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
     ImGui::TextColored(th.text_muted, "DISPLAY");
     ImGui::Separator();
     {
-        psx_settings_row_label("Window scale", th, kCol);
-        char lbl[16];
-        std::snprintf(lbl, sizeof(lbl), "%dx", std::clamp(s.window_scale, 1, 6));
-        if (cycle_btn("ws", lbl, 80.f)) {
-            s.window_scale = std::clamp(s.window_scale, 1, 6) % 6 + 1;
+        static const char* kScaleLabels[] = {"1x", "2x", "3x", "4x", "5x", "6x"};
+        static const int kScales[] = {1, 2, 3, 4, 5, 6};
+        if (settings_combo_values("Window scale", "##ws", th, kScaleLabels, kScales, 6,
+                                  &s.window_scale))
             mark();
-        }
-        psx_settings_row_label("Fullscreen", th, kCol);
-        if (ImGui::Checkbox("##fs", &s.fullscreen)) mark();
 
-        psx_settings_row_label("Aspect", th, kCol);
+        static const char* kSnesFs[] = {"Windowed", "Borderless", "Exclusive"};
+        if (settings_combo("Fullscreen", "##fs", th, kSnesFs, 3, &s.fullscreen)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "[Graphics] Fullscreen. Borderless is a desktop-sized window; Exclusive "
+                "takes the display.\nAn SDL3 build maps both to the same window flag, so "
+                "they behave alike there.");
+        }
+
         static const char* kAspect[] = {"4:3 (CRT)", "8:7 (Square pixels)", "1:1 (Square frame)"};
-        if (cycle_btn("asp", kAspect[std::clamp(s.display_aspect, 0, 2)], 170.f)) {
-            s.display_aspect = (std::clamp(s.display_aspect, 0, 2) + 1) % 3;
-            mark();
+        if (settings_combo("Aspect", "##asp", th, kAspect, 3, &s.display_aspect)) mark();
+
+        {
+            const auto& opts = snes_renderer_options();
+            std::vector<const char*> labels;
+            labels.reserve(opts.size());
+            for (const auto& o : opts) labels.push_back(o.label.c_str());
+            int idx = snes_renderer_index(s);
+            if (settings_combo("Renderer", "##renderer", th, labels.data(),
+                               static_cast<int>(labels.size()), &idx)) {
+                s.renderer = opts[static_cast<size_t>(idx)].id;
+                mark();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "Auto lets SDL pick. OpenGL is snesrecomp's own presenter (its "
+                    "shader presets and vsync switch).\n"
+                    "The rest are SDL render drivers this machine has; a build without "
+                    "one falls back to Auto.");
+            }
         }
-        psx_settings_row_label("Output", th, kCol);
-        static const char* kOut[] = {"SDL", "SDL (software)", "OpenGL"};
-        if (cycle_btn("out", kOut[std::clamp(s.output_method, 0, 2)], 140.f)) {
-            s.output_method = (std::clamp(s.output_method, 0, 2) + 1) % 3;
-            mark();
-        }
-        psx_settings_row_label("Linear filtering", th, kCol);
-        if (ImGui::Checkbox("##lf", &s.linear_filtering)) mark();
-        psx_settings_row_label("New PPU renderer", th, kCol);
-        if (ImGui::Checkbox("##nr", &s.new_renderer)) mark();
-        psx_settings_row_label("No sprite limits", th, kCol);
-        if (ImGui::Checkbox("##nsl", &s.no_sprite_limits)) mark();
+
+        if (settings_checkbox("Stretch to window", "##iar", th, &s.ignore_aspect_ratio)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("[Graphics] IgnoreAspectRatio — fill the window instead of "
+                              "keeping the aspect above.");
+
+        if (settings_checkbox("Linear filtering", "##lf", th, &s.linear_filtering)) mark();
+        if (settings_checkbox("New PPU renderer", "##nr", th, &s.new_renderer)) mark();
+        if (settings_checkbox("No sprite limits", "##nsl", th, &s.no_sprite_limits)) mark();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             ImGui::SetTooltip("Lift the per-scanline sprite limit (removes flicker; not faithful).");
+
+        if (settings_checkbox("Frame blending", "##fb", th, &s.frame_blend)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "[Graphics] FrameBlend — average each presented frame with the previous "
+                "one, so alternate-frame flicker reads as translucency the way it did on "
+                "a CRT.");
+        }
+
+        if (settings_checkbox("VSync", "##vs", th, &s.vsync)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("[Graphics] VSync — driver vsync at present time. On by default.");
+
+        {
+            static const char* kRaLabels[] = {"Off", "1 frame", "2 frames", "3 frames"};
+            static const int kRa[] = {0, 1, 2, 3};
+            if (settings_combo_values("Run ahead", "##ra", th, kRaLabels, kRa, 4, &s.run_ahead))
+                mark();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip(
+                    "[General] RunAhead — hide local input latency by re-simulating ahead.\n"
+                    "Each frame costs a whole extra emulated frame every presented frame.");
+            }
+        }
+
+        if (settings_checkbox("Show perf in title bar", "##perf", th, &s.display_perf_title))
+            mark();
+        if (settings_checkbox("Autosave", "##as", th, &s.autosave)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("[General] Autosave — let the runner write SRAM back on its own.");
+
+        // Local rewind. snesrecomp reads no config key for this — the runner
+        // takes it from SNESRECOMP_REWIND — so Retro keeps the preference and
+        // sets that variable when it launches a title.
+        if (settings_checkbox("Rewind", "##rewind", th, &s.rewind_enabled)) mark();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip(
+                "Keep a ring of whole-machine snapshots so the Rewind hotkey can step "
+                "back through them (on by default, ~16 MB).\n"
+                "snesrecomp takes this from the environment, not config.ini, so it "
+                "applies to titles launched from Retro \xe2\x80\x94 not to the game's exe "
+                "started by hand.");
+        }
 
         ImGui::Dummy(ImVec2(0, 8));
         ImGui::Separator();
         ImGui::TextColored(th.text_muted, "AUDIO");
-        psx_settings_row_label("Enable audio", th, kCol);
-        if (ImGui::Checkbox("##ea", &s.enable_audio)) mark();
-        psx_settings_row_label("Sample rate", th, kCol);
+        if (settings_checkbox("Enable audio", "##ea", th, &s.enable_audio)) mark();
         {
-            static const int kFreq[] = {32040, 32000, 44100, 48000};
-            int idx = 0;
-            for (int i = 0; i < 4; ++i)
-                if (kFreq[i] == s.audio_freq) { idx = i; break; }
-            if (cycle_btn("freq", (std::to_string(kFreq[idx]) + " Hz").c_str(), 120.f)) {
-                s.audio_freq = kFreq[(idx + 1) % 4];
+            int vol = std::clamp(s.volume, 0, 100);
+            settings_row("Volume", th, kSettingsCtrlW);
+            if (ImGui::SliderInt("##vol", &vol, 0, 100, "%d%%")) {
+                s.volume = vol;
                 mark();
             }
+        }
+        {
+            static const char* kFreqLabels[] = {"32040 Hz", "32000 Hz", "44100 Hz", "48000 Hz"};
+            static const int kFreq[] = {32040, 32000, 44100, 48000};
+            if (settings_combo_values("Sample rate", "##freq", th, kFreqLabels, kFreq, 4,
+                                      &s.audio_freq))
+                mark();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("32040 Hz is the SPC's native rate (no resampling).");
         }
 
-        ImGui::Dummy(ImVec2(0, 8));
-        ImGui::Separator();
-        ImGui::TextColored(th.text_muted, "HOTKEYS");
-        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-        ImGui::TextWrapped("Click a binding, then press a key (Esc cancels).");
-        ImGui::PopStyleColor();
-        float label_w = 0.f;
-        for (int i = 0; i < SnesPlatformSettings::kHotkeyCount; ++i)
-            label_w = std::max(label_w,
-                               ImGui::CalcTextSize(SnesPlatformSettings::hotkey_label(i)).x);
-        label_w += 16.f;
-        for (int i = 0; i < SnesPlatformSettings::kHotkeyCount; ++i) {
-            ImGui::PushID(200 + i);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::hotkey_label(i));
-            ImGui::SameLine(0.f, label_w - ImGui::CalcTextSize(SnesPlatformSettings::hotkey_label(i)).x);
-            const bool cap = d.capturing_hotkey == i;
-            const std::string& cur = s.hotkeys[static_cast<size_t>(i)];
-            const char* bl = cap ? "[ press... ]"
-                                 : (cur.empty() ? SnesPlatformSettings::hotkey_default(i) : cur.c_str());
-            if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
-            if (ImGui::Button(bl, ImVec2(140.f, 0))) d.capturing_hotkey = i;
-            if (cap) ImGui::PopStyleColor();
-            ImGui::PopID();
-        }
     }
     ImGui::EndChild();
 
     ImGui::SameLine(0.f, gap);
-    ImGui::BeginChild("snes_input", ImVec2(0, panel_h), ImGuiChildFlags_Borders);
-    ImGui::TextColored(th.text_muted, "INPUT");
+    ImGui::BeginChild("snes_hotkeys", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "HOTKEYS");
     ImGui::Separator();
     {
-        std::vector<HubGamepadOpt> pads;
-        collect_snes_gamepads(hub, pads);
-
-        const float cw = ImGui::GetContentRegionAvail().x;
-        const float half = (cw - th.spacing_sm) * 0.5f;
-        for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
-            if (p) ImGui::SameLine(0, th.spacing_sm);
-            ImGui::PushID(p);
-            ImGui::BeginChild("seat", ImVec2(half, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-            ImGui::TextColored(th.text_muted, "PLAYER %d", p + 1);
-            draw_snes_player_source_combo(hub, p, pads);
-            bool en = s.enable_gamepad[static_cast<size_t>(p)];
-            if (ImGui::Checkbox("Open gamepad slot", &en)) {
-                s.enable_gamepad[static_cast<size_t>(p)] = en;
-                mark();
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                ImGui::SetTooltip("[GamepadMap] EnableGamepad%d — let the runner open a pad for this seat.", p + 1);
-            ImGui::EndChild();
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped(
+            "Click a binding, then press a key (Esc cancels). These are the keyboard "
+            "shortcuts the runner listens for while a game is running.");
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 6));
+        for (int i = 0; i < SnesPlatformSettings::kHotkeyCount; ++i) {
+            ImGui::PushID(200 + i);
+            const bool cap = d.capturing_hotkey == i;
+            const std::string& cur = s.hotkeys[static_cast<size_t>(i)];
+            const char* bl = cap ? "[ press... ]"
+                                 : (cur.empty() ? SnesPlatformSettings::hotkey_default(i)
+                                                : cur.c_str());
+            if (settings_bind_button(SnesPlatformSettings::hotkey_label(i), th, bl, cap))
+                d.capturing_hotkey = i;
             ImGui::PopID();
         }
 
-        psx_settings_row_label("Stick deadzone", th, kCol);
-        int pct = std::clamp((s.gamepad_deadzone * 100 + 16383) / 32767, 1, 100);
-        ImGui::SetNextItemWidth(160.f);
-        if (ImGui::SliderInt("##dz", &pct, 1, 100, "%d%%")) {
-            s.gamepad_deadzone = std::clamp((pct * 32767) / 100, 1, 32767);
-            mark();
-        }
-
-        ImGui::Dummy(ImVec2(0, 8));
+        // Controller shortcuts, the same shape the PlayStation page uses: hold
+        // the buttons together and release. snesrecomp has exactly one such
+        // gesture — [Controller] RewindGesture — and reaches its save-state
+        // menu from the keyboard only, so this is the whole section rather
+        // than a list with rows that would write keys nothing reads.
+        ImGui::Dummy(ImVec2(0, 10));
         ImGui::Separator();
-        ImGui::TextColored(th.text_muted, "KEYBOARD");
+        ImGui::TextColored(th.text_muted, "CONTROLLER SHORTCUTS");
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-        ImGui::TextWrapped("Click a key, then press the new key (Esc cancels). Only a seat set "
-                           "to Keyboard reads these.");
+        ImGui::TextWrapped(
+            "Click a binding, then hold the buttons together and release (Esc cancels). "
+            "Lets a player reach these from the couch.");
         ImGui::PopStyleColor();
-        if (ImGui::BeginTable("snes_kb", 3, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 70.f);
-            ImGui::TableSetupColumn("Player 1");
-            ImGui::TableSetupColumn("Player 2");
-            ImGui::TableHeadersRow();
-            for (int b = 0; b < SnesPlatformSettings::kButtonCount; ++b) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::button_label(b));
-                for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
-                    ImGui::TableNextColumn();
-                    ImGui::PushID(p * 100 + b);
-                    const bool cap = d.capturing_player == p && d.capturing_bind == b;
-                    const int sc = s.kb_scancode[static_cast<size_t>(p)][static_cast<size_t>(b)];
-                    const char* bl = cap ? "[ press... ]" : retcomm::sdl_scancode_name(sc);
-                    if (cap) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
-                    if (ImGui::Button(bl, ImVec2(-1.f, 0))) {
-                        d.capturing_hotkey = -1;
-                        d.capturing_player = p;
-                        d.capturing_bind = b;
-                    }
-                    if (cap) ImGui::PopStyleColor();
-                    ImGui::PopID();
+        {
+            struct GestureRow {
+                const char* label;
+                const char* def;
+                std::string* value;
+            };
+            const GestureRow rows[2] = {
+                {"Rewind", "Select+R3", &s.rewind_gesture},
+                {"Save-state menu", "Select+R", &s.savestate_menu_gesture},
+            };
+            for (int g = 0; g < 2; ++g) {
+                ImGui::PushID(g);
+                const bool cap = d.capturing_gesture == g;
+                const std::string shown = cap ? "[ hold buttons... ]"
+                                              : (rows[g].value->empty() ? rows[g].def
+                                                                        : *rows[g].value);
+                if (settings_bind_button(rows[g].label, th, shown.c_str(), cap)) {
+                    d.capturing_hotkey = -1;
+                    cancel_snes_bind_capture(hub);
+                    d.capturing_gesture = g;
+                    d.rewind_gesture_mask = 0;
                 }
-            }
-            ImGui::EndTable();
-        }
-
-        ImGui::Dummy(ImVec2(0, 8));
-        ImGui::Separator();
-        ImGui::TextColored(th.text_muted, "GAMEPAD BUTTONS");
-        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-        ImGui::TextWrapped("Which pad button drives each SNES button ([GamepadMap] Controls). "
-                           "Face buttons default to the SNES layout: SNES A is the pad's B.");
-        ImGui::PopStyleColor();
-        if (ImGui::BeginTable("snes_pad", 3, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 70.f);
-            ImGui::TableSetupColumn("Player 1");
-            ImGui::TableSetupColumn("Player 2");
-            ImGui::TableHeadersRow();
-            for (int b = 0; b < SnesPlatformSettings::kButtonCount; ++b) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(th.text_muted, "%s", SnesPlatformSettings::button_label(b));
-                for (int p = 0; p < SnesPlatformSettings::kMaxPlayers; ++p) {
-                    ImGui::TableNextColumn();
-                    ImGui::PushID(p * 100 + b);
-                    auto& tok = s.pad_controls[static_cast<size_t>(p)][static_cast<size_t>(b)];
-                    ImGui::SetNextItemWidth(-1.f);
-                    if (ImGui::BeginCombo("##tok", tok.empty() ? SnesPlatformSettings::button_default_pad_token(b)
-                                                              : tok.c_str())) {
-                        for (int i = 0; i < SnesPlatformSettings::pad_token_count(); ++i) {
-                            const char* t = SnesPlatformSettings::pad_token(i);
-                            if (ImGui::Selectable(t, tok == t)) {
-                                tok = t;
-                                mark();
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::PopID();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                    ImGui::SetTooltip(
+                        "Empty means the %s default; Clear writes \"none\" to unbind it.\n"
+                        "A gesture needs at least two buttons \xe2\x80\x94 the runner refuses "
+                        "one, so an ordinary press mid-fight cannot open it.",
+                        rows[g].def);
                 }
+                ImGui::Dummy(ImVec2(0, 2));
+                constexpr float kSmallW = 110.f;
+                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+                                              ImGui::GetWindowContentRegionMax().x -
+                                                  kSmallW * 2.f - 8.f));
+                if (ImGui::Button("Default", ImVec2(kSmallW, 0))) {
+                    rows[g].value->clear();
+                    cancel_snes_gesture_capture(hub);
+                    mark();
+                }
+                ImGui::SameLine(0, 8);
+                if (ImGui::Button("Clear", ImVec2(kSmallW, 0))) {
+                    *rows[g].value = "none";
+                    cancel_snes_gesture_capture(hub);
+                    mark();
+                }
+                ImGui::Dummy(ImVec2(0, 6));
+                ImGui::PopID();
             }
-            ImGui::EndTable();
         }
     }
     ImGui::EndChild();
+    }
 
     ImGui::Dummy(ImVec2(0, 12));
     const float footer_y = ImGui::GetCursorPosY();
@@ -6598,6 +8250,7 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
         hub.show_snes_settings = false;
         d.dirty = false;
         d.capturing_hotkey = -1;
+        d.configuring_player = -1;
         cancel_snes_bind_capture(hub);
     }
     if (d.dirty) {
@@ -6612,6 +8265,7 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::SetCursorPos(ImVec2(ImGui::GetWindowContentRegionMax().x - kResetW, footer_y));
     if (ImGui::Button("Reset to Default", ImVec2(kResetW, 0))) {
         d.capturing_hotkey = -1;
+        d.configuring_player = -1;
         cancel_snes_bind_capture(hub);
         s.reset_system_to_defaults();
         mark();
@@ -6623,61 +8277,149 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th) {
     ImGui::EndChild();
 }
 
-void draw_log_collapsed_bar(HubModel& hub, const Theme& th) {
-    constexpr float kBarH = 40.f;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.f, 6.f));
-    ImGui::BeginChild("log_collapsed", ImVec2(0, kBarH), ImGuiChildFlags_Borders);
-    // Compact Show button so it sits inside the bar with a little breathing room.
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, 3.f));
-    const float btn_h = ImGui::GetFrameHeight();
-    const float y = std::max(0.f, (ImGui::GetContentRegionAvail().y - btn_h) * 0.5f);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + y);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-    ImGui::TextUnformatted("ACTIVITY");
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::TextColored(th.text_muted, "(collapsed)");
-    {
-        constexpr float kShowW = 64.f;
-        const float right = ImGui::GetWindowContentRegionMax().x;
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX() + 8.f, right - kShowW));
-        if (ImGui::Button("Show", ImVec2(kShowW, 0))) hub.log_expanded = true;
-    }
-    ImGui::PopStyleVar(); // FramePadding
-    ImGui::EndChild();
-    ImGui::PopStyleVar(); // WindowPadding
-}
+// Activity console.
+//
+// Replaces the old docked ACTIVITY strip at the bottom of the window: it cost
+// vertical space on every frame to show what is, almost always, nothing the
+// player needs. Now it is summoned with ` (grave/tilde) as a translucent
+// overlay over the top half of the window, the way a game console drops down.
+//
+// Lines are one per row rather than wrapped, so a range of them can be selected
+// (click, shift-click, ctrl-click, ctrl+A) and copied with ctrl+C or the Copy
+// button. Long lines scroll horizontally instead of reflowing, which keeps the
+// selection rectangle aligned with what is on screen.
+void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
+    static ImGuiSelectionBasicStorage selection;
+    static bool auto_scroll = true;
+    static int cached_count = -1;
+    static float cached_width = 0.f;
 
-void draw_log(HubModel& hub, const Theme& th, float height, SDL_Window* window) {
-    if (height < 60.f) height = 60.f;
-    ImGui::BeginChild("log", ImVec2(0, height), ImGuiChildFlags_Borders);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-    ImGui::TextUnformatted("ACTIVITY");
-    ImGui::PopStyleColor();
+    auto close_overlay = [&]() {
+        hub.log_overlay_open = false;
+        hub.hub_refocus_pending = true;
+        request_page_focus(hub);
+    };
+
+    const ImGuiIO& io = ImGui::GetIO();
+    // ` toggles. Never while a text field owns the keyboard, or the key would
+    // be swallowed instead of typed.
+    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false)) {
+        if (hub.log_overlay_open) {
+            close_overlay();
+        } else {
+            hub.log_overlay_open = true;
+            hub.log_overlay_focus_pending = true;
+        }
+    }
+    // Escape closes, except while a selection is up: ClearOnEscape uses that
+    // press to clear it, and one key should not do both at once.
+    if (hub.log_overlay_open && selection.Size == 0 &&
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        close_overlay();
+
+    constexpr float kSlideSeconds = 0.14f;
+    const float target = hub.log_overlay_open ? 1.f : 0.f;
+    const float step = io.DeltaTime > 0.f ? io.DeltaTime / kSlideSeconds : 1.f;
+    if (hub.log_overlay_t < target) hub.log_overlay_t = std::min(target, hub.log_overlay_t + step);
+    else if (hub.log_overlay_t > target) hub.log_overlay_t = std::max(target, hub.log_overlay_t - step);
+    if (hub.log_overlay_t <= 0.f) return;
+    const float inv = 1.f - hub.log_overlay_t;
+    const float t = 1.f - inv * inv * inv; // ease-out cubic
 
     std::vector<retcomm::hub::LogLine> lines;
-    std::string plain;
     {
         std::lock_guard<std::mutex> lock(hub.mu);
         lines = hub.log_lines;
-        plain = hub.log;
     }
-    if (plain.empty()) plain = "(no activity yet)";
+    const int count = static_cast<int>(lines.size());
 
-    ImGui::SameLine();
+    auto level_color = [&](retcomm::hub::LogLevel lv) -> ImVec4 {
+        switch (lv) {
+        case retcomm::hub::LogLevel::Accent: return th.accent;
+        case retcomm::hub::LogLevel::Good: return th.good;
+        case retcomm::hub::LogLevel::Warn: return th.warn;
+        case retcomm::hub::LogLevel::Error: return ImVec4(0.95f, 0.35f, 0.40f, 1.f);
+        case retcomm::hub::LogLevel::Info: break;
+        }
+        return th.text_muted; // no Theme::error token; Info stays muted
+    };
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float h = std::max(160.f, vp->WorkSize.y * 0.5f);
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y - h * (1.f - t)));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, h));
+    if (hub.log_overlay_focus_pending) ImGui::SetNextWindowFocus();
+    ImVec4 bg = th.background;
+    bg.w = 0.88f * t; // translucent: the page stays readable underneath
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.f, 10.f));
+    ImGui::Begin("##activity_overlay", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Bottom edge: the same neon rule the header uses, so the overlay reads as
+    // part of the shell rather than a floating window.
     {
-        const float hide_w =
-            ImGui::CalcTextSize("Hide").x + ImGui::GetStyle().FramePadding.x * 2.f;
-        const float export_w =
-            ImGui::CalcTextSize("Export").x + ImGui::GetStyle().FramePadding.x * 2.f;
-        const float copy_w =
-            ImGui::CalcTextSize("Copy").x + ImGui::GetStyle().FramePadding.x * 2.f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const ImVec2 ws = ImGui::GetWindowSize();
+        dl->AddRectFilledMultiColor(ImVec2(wp.x, wp.y + ws.y - 3.f), ImVec2(wp.x + ws.x, wp.y + ws.y),
+                                    ImGui::ColorConvertFloat4ToU32(th.accent),
+                                    ImGui::ColorConvertFloat4ToU32(th.good),
+                                    ImGui::ColorConvertFloat4ToU32(th.good),
+                                    ImGui::ColorConvertFloat4ToU32(th.accent));
+    }
+
+    auto copy_lines = [&](bool selected_only) {
+        std::string clip;
+        if (selected_only && selection.Size > 0) {
+            std::vector<int> idx;
+            idx.reserve(static_cast<size_t>(selection.Size));
+            void* it = nullptr;
+            ImGuiID id = 0;
+            while (selection.GetNextSelectedItem(&it, &id)) idx.push_back(static_cast<int>(id));
+            std::sort(idx.begin(), idx.end());
+            for (int i : idx) {
+                if (i < 0 || i >= count) continue;
+                if (!clip.empty()) clip.push_back('\n');
+                clip += lines[static_cast<size_t>(i)].text;
+            }
+        } else {
+            // Everything, oldest first. The whole buffer is capped upstream.
+            for (const auto& l : lines) {
+                if (!clip.empty()) clip.push_back('\n');
+                clip += l.text;
+            }
+        }
+        ImGui::SetClipboardText(clip.empty() ? "(no activity yet)" : clip.c_str());
+    };
+
+    // Header row.
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextUnformatted("ACTIVITY");
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (selection.Size > 0)
+        ImGui::TextColored(th.focus, "%d of %d line%s selected", selection.Size, count,
+                           count == 1 ? "" : "s");
+    else
+        ImGui::TextColored(th.text_muted, "%d line%s  ·  ` closes  ·  click / shift-click to select",
+                           count, count == 1 ? "" : "s");
+    {
+        const float pad = ImGui::GetStyle().FramePadding.x * 2.f;
         const float gap = ImGui::GetStyle().ItemSpacing.x;
-        const float right = ImGui::GetWindowContentRegionMax().x;
-        ImGui::SetCursorPosX(
-            std::max(ImGui::GetCursorPosX(), right - hide_w - gap - export_w - gap - copy_w));
-        if (ImGui::SmallButton("Hide")) hub.log_expanded = false;
+        const char* copy_label = selection.Size > 0 ? "Copy selected" : "Copy all";
+        const float copy_w = ImGui::CalcTextSize(copy_label).x + pad;
+        const float export_w = ImGui::CalcTextSize("Export").x + pad;
+        const float close_w = ImGui::CalcTextSize("Close").x + pad;
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+                                      ImGui::GetWindowContentRegionMax().x - copy_w - gap -
+                                          export_w - gap - close_w));
+        if (ImGui::SmallButton(copy_label)) copy_lines(true);
         ImGui::SameLine();
         bool file_busy = false;
         {
@@ -6688,95 +8430,75 @@ void draw_log(HubModel& hub, const Theme& th, float height, SDL_Window* window) 
         if (ImGui::SmallButton("Export")) begin_export_activity_log(hub, window);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::SmallButton("Copy")) {
-            // Tail only — recent errors/status matter more than early startup noise.
-            constexpr size_t kCopyLines = 100;
-            const size_t n = lines.size();
-            const size_t start = n > kCopyLines ? n - kCopyLines : 0;
-            std::string clip;
-            for (size_t i = start; i < n; ++i) {
-                if (!clip.empty()) clip.push_back('\n');
-                clip += lines[i].text;
-            }
-            ImGui::SetClipboardText(clip.empty() ? "(no activity yet)" : clip.c_str());
-        }
+        if (ImGui::SmallButton("Close")) close_overlay();
     }
     ImGui::Separator();
 
-    // Console-style log: TextWrapped lines in one scroller (InputTextMultiline
-    // kept its own inner scroll and fought stick-to-bottom). Use Copy for
-    // clipboard; scroll follows new lines until the user scrolls up.
-    ImGui::BeginChild("activity_scroll", ImVec2(0, 0), ImGuiChildFlags_None);
-    static bool auto_scroll = true;
-
-    const float prev_sy = ImGui::GetScrollY();
-    const float prev_sm = ImGui::GetScrollMaxY();
-    if (prev_sm > 1.f && prev_sy < prev_sm - 16.f) auto_scroll = false;
-
-    if (lines.empty()) {
-        ImGui::TextColored(th.text_muted, "%s", plain.c_str());
-    } else {
-        for (const auto& line : lines) {
-            ImVec4 col = th.text;
-            switch (line.level) {
-            case retcomm::hub::LogLevel::Info:
-                col = th.text_muted;
-                break;
-            case retcomm::hub::LogLevel::Accent:
-                col = th.accent;
-                break;
-            case retcomm::hub::LogLevel::Good:
-                col = th.good;
-                break;
-            case retcomm::hub::LogLevel::Warn:
-                col = th.warn;
-                break;
-            case retcomm::hub::LogLevel::Error:
-                col = ImVec4(0.95f, 0.35f, 0.40f, 1.f); // no Theme::error token
-                break;
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, col);
-            ImGui::TextWrapped("%s", line.text.c_str());
-            ImGui::PopStyleColor();
-        }
+    // Widest line decides the horizontal scroll extent. Recomputed when the
+    // buffer grows (and once on open), not every frame.
+    if (cached_count != count) {
+        cached_count = count;
+        cached_width = 0.f;
+        for (const auto& l : lines)
+            cached_width = std::max(cached_width, ImGui::CalcTextSize(l.text.c_str()).x);
     }
 
-    if (auto_scroll) ImGui::SetScrollHereY(1.f);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0.25f * t));
+    ImGui::BeginChild("activity_scroll", ImVec2(0, 0), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    if (hub.log_overlay_focus_pending) {
+        hub.log_overlay_focus_pending = false;
+        ImGui::SetNavCursorVisible(true);
+    }
+
+    // Stick to the newest line until the reader scrolls up.
+    const float prev_max = ImGui::GetScrollMaxY();
+    if (prev_max > 1.f && ImGui::GetScrollY() < prev_max - 16.f) auto_scroll = false;
+
+    if (count == 0) {
+        ImGui::TextColored(th.text_muted, "(no activity yet)");
+    } else {
+        const float row_w = std::max(cached_width, ImGui::GetContentRegionAvail().x);
+        ImGuiMultiSelectIO* ms_io = ImGui::BeginMultiSelect(
+            ImGuiMultiSelectFlags_ClearOnEscape | ImGuiMultiSelectFlags_BoxSelect1d,
+            selection.Size, count);
+        selection.ApplyRequests(ms_io);
+
+        ImGuiListClipper clipper;
+        clipper.Begin(count);
+        if (ms_io->RangeSrcItem != -1)
+            clipper.IncludeItemByIndex(static_cast<int>(ms_io->RangeSrcItem));
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const auto& line = lines[static_cast<size_t>(i)];
+                ImGui::SetNextItemSelectionUserData(i);
+                ImGui::PushID(i);
+                ImGui::PushStyleColor(ImGuiCol_Text, level_color(line.level));
+                ImGui::Selectable(line.text.c_str(), selection.Contains(static_cast<ImGuiID>(i)),
+                                  ImGuiSelectableFlags_None, ImVec2(row_w, 0.f));
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+            }
+        }
+        ms_io = ImGui::EndMultiSelect();
+        selection.ApplyRequests(ms_io);
+
+        // Ctrl+C copies the selection while the console has the keyboard.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, ImGuiInputFlags_RouteGlobal))
+            copy_lines(true);
+    }
+
+    // SetScrollHereY needs an item; with a clipper there may be none, so drive
+    // the scroll value directly.
+    if (auto_scroll) ImGui::SetScrollY(ImGui::GetScrollMaxY());
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 16.f) auto_scroll = true;
 
     ImGui::EndChild();
-    ImGui::EndChild();
-}
-
-// Drag handle between the library/detail body and the activity log.
-// log_h_pref is the user-chosen height; displayed height may shrink with the window
-// but restores up to log_h_pref when space returns (never auto-grows past it).
-void draw_log_splitter(float& log_h, float& log_h_pref, float avail_y, const Theme& th) {
-    constexpr float kSplitH = 6.f;
-    constexpr float kMinLog = 64.f;
-    constexpr float kMinBody = 160.f;
-    const float chrome = kSplitH + ImGui::GetStyle().ItemSpacing.y * 2.f;
-    const float max_log = std::max(kMinLog, avail_y - kMinBody - chrome);
-    log_h = std::clamp(log_h_pref, kMinLog, max_log);
-
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##body_log_split", ImVec2(-1.f, kSplitH));
-    const ImVec2 p1 = ImGui::GetItemRectMax();
-    const bool active = ImGui::IsItemActive();
-    const bool hover = ImGui::IsItemHovered() || active;
-    if (hover) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    if (active) {
-        log_h_pref = std::clamp(log_h_pref - ImGui::GetIO().MouseDelta.y, kMinLog,
-                                std::max(kMinLog, avail_y - kMinBody - chrome));
-        log_h = std::clamp(log_h_pref, kMinLog, max_log);
-    }
-    const ImU32 col =
-        ImGui::ColorConvertFloat4ToU32(hover ? th.accent : th.border);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p0, p1, col);
-    const float mid_y = (p0.y + p1.y) * 0.5f;
-    dl->AddLine(ImVec2(p0.x + 24.f, mid_y), ImVec2(p1.x - 24.f, mid_y),
-                ImGui::ColorConvertFloat4ToU32(th.text_muted), 1.f);
+    ImGui::PopStyleColor(); // ChildBg
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(); // WindowBg
 }
 
 } // namespace
@@ -6822,7 +8544,17 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Controller first: the D-pad / left stick move the focus ring, A activates,
+    // B backs out. Mouse use hides the ring again (ConfigNavCursorVisibleAuto).
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.IniFilename = nullptr;
+    // RETCOMM_HUB_NAV_DEBUG=1 prints ImGui's own focus/nav event log to the
+    // terminal — the only honest way to see where a controller's focus went.
+    if (const char* nav_dbg = std::getenv("RETCOMM_HUB_NAV_DEBUG"); nav_dbg && nav_dbg[0] == '1') {
+        ImGuiContext& g = *ImGui::GetCurrentContext();
+        g.DebugLogFlags |= ImGuiDebugLogFlags_EventFocus | ImGuiDebugLogFlags_EventNav |
+                           ImGuiDebugLogFlags_OutputToTTY;
+    }
 
     // The atlas has to be built before the first frame, and config.json is not
     // loaded yet (that needs hub.paths below), so start from the display's own
@@ -6834,6 +8566,8 @@ int main(int argc, char** argv) {
     retcomm::hub::apply_imgui_style(th);
 
     ImGui_ImplSDL3_InitForOpenGL(window, gl);
+    // Any connected pad drives the hub, not only the first one SDL enumerated.
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);
     ImGui_ImplOpenGL3_Init(glsl);
 
     HubModel hub;
@@ -6858,6 +8592,9 @@ int main(int argc, char** argv) {
         if (want.px != ui.px) rebuild_hub_fonts(want.px);
         ui = want;
         fit_window_to_display(window, ui);
+        // Borderless fullscreen when the user last left it on; fit first so
+        // Restore (F11 again) lands on a sane windowed size.
+        if (hub.cfg.fullscreen) SDL_SetWindowFullscreen(window, true);
         std::fprintf(stderr, "retcomm-hub: UI scale %.2f (window coords x%.2f, %s)\n",
                      static_cast<double>(ui.px), static_cast<double>(ui.coords),
                      hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
@@ -6945,6 +8682,23 @@ int main(int argc, char** argv) {
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                 e.window.windowID == SDL_GetWindowID(window))
                 running = false;
+            // Regaining the OS focus re-initialises ImGui's nav onto the first
+            // header item; a controller expects the ring on the content instead.
+            if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED && !hub.drawer_open)
+                request_page_focus(hub);
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+                hub.cfg.fullscreen = !hub.cfg.fullscreen;
+                SDL_SetWindowFullscreen(window, hub.cfg.fullscreen);
+                retcomm::save_app_config(hub.paths.config_path, hub.cfg);
+            }
+            // Start / Menu / Options opens the drawer, the way a console shell's
+            // system button does. Not during first-run setup or while a settings
+            // page holds unsaved edits.
+            if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                e.gbutton.button == SDL_GAMEPAD_BUTTON_START && !hub.show_setup &&
+                !any_settings_page_open(hub)) {
+                toggle_nav_drawer(hub);
+            }
         }
         tick_psx_bind_capture_poll(hub);
         if (hub.request_exit.load()) running = false;
@@ -7013,91 +8767,113 @@ int main(int argc, char** argv) {
         apply_ui_scale_frame(window, ui);
         ImGui::NewFrame();
 
+        if (hub.pending_open_mods) {
+            hub.pending_open_mods = false;
+            close_settings_pages(hub);
+            hub.show_mods_page = true;
+        }
+        if (hub.pending_open_library) {
+            hub.pending_open_library = false;
+            // Prefill from the platform the user is browsing.
+            if (hub.library_nav != retcomm::hub::LibraryNav::Platforms &&
+                !hub.library_platform.empty()) {
+                hub.library_import_platform = hub.library_platform;
+                hub.scans_platform_filter = hub.library_platform;
+            }
+            close_settings_pages(hub);
+            hub.show_library_panel = true;
+        }
+
+        // Slide the drawer before the page is drawn: the page needs the same
+        // value to know whether it is behind the panel this frame.
+        const float drawer_t = tick_nav_drawer(hub);
+        const bool page_inert = hub.drawer_t > 0.f;
+
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
         ImGui::SetNextWindowSize(vp->WorkSize);
+        if (hub.hub_refocus_pending && hub.drawer_t <= 0.f) {
+            ImGui::SetNextWindowFocus();
+            hub.hub_refocus_pending = false;
+        }
         ImGui::Begin("##hub", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-        draw_marquee(hub, th, ImGui::GetContentRegionAvail().x);
-
-        // Body + optional activity log must fit the remaining region exactly — ImGui adds
-        // ItemSpacing between each, so subtract that or the outer window scrolls.
-        static float log_h_pref = 140.f; // manual height; window grow restores up to this
-        const float avail_y = ImGui::GetContentRegionAvail().y;
-        constexpr float kSplitH = 6.f;
-        constexpr float kMinLog = 64.f;
-        constexpr float kCollapsedLog = 40.f;
-        constexpr float kMinBody = 160.f;
-        const float gap_y = ImGui::GetStyle().ItemSpacing.y;
-        float log_h = 0.f;
-        float body_h = avail_y;
-        if (hub.log_expanded) {
-            const float chrome = kSplitH + gap_y * 2.f;
-            const float max_log = std::max(kMinLog, avail_y - kMinBody - chrome);
-            log_h = std::clamp(log_h_pref, kMinLog, max_log);
-            body_h = std::max(kMinBody, avail_y - log_h - chrome);
-        } else {
-            const float chrome = gap_y;
-            log_h = kCollapsedLog;
-            body_h = std::max(kMinBody, avail_y - log_h - chrome);
+        // Everything under the drawer is inert while it is open — no hover, no
+        // clicks, no nav ring wandering into the page behind the panel.
+        //
+        // This has to be BeginDisabled() rather than the flag it pushes:
+        // PushItemFlag(ImGuiItemFlags_Disabled) sets the item flag without
+        // raising g.DisabledStackSize, and a tooltip opened anywhere inside a
+        // disabled region takes ImGui's BeginDisabledOverrideReenable() path,
+        // whose End asserts that counter is still positive. The hub raises
+        // tooltips on disabled items in ten places, so that was an abort
+        // waiting for the first hover. DisabledAlpha is pinned to 1 for the
+        // duration so nothing fades: the shading is the drawer's job, not a
+        // wash over each widget.
+        const float disabled_alpha_backup = ImGui::GetStyle().DisabledAlpha;
+        if (page_inert) {
+            ImGui::GetStyle().DisabledAlpha = 1.f;
+            ImGui::BeginDisabled(true);
         }
 
-        ImGui::BeginChild("body", ImVec2(0, body_h), ImGuiChildFlags_None);
+        draw_marquee(hub, th, ImGui::GetContentRegionAvail().x);
 
-        if (hub.show_settings) {
-            ImGui::BeginChild("settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
+        // The body owns the whole area below the header now: activity moved into
+        // the ` overlay, so nothing is permanently parked at the bottom.
+        ImGui::BeginChild("body", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+
+        if (hub.show_mods_page) {
+            ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            draw_mods_page(hub, th);
+            ImGui::EndChild();
+        } else if (hub.show_library_panel) {
+            ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            draw_library_panel(hub, th, window);
+            ImGui::EndChild();
+        } else if (hub.show_settings) {
+            ImGui::BeginChild("settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_settings_panel(hub, th, window);
             ImGui::EndChild();
         } else if (hub.show_romm_settings) {
-            ImGui::BeginChild("romm_settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
+            ImGui::BeginChild("romm_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_romm_settings_panel(hub, th);
             ImGui::EndChild();
         } else if (hub.show_psx_settings) {
-            ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
+            ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_psx_settings_panel(hub, th, boxart);
             ImGui::EndChild();
         } else if (hub.show_snes_settings) {
-            ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_None);
-            draw_snes_settings_panel(hub, th);
+            ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            draw_snes_settings_panel(hub, th, boxart);
+            ImGui::EndChild();
+        } else if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
+            // One title, full window: the page splits itself into info + actions.
+            ImGui::BeginChild("title_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            draw_detail(hub, boxart, th, window);
             ImGui::EndChild();
         } else {
-            // Extra width goes to the library; detail is flexible but capped at the
-            // default (~1280) panel width so maximize doesn't stretch the right column.
-            constexpr float kDetailMaxW = 480.f;
-            constexpr float kDetailMinW = 280.f;
-            constexpr float kLibraryMinW = 320.f;
-            const float total_w = ImGui::GetContentRegionAvail().x;
-            const float gap_x = ImGui::GetStyle().ItemSpacing.x;
-            float right_w = std::min(kDetailMaxW, total_w * 0.42f);
-            right_w = std::clamp(right_w, kDetailMinW,
-                                 std::max(kDetailMinW, total_w - kLibraryMinW - gap_x));
-            const float mid_w = std::max(kLibraryMinW, total_w - right_w - gap_x);
-
-            ImGui::BeginChild("mid", ImVec2(mid_w, 0), ImGuiChildFlags_None);
+            // Home (platform cards) and the title grid each own the whole body.
+            // Nothing is parked beside them; picking a card opens the next page.
+            ImGui::BeginChild("home", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_library(hub, boxart, th);
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-            ImGui::BeginChild("right", ImVec2(right_w, 0), ImGuiChildFlags_None);
-            draw_detail(hub, boxart, th, window);
             ImGui::EndChild();
         }
 
         ImGui::EndChild(); // body
-        if (hub.log_expanded) {
-            draw_log_splitter(log_h, log_h_pref, avail_y, th);
-            draw_log(hub, th, log_h, window);
-        } else {
-            draw_log_collapsed_bar(hub, th);
+        if (page_inert) {
+            ImGui::EndDisabled();
+            ImGui::GetStyle().DisabledAlpha = disabled_alpha_backup;
         }
+
         draw_setup_wizard(hub, boxart, th, window);
         draw_setup_scan_prompt(hub, th);
         draw_data_root_dialog(hub, th, window);
-        draw_menu_popup(hub, th, window);
-        draw_library_popup(hub, th, window);
+        draw_nav_drawer(hub, th, drawer_t);
+
+        draw_log_overlay(hub, th, window);
 
         // Import / scan toasts.
         {

@@ -10,6 +10,10 @@
 #include "retcomm/http.hpp"
 #include "retcomm/install.hpp"
 #include "retcomm/launch.hpp"
+#include "retcomm/hash.hpp"
+#include "retcomm/netplay_account.hpp"
+#include "retcomm/netplay_client.hpp"
+#include "retcomm/netplay_ws.hpp"
 #include "retcomm/library_index.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/release_tags.hpp"
@@ -78,6 +82,9 @@ void print_help(const char* argv0) {
         << "      --no-prune               Don't prune stale index/state entries\n"
         << "  cache gc                     Prune old toolchains/SDKs/engines/zips/idle builds\n"
         << "                               and disc images duplicated into install folders\n"
+        << "  netplay probe [opts]         Sign in with Discord, connect to the lobby server,\n"
+        << "                               list rooms/players; --title ID scopes to a game\n"
+        << "  netplay selftest             Digest vectors + libcurl WebSocket availability\n"
         << "  launch <title-id> [opts]     Launch title into its dedicated launcher\n"
         << "      --rom PATH               ROM/disc path (else library index)\n"
         << "      --bios PATH              BIOS path (else bios index)\n"
@@ -863,6 +870,332 @@ int cmd_catalog_update(const retcomm::Paths& paths, const retcomm::AppConfig& cf
     return 1;
 }
 
+// ---- netplay probe (phase 0 spike: transport + sign-in + lobby listing) ----
+int cmd_netplay(const retcomm::Paths& paths, const retcomm::AppConfig& cfg,
+                const retcomm::Catalog& cat, const std::vector<std::string>& args) {
+    using namespace retcomm::netplay;
+    using json = nlohmann::json;
+    auto usage = [] {
+        std::cerr
+            << "usage: retcomm netplay probe [--url WS_URL] [--title CATALOG_ID | --game NAME [--version V]]\n"
+               "                             [--login [--no-browser] [--login-timeout S]] [--logout] [--guest]\n"
+               "                             [--name N] [--create ROOM] [--join LOBBY_ID] [--chat TEXT]\n"
+               "                             [--watch SECONDS] [--verbose]\n"
+               "       retcomm netplay selftest\n";
+    };
+    if (args.size() < 2) {
+        usage();
+        return 2;
+    }
+    const std::string sub = args[1];
+    if (sub == "selftest") {
+        std::cout << "sha256(\"abc\")\n  got    " << retcomm::sha256_hex("abc")
+                  << "\n  expect ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
+                  << "hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n  got    "
+                  << retcomm::hmac_sha256_hex("key", "The quick brown fox jumps over the lazy dog")
+                  << "\n  expect f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\n"
+                  << "libcurl websocket: " << (WsConnection::supported() ? "yes" : "no") << "\n";
+        return 0;
+    }
+    if (sub != "probe") {
+        usage();
+        return 2;
+    }
+
+    std::string url = cfg.netplay.lobby_url;
+    std::string title_id, game, version, name, create_room, join_id, chat_text;
+    bool do_login = false, no_browser = false, do_logout = false, guest = false, verbose = false;
+    int login_timeout = 300, watch = 0;
+    for (size_t i = 2; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        auto next = [&](std::string& dst) {
+            if (i + 1 >= args.size()) {
+                std::cerr << a << " needs a value\n";
+                return false;
+            }
+            dst = args[++i];
+            return true;
+        };
+        std::string v;
+        if (a == "--url") {
+            if (!next(url)) return 2;
+        } else if (a == "--title") {
+            if (!next(title_id)) return 2;
+        } else if (a == "--game") {
+            if (!next(game)) return 2;
+        } else if (a == "--version") {
+            if (!next(version)) return 2;
+        } else if (a == "--name") {
+            if (!next(name)) return 2;
+        } else if (a == "--create") {
+            if (!next(create_room)) return 2;
+        } else if (a == "--join") {
+            if (!next(join_id)) return 2;
+        } else if (a == "--chat") {
+            if (!next(chat_text)) return 2;
+        } else if (a == "--watch") {
+            if (!next(v)) return 2;
+            watch = std::atoi(v.c_str());
+        } else if (a == "--login-timeout") {
+            if (!next(v)) return 2;
+            login_timeout = std::atoi(v.c_str());
+        } else if (a == "--login") {
+            do_login = true;
+        } else if (a == "--no-browser") {
+            no_browser = true;
+        } else if (a == "--logout") {
+            do_logout = true;
+        } else if (a == "--guest") {
+            guest = true;
+        } else if (a == "--verbose") {
+            verbose = true;
+        } else {
+            std::cerr << "unexpected netplay arg: " << a << "\n";
+            usage();
+            return 2;
+        }
+    }
+    if (url.empty()) url = retcomm::kDefaultNetplayLobbyUrl;
+
+    if (!title_id.empty()) {
+        const retcomm::Title* t = cat.find(title_id);
+        if (!t) {
+            std::cerr << "unknown title id: " << title_id << "\n";
+            return 2;
+        }
+        if (!t->supports_netplay()) {
+            std::cerr << title_id << " has no usable netplay block in the catalog\n";
+            return 2;
+        }
+        game = t->netplay.game_name;
+        // Installs can live under any configured install root, not only the
+        // default apps dir; the hub uses the same lookup.
+        const auto plan = retcomm::inspect_install_any(paths, cfg, *t);
+        const std::string installed = plan.record ? plan.record->source_ref : std::string();
+        // The wire pin is what the installed binary was built from; the catalog
+        // value is only the fallback for a title that is not installed here.
+        version = retcomm::normalize_netplay_version(installed.empty() ? t->netplay.game_version
+                                                                       : installed);
+        if (!t->netplay.lobby_url.empty()) url = cfg.resolve_netplay_lobby_url(t->netplay.lobby_url);
+        std::cout << "title " << t->id << " -> game_name \"" << game << "\" version " << version
+                  << (plan.installed ? " (installed build)" : " (not installed; catalog version)")
+                  << "\n";
+    } else if (!version.empty()) {
+        version = retcomm::normalize_netplay_version(version);
+    }
+
+    DiscordAccount acct(DiscordAccount::base_from_ws_url(url),
+                        paths.data_dir / "netplay" / "account.key");
+    if (do_logout) {
+        std::string err;
+        const bool ok = acct.sign_out(&err);
+        std::cout << (ok ? "signed out; device key revoked and removed\n"
+                         : "device key removed locally; server revoke failed: " + err + "\n");
+        return ok ? 0 : 1;
+    }
+    AccountInfo info;
+    std::string session;
+    if (!guest) {
+        std::string err;
+        bool rejected = false;
+        if (acct.has_stored_key()) {
+            if (acct.restore(&info, &err, &rejected)) {
+                session = info.session;
+                std::cout << "signed in as " << info.handle << " (@" << info.discord_username
+                          << ") via stored device key\n";
+            } else if (rejected) {
+                std::cout << "stored device key was rejected by the server and removed; "
+                             "sign in again with --login\n";
+            } else {
+                std::cout << "could not restore the session (" << err << "); key kept\n";
+            }
+        }
+        if (session.empty() && do_login) {
+            std::cout << "starting Discord sign-in (timeout " << login_timeout << "s)…\n";
+            const bool ok = acct.login(
+                &info, &err, login_timeout, !no_browser,
+                [](const std::string& u) { std::cout << "authorise at: " << u << "\n"; });
+            if (ok) {
+                session = info.session;
+                std::cout << "signed in as " << info.handle << " (@" << info.discord_username
+                          << "); device key stored\n";
+            } else {
+                std::cout << "sign-in failed: " << err << "\n";
+                if (acct.unavailable()) return 1;
+            }
+        }
+        if (session.empty()) std::cout << "not signed in; connecting as a guest (use --login)\n";
+    }
+
+    LobbyConfig lc;
+    lc.url = url;
+    lc.session_token = session;
+    lc.display_name = !name.empty() ? name
+                      : !cfg.netplay.display_name.empty() ? cfg.netplay.display_name
+                                                          : std::string("retcomm-probe");
+    lc.game_name = game;
+    lc.game_version = version;
+    std::cout << "connecting " << url;
+    if (!game.empty()) std::cout << "  scope \"" << game << "\" v" << version;
+    std::cout << "\n";
+
+    LobbyClient client;
+    client.start(lc);
+    auto wait_for = [&](const std::function<bool(const Snapshot&)>& pred, int ms) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (std::chrono::steady_clock::now() < end) {
+            if (pred(client.snapshot())) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return pred(client.snapshot());
+    };
+    auto print_rooms = [&](const Snapshot& s) {
+        std::cout << "rooms: " << s.rooms.size() << " shown";
+        if (s.rooms_total != s.rooms.size()) std::cout << " of " << s.rooms_total << " on the server";
+        std::cout << "\n";
+        for (const LobbyRow& r : s.rooms) {
+            std::cout << "  " << r.lobby_id << "  \"" << r.name << "\"  " << r.game_name << " v"
+                      << r.game_version << "  " << r.player_count << "/" << r.max_slots
+                      << (r.has_password ? "  [locked]" : "")
+                      << (r.allow_spectators ? "  spectators " + std::to_string(r.spectator_count) +
+                                                   "/" + std::to_string(r.max_spectators)
+                                             : std::string())
+                      << (r.host_country.empty() ? "" : "  " + r.host_country) << "\n";
+        }
+        std::cout << "players online: " << s.players.size() << "\n";
+        for (const OnlinePlayer& p : s.players) {
+            std::cout << "  " << p.display_name << (p.is_local ? " (you)" : "")
+                      << (p.country.empty() ? "" : " [" + p.country + "]") << "  "
+                      << (p.hosting ? "Hosting" : !p.lobby_id.empty() ? "In lobby" : "Browsing")
+                      << (p.lobby_name.empty() ? "" : " \"" + p.lobby_name + "\"")
+                      << (p.game_name.empty() ? "" : "  " + p.game_name) << "\n";
+        }
+    };
+    auto print_room = [&](const Snapshot& s) {
+        std::cout << "room \"" << s.room_name << "\" " << s.lobby_id << "  session " << s.session_id
+                  << "  " << s.player_count << "/" << s.max_slots
+                  << (s.is_host ? "  (you host)" : "") << (s.all_ready ? "  all ready" : "") << "\n";
+        for (const Member& m : s.members) {
+            std::cout << "  slot " << m.slot << "  " << m.display_name
+                      << (m.is_local ? " (you)" : "") << (m.is_host ? "  Host" : "")
+                      << (m.is_spectator ? "  Watching" : m.ready ? "  Ready" : "  Waiting")
+                      << "\n";
+        }
+    };
+
+    if (!wait_for([](const Snapshot& s) { return s.state != ConnState::Connecting; }, 20000)) {
+        std::cerr << "connect timed out\n";
+        client.stop();
+        return 1;
+    }
+    Snapshot s = client.snapshot();
+    if (s.state != ConnState::Connected) {
+        std::cerr << "connect failed: " << s.transport_error << "\n";
+        client.stop();
+        return 1;
+    }
+    wait_for([](const Snapshot& s) { return s.list_seq > 0 && !s.display_name.empty(); }, 8000);
+    s = client.snapshot();
+    std::cout << "connected: player_id " << s.player_id << "  name \"" << s.display_name << "\""
+              << (s.signed_in ? "  [signed in]" : "  [guest]") << "\n";
+    if (!s.last_error_code.empty())
+        std::cout << "server error: " << s.last_error_code << " " << s.last_error_detail << "\n";
+    print_rooms(s);
+
+    std::uint64_t seen_err = s.error_seq;
+    if (!create_room.empty()) {
+        client.create(create_room, "", 2, json());
+        wait_for([&](const Snapshot& x) { return x.in_room || x.error_seq != seen_err; }, 8000);
+        s = client.snapshot();
+        if (s.in_room) {
+            std::cout << "created ";
+            print_room(s);
+        } else {
+            std::cout << "create failed: " << s.last_error_code << " " << s.last_error_detail << "\n";
+        }
+        seen_err = s.error_seq;
+    }
+    if (!join_id.empty()) {
+        client.join(join_id, "");
+        wait_for([&](const Snapshot& x) { return x.in_room || x.error_seq != seen_err; }, 8000);
+        s = client.snapshot();
+        if (s.in_room) {
+            std::cout << "joined ";
+            print_room(s);
+        } else {
+            std::cout << "join failed: " << s.last_error_code << " " << s.last_error_detail << "\n";
+        }
+        seen_err = s.error_seq;
+    }
+    if (!chat_text.empty()) {
+        if (s.in_room) client.chat(chat_text);
+        else client.server_chat(chat_text);
+    }
+
+    if (watch > 0) {
+        std::cout << "watching for " << watch << "s…\n";
+        std::uint64_t last_list = s.list_seq, last_chat = 0, last_err = seen_err;
+        std::string last_members;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(watch);
+        while (std::chrono::steady_clock::now() < end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            s = client.snapshot();
+            if (s.state != ConnState::Connected) {
+                std::cout << "disconnected: " << s.transport_error << "\n";
+                break;
+            }
+            if (s.list_seq != last_list) {
+                last_list = s.list_seq;
+                std::cout << "[list] " << s.rooms.size() << " room(s), " << s.players.size()
+                          << " player(s)";
+                for (const LobbyRow& r : s.rooms)
+                    std::cout << "  \"" << r.name << "\" " << r.player_count << "/" << r.max_slots;
+                std::cout << "\n";
+            }
+            for (const auto* ring : {&s.server_chat, &s.room_chat}) {
+                for (const ChatLine& l : *ring) {
+                    if (l.seq <= last_chat) continue;
+                    last_chat = l.seq;
+                    std::cout << (ring == &s.room_chat ? "[room] " : "[server] ")
+                              << (l.is_system ? "* " : l.from + ": ") << l.text << "\n";
+                }
+            }
+            if (s.error_seq != last_err) {
+                last_err = s.error_seq;
+                std::cout << "[error] " << s.last_error_code << " " << s.last_error_detail << "\n";
+            }
+            std::string sig;
+            for (const Member& m : s.members)
+                sig += std::to_string(m.slot) + ":" + m.display_name + (m.ready ? "+" : "-") + ";";
+            if (s.in_room && sig != last_members) {
+                last_members = sig;
+                print_room(s);
+            }
+            if (!s.in_room && !last_members.empty()) {
+                last_members.clear();
+                std::cout << "[room] " << s.room_status << "\n";
+            }
+            if (s.launch_pending) {
+                std::cout << "[launch] " << s.launch.dump() << "\n";
+                break;
+            }
+        }
+    }
+    if (verbose) {
+        s = client.snapshot();
+        std::cout << "--- trace (" << s.trace.size() << " op(s))\n";
+        for (const std::string& t : s.trace) std::cout << t.substr(0, 400) << "\n";
+    }
+    s = client.snapshot();
+    if (s.in_room) {
+        if (s.is_host) client.close_room();
+        else client.leave();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    client.stop();
+    return 0;
+}
+
 int cmd_orphans(const retcomm::Paths& paths, const retcomm::Catalog& cat, bool do_remove,
                 const retcomm::OrphanCleanupOptions& opts) {
     try {
@@ -1337,6 +1670,9 @@ int main(int argc, char** argv) {
             for (const auto& m : cr.messages) std::cout << m << "\n";
             std::cout << cr.message << "\n";
             return cr.ok ? 0 : 1;
+        }
+        if (cmd == "netplay") {
+            return cmd_netplay(paths, cfg, catalog, args);
         }
         if (cmd == "launch") {
             if (args.size() < 2) {

@@ -58,6 +58,8 @@ struct AppConfig {
     bool filter_unsupported_titles = false;
     // On hub launch, run Check Updates (catalog → launcher → games → toolchain).
     bool check_updates_on_startup = true;
+    // Borderless fullscreen for the hub window (F11 toggles and saves it).
+    bool fullscreen = false;
     // After a catalog update introduces titles that have no ROM binding yet,
     // re-bind them from cached hashes and then scan the affected platforms, so
     // newly catalogued games appear without a manual Scan Files.

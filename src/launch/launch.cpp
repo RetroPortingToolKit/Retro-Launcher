@@ -567,6 +567,42 @@ void append_psx_codegen_launch_env(LaunchPlan& lp, const Title& title,
         lp.env.emplace_back("PSXRECOMP_BUILD_DIR", path_utf8(build_dir));
 }
 
+// An AppImage install launches through the payload's AppRun, which needs APPDIR
+// to find its own tree. Left to itself it would also seed and run the game out
+// of ~/.local/share/<Game>, outside anything Retro manages — so it is handed a
+// private XDG_DATA_HOME inside the install root. AppRun resolves the game's
+// data directory under that, cds there, and points the runtime's argv[0] at a
+// symlink inside it; psxrecomp anchors settings, saves, memory cards and cache
+// to argv[0], so everything Retro stages into that directory (settings.toml,
+// config.ini, disc.cfg, bios.cfg, restored preserved/ state) is exactly what
+// the game reads. Returns the data directory, or empty when not an AppImage.
+fs::path plan_appimage_launch(LaunchPlan& lp, const Title& title, const InstallPlan& inst) {
+    const bool appimage = (inst.record && install_is_appimage(*inst.record)) ||
+                          (!lp.binary.empty() && lp.binary.filename() == "AppRun");
+    if (!appimage) return {};
+
+    const fs::path appdir = lp.binary.parent_path();
+    const fs::path xdg_data_home = appimage_data_home(inst.install_root);
+    const fs::path data_dir = appimage_data_dir(title, inst.install_root);
+    std::error_code ec;
+    fs::create_directories(data_dir, ec);
+
+    lp.env.emplace_back("APPDIR", path_utf8(appdir));
+    lp.env.emplace_back("XDG_DATA_HOME", path_utf8(xdg_data_home));
+    lp.cwd = data_dir;
+    return data_dir;
+}
+
+// snesrecomp's local rewind is on unless SNESRECOMP_REWIND=0 is in the
+// environment — it reads no config.ini key for it (runner/src/state/
+// snes_rewind.c). So Retro's "Rewind" checkbox has to travel as env, which
+// means it holds for launches through Retro and not for the exe run by hand.
+void append_snes_rewind_launch_env(LaunchPlan& lp, const Paths& paths, const Title& title) {
+    if (!is_snes_platform(title.platform)) return;
+    if (load_snes_platform_settings(paths).rewind_enabled) return;  // runner default
+    lp.env.emplace_back("SNESRECOMP_REWIND", "0");
+}
+
 #if defined(_WIN32)
 
 std::wstring utf8_to_wide(const std::string& s) {
@@ -756,6 +792,175 @@ const char* launch_mode_name(LaunchMode mode) {
     return "default";
 }
 
+namespace {
+
+// Small file/line helpers for the per-install settings below. Local rather
+// than shared: these edit a game's own config, and the launcher's other
+// writers here already have their own conventions.
+std::string skip_read_file(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string skip_trim(std::string s) {
+    const char* ws = " \t\r\n";
+    const auto b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return {};
+    return s.substr(b, s.find_last_not_of(ws) - b + 1);
+}
+
+std::vector<std::string> skip_split_lines(const std::string& body) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : body) {
+        if (c == '\n') { out.push_back(cur); cur.clear(); }
+        else if (c != '\r') cur += c;
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+std::string skip_unquote(std::string v) {
+    v = skip_trim(std::move(v));
+    if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') ||
+                          (v.front() == '\'' && v.back() == '\'')))
+        v = v.substr(1, v.size() - 2);
+    return v;
+}
+
+bool skip_truthy(const std::string& v) {
+    const std::string t = skip_unquote(v);
+    return t == "true" || t == "1" || t == "yes";
+}
+
+bool is_snes_slug(const std::string& p) { return p == "snes" || p == "sfc"; }
+
+// Replace `key = value` inside [section], or append the section/key. Same
+// surgical shape as set_mod_enabled: everything else in the file is preserved
+// byte for byte, because these are the game's own settings.
+bool upsert_keyed_line(const fs::path& path, const std::string& section, const std::string& key,
+                       const std::string& value, bool toml, std::string* error) {
+    std::vector<std::string> lines = skip_split_lines(skip_read_file(path));
+    const std::string want = toml ? (key + " = " + value) : (key + "=" + value);
+    const std::string header = "[" + section + "]";
+
+    long sec_begin = -1, sec_end = static_cast<long>(lines.size());
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string t = skip_trim(lines[i]);
+        if (t.empty() || t[0] != '[') continue;
+        if (sec_begin < 0) {
+            std::string name = t;
+            const size_t close = name.find(']');
+            if (close != std::string::npos) name = skip_trim(name.substr(1, close - 1));
+            if (name == section) { sec_begin = static_cast<long>(i); continue; }
+        } else {
+            sec_end = static_cast<long>(i);
+            break;
+        }
+    }
+
+    bool replaced = false;
+    if (sec_begin >= 0) {
+        for (long i = sec_begin + 1; i < sec_end; ++i) {
+            const std::string t = skip_trim(lines[static_cast<size_t>(i)]);
+            const size_t eq = t.find('=');
+            if (t.empty() || t[0] == '#' || eq == std::string::npos) continue;
+            if (skip_trim(t.substr(0, eq)) != key) continue;
+            lines[static_cast<size_t>(i)] = want;
+            replaced = true;
+            break;
+        }
+        if (!replaced) {
+            lines.insert(lines.begin() + sec_begin + 1, want);
+            replaced = true;
+        }
+    }
+    if (!replaced) {
+        if (!lines.empty() && !skip_trim(lines.back()).empty()) lines.push_back("");
+        lines.push_back(header);
+        lines.push_back(want);
+    }
+
+    std::string out;
+    for (const std::string& l : lines) { out += l; out += '\n'; }
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    const fs::path temp = path.string() + ".tmp";
+    {
+        std::ofstream f(temp, std::ios::trunc | std::ios::binary);
+        if (!f) {
+            if (error) *error = "cannot write " + temp.string();
+            return false;
+        }
+        f << out;
+        if (!f) {
+            if (error) *error = "cannot finish " + temp.string();
+            return false;
+        }
+    }
+    fs::rename(temp, path, ec);
+    if (ec) {
+        ec.clear();
+        fs::remove(path, ec);
+        ec.clear();
+        fs::rename(temp, path, ec);
+    }
+    if (ec) {
+        if (error) *error = "cannot publish " + path.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+// One key in one section. Both files are flat ini/toml here, so this walks
+// them directly rather than dragging in a general parser for a single lookup.
+std::string read_keyed_line(const fs::path& path, const std::string& section,
+                            const std::string& key) {
+    bool in_section = false;
+    for (const std::string& raw : skip_split_lines(skip_read_file(path))) {
+        const std::string line = skip_trim(raw);
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        if (line.front() == '[') {
+            const size_t close = line.find(']');
+            in_section = close != std::string::npos &&
+                         skip_trim(line.substr(1, close - 1)) == section;
+            continue;
+        }
+        if (!in_section) continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (skip_trim(line.substr(0, eq)) != key) continue;
+        return skip_unquote(line.substr(eq + 1));
+    }
+    return {};
+}
+
+} // namespace
+
+bool title_skip_launcher(const fs::path& game_dir, const std::string& platform) {
+    if (game_dir.empty()) return false;
+    if (is_snes_slug(platform))
+        return skip_truthy(read_keyed_line(game_dir / "config.ini", "General", "SkipLauncher"));
+    return skip_truthy(read_keyed_line(game_dir / "settings.toml", "launcher", "skip_launcher"));
+}
+
+bool set_title_skip_launcher(const fs::path& game_dir, const std::string& platform, bool on,
+                             std::string* error) {
+    if (game_dir.empty()) {
+        if (error) *error = "no game directory";
+        return false;
+    }
+    if (is_snes_slug(platform)) {
+        return upsert_keyed_line(game_dir / "config.ini", "General", "SkipLauncher",
+                                 on ? "1" : "0", /*toml=*/false, error);
+    }
+    return upsert_keyed_line(game_dir / "settings.toml", "launcher", "skip_launcher",
+                             on ? "true" : "false", /*toml=*/true, error);
+}
+
 LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptions& opts) {
     LaunchPlan lp;
     lp.title = &title;
@@ -783,7 +988,11 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
     }
 
     lp.cwd = lp.binary.parent_path();
+    // Must run before anything derives paths from lp.cwd: an AppImage install
+    // moves the game's working directory out of the release tree.
+    plan_appimage_launch(lp, title, inst);
     append_psx_codegen_launch_env(lp, title, inst.install_root);
+    append_snes_rewind_launch_env(lp, paths, title);
     lp.media_path = prefer_media_path(title, opts.rom_path);
     if (is_disc_platform(title.platform)) {
         if (!opts.rom_path.empty() && lp.media_path.empty()) {
@@ -836,7 +1045,13 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
         }
     }
 
-    const bool open_launcher = (opts.mode == LaunchMode::Default);
+    // Skip Launcher is a per-install setting (settings.toml [launcher] for
+    // psxrecomp, config.ini [General] for snesrecomp), but a command line wins
+    // over a config file: passing --launcher here re-opened the engine's own
+    // launcher screen no matter what the setting said, which made the hub's
+    // checkbox look broken. Honour it by not asking for the screen at all.
+    const bool skip_launcher = title_skip_launcher(lp.cwd, title.platform);
+    const bool open_launcher = (opts.mode == LaunchMode::Default) && !skip_launcher;
     append_default_argv(lp, title, open_launcher);
     if (lp.use_wine) lp.argv.insert(lp.argv.begin(), wine_bin);
 

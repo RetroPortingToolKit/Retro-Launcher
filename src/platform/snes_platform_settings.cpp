@@ -38,15 +38,18 @@ const char* kPadTokens[] = {"DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Back
 const char* kHotkeyKeys[SnesPlatformSettings::kHotkeyCount] = {
     "Fullscreen",  "Reset",       "Pause",       "PauseDimmed",
     "Turbo",       "WindowBigger", "WindowSmaller", "VolumeUp",
-    "VolumeDown",  "DisplayPerf", "ToggleRenderer", "ToggleWidescreen"};
+    "VolumeDown",  "DisplayPerf", "ToggleRenderer", "ToggleWidescreen",
+    "SaveStateMenu", "Rewind",    "Screenshot"};
 const char* kHotkeyLabels[SnesPlatformSettings::kHotkeyCount] = {
     "Fullscreen",    "Reset",         "Pause",           "Pause (dimmed)",
     "Turbo",         "Window bigger", "Window smaller",  "Volume up",
-    "Volume down",   "Display perf",  "Toggle renderer", "Toggle widescreen"};
+    "Volume down",   "Display perf",  "Toggle renderer", "Toggle widescreen",
+    "Save-state menu", "Rewind",      "Screenshot"};
 // Values the framework ships in every port's config.ini [KeyMap].
 const char* kHotkeyDefaults[SnesPlatformSettings::kHotkeyCount] = {
     "Alt+Return", "Ctrl+r",    "Shift+p", "p", "Tab", "Ctrl+Up",
-    "Ctrl+Down",  "Shift+=",   "Shift+-", "f", "r",   "Alt+w"};
+    "Ctrl+Down",  "Shift+=",   "Shift+-", "f", "r",   "Alt+w",
+    "F7",         "F8",        ""};
 
 const char* kAspectLit[] = {"4:3", "8:7", "1:1"};
 const char* kOutputLit[] = {"SDL", "SDL-Software", "OpenGL"};
@@ -98,26 +101,80 @@ void parse_ini(const std::string& body, SnesPlatformSettings& s) {
         bool bv = false;
         if (ieq(sec, "Graphics")) {
             if (ieq(key, "WindowScale")) s.window_scale = std::clamp(std::atoi(val.c_str()), 1, 6);
-            else if (ieq(key, "Fullscreen")) s.fullscreen = std::atoi(val.c_str()) != 0;
+            else if (ieq(key, "Fullscreen"))
+                s.fullscreen = std::clamp(std::atoi(val.c_str()), 0, 2);
             else if (ieq(key, "DisplayAspect")) s.display_aspect = parse_aspect(val);
             else if (ieq(key, "OutputMethod")) s.output_method = parse_output(val);
+            else if (ieq(key, "Renderer")) s.renderer = val;
+        } else if (ieq(sec, "Video")) {
+            // A per-game host's spellings. Read as well as written, so the
+            // settings page reflects a config such a title wrote itself.
+            if (ieq(key, "Fullscreen")) s.fullscreen = std::clamp(std::atoi(val.c_str()), 0, 2);
+            else if (ieq(key, "Vsync") && parse_bool(val, &bv)) s.vsync = bv;
+            else if (ieq(key, "FrameBlend") && parse_bool(val, &bv)) s.frame_blend = bv;
+            else if (ieq(key, "LinearFilter") && parse_bool(val, &bv)) s.linear_filtering = bv;
+            else if (ieq(key, "IgnoreAspect") && parse_bool(val, &bv))
+                s.ignore_aspect_ratio = bv;
+            else if (ieq(key, "Aspect")) s.display_aspect = parse_aspect(val);
+            else if (ieq(key, "Renderer")) s.renderer = val;
+        } else if (ieq(sec, "Emulation")) {
+            if (ieq(key, "RunAhead")) s.run_ahead = std::clamp(std::atoi(val.c_str()), 0, 10);
             else if (ieq(key, "LinearFiltering") && parse_bool(val, &bv)) s.linear_filtering = bv;
             else if (ieq(key, "NewRenderer") && parse_bool(val, &bv)) s.new_renderer = bv;
             else if (ieq(key, "NoSpriteLimits") && parse_bool(val, &bv)) s.no_sprite_limits = bv;
+            else if (ieq(key, "FrameBlend") && parse_bool(val, &bv)) s.frame_blend = bv;
+            else if (ieq(key, "VSync") && parse_bool(val, &bv)) s.vsync = bv;
+            else if (ieq(key, "IgnoreAspectRatio") && parse_bool(val, &bv))
+                s.ignore_aspect_ratio = bv;
+        } else if (ieq(sec, "General")) {
+            // Retro's own preference (see SnesPlatformSettings::rewind_enabled);
+            // never written into a game's config.ini.
+            if (ieq(key, "EnableRewind") && parse_bool(val, &bv)) s.rewind_enabled = bv;
+            else if (ieq(key, "RunAhead")) s.run_ahead = std::clamp(std::atoi(val.c_str()), 0, 10);
+            else if (ieq(key, "Autosave") && parse_bool(val, &bv)) s.autosave = bv;
+            else if (ieq(key, "DisplayPerfInTitle") && parse_bool(val, &bv))
+                s.display_perf_title = bv;
         } else if (ieq(sec, "Sound")) {
             if (ieq(key, "EnableAudio") && parse_bool(val, &bv)) s.enable_audio = bv;
             else if (ieq(key, "AudioFreq")) {
                 const int f = std::atoi(val.c_str());
                 if (f > 0) s.audio_freq = f;
+            } else if (ieq(key, "Volume")) {
+                s.volume = std::clamp(std::atoi(val.c_str()), 0, 100);
             }
         } else if (ieq(sec, "GamepadMap")) {
-            if (ieq(key, "EnableGamepad1") && parse_bool(val, &bv)) s.enable_gamepad[0] = bv;
-            else if (ieq(key, "EnableGamepad2") && parse_bool(val, &bv)) s.enable_gamepad[1] = bv;
-            else if (ieq(key, "GamepadDeadzone"))
+            if (ieq(key, "GamepadDeadzone")) {
                 s.gamepad_deadzone = std::clamp(std::atoi(val.c_str()), 1, 32767);
-            else if (ieq(key, "Controls")) split_controls(val, s.pad_controls[0]);
-            else if (ieq(key, "ControlsP2")) split_controls(val, s.pad_controls[1]);
+                return;
+            }
+            // Seat 1 is "Controls"; the rest are "ControlsP<N>" — snesrecomp's
+            // own spelling, extended past the two it currently reads.
+            if (ieq(key, "Controls")) {
+                split_controls(val, s.pad_controls[0]);
+                return;
+            }
+            for (int p = 0; p < kP; ++p) {
+                const std::string en = "EnableGamepad" + std::to_string(p + 1);
+                if (ieq(key, en.c_str())) {
+                    if (parse_bool(val, &bv)) s.enable_gamepad[static_cast<size_t>(p)] = bv;
+                    return;
+                }
+                if (p == 0) continue;
+                const std::string ctl = "ControlsP" + std::to_string(p + 1);
+                if (ieq(key, ctl.c_str())) {
+                    split_controls(val, s.pad_controls[static_cast<size_t>(p)]);
+                    return;
+                }
+            }
         } else if (ieq(sec, "Controller")) {
+            if (ieq(key, "RewindGesture")) {
+                s.rewind_gesture = val;
+                return;
+            }
+            if (ieq(key, "SaveStateMenuGesture")) {
+                s.savestate_menu_gesture = val;
+                return;
+            }
             for (int p = 0; p < kP; ++p) {
                 const std::string src = "SourceP" + std::to_string(p + 1);
                 const std::string guid = "GuidP" + std::to_string(p + 1);
@@ -137,8 +194,8 @@ void parse_keybinds(const std::string& body, SnesPlatformSettings& s) {
     for_each_ini_pair(body, [&](const std::string& sec, const std::string& key,
                                 const std::string& val) {
         int p = -1;
-        if (ieq(sec, "player1")) p = 0;
-        else if (ieq(sec, "player2")) p = 1;
+        for (int i = 0; i < kP; ++i)
+            if (ieq(sec, ("player" + std::to_string(i + 1)).c_str())) { p = i; break; }
         if (p < 0) return;
         for (int b = 0; b < kN; ++b) {
             if (ieq(key, kButtonIniKeys[b])) {
@@ -153,22 +210,81 @@ void parse_keybinds(const std::string& body, SnesPlatformSettings& s) {
 // The managed key set. Everything else in the game's config.ini (Widescreen,
 // Shader, Load/Save state rows, [Controller.<guid>] profiles, Msu1, Netplay
 // name) passes through untouched.
-void write_ini_body(std::string& body, const SnesPlatformSettings& s) {
+// `launcher_prefs` adds the keys that are Retro's own rather than the runner's.
+// Only Retro's global file gets them; a game's config.ini must contain nothing
+// snesrecomp does not read.
+void write_ini_body(std::string& body, const SnesPlatformSettings& s,
+                    bool launcher_prefs = false) {
+    if (launcher_prefs)
+        upsert_ini_key(body, "General", "EnableRewind", s.rewind_enabled ? "1" : "0");
     upsert_ini_key(body, "Graphics", "WindowScale", std::to_string(std::clamp(s.window_scale, 1, 6)));
-    upsert_ini_key(body, "Graphics", "Fullscreen", s.fullscreen ? "1" : "0");
+    upsert_ini_key(body, "Graphics", "Fullscreen",
+                   std::to_string(std::clamp(s.fullscreen, 0, 2)));
     upsert_ini_key(body, "Graphics", "DisplayAspect", kAspectLit[std::clamp(s.display_aspect, 0, 2)]);
-    upsert_ini_key(body, "Graphics", "OutputMethod", kOutputLit[std::clamp(s.output_method, 0, 2)]);
+    // Renderer and OutputMethod together: snesrecomp derives the presenter
+    // from Renderer when it is set, but a build predating that key reads only
+    // OutputMethod — so write the presenter Renderer implies, by its own
+    // mapping (opengl -> OpenGL, software -> SDL-Software, anything else ->
+    // SDL + a render-driver hint).
+    int out = std::clamp(s.output_method, 0, 2);
+    if (!s.renderer.empty()) {
+        if (s.renderer == "opengl") out = 2;
+        else if (s.renderer == "software") out = 1;
+        else out = 0;
+    }
+    upsert_ini_key(body, "Graphics", "OutputMethod", kOutputLit[out]);
+    upsert_ini_key(body, "Graphics", "Renderer", s.renderer);
     upsert_ini_key(body, "Graphics", "LinearFiltering", s.linear_filtering ? "1" : "0");
     upsert_ini_key(body, "Graphics", "NewRenderer", s.new_renderer ? "1" : "0");
     upsert_ini_key(body, "Graphics", "NoSpriteLimits", s.no_sprite_limits ? "1" : "0");
+    upsert_ini_key(body, "Graphics", "FrameBlend", s.frame_blend ? "1" : "0");
+    upsert_ini_key(body, "Graphics", "VSync", s.vsync ? "1" : "0");
+    upsert_ini_key(body, "Graphics", "IgnoreAspectRatio", s.ignore_aspect_ratio ? "1" : "0");
+    // Mirror the display keys into [Video] / [Emulation] as well.
+    //
+    // Not every SNES title uses the framework host. A per-game host reads its
+    // own spellings -- Gundam Wing's main.c does
+    // game_config_int("[Video]", "Fullscreen", 0) and never looks at
+    // [Graphics] -- so a launcher that wrote only [Graphics] set Fullscreen,
+    // Vsync, FrameBlend and LinearFilter on those titles to no effect at all.
+    // That port's own comment: "A setting that silently does nothing is how
+    // [Video] Fullscreen went unnoticed for this long."
+    //
+    // Writing both is safe in the other direction: the framework host maps
+    // [Video]/[Emulation] to its legacy section, which returns true for keys
+    // it does not know rather than reporting them, so nothing warns.
+    upsert_ini_key(body, "Video", "Fullscreen", std::to_string(std::clamp(s.fullscreen, 0, 2)));
+    upsert_ini_key(body, "Video", "Vsync", s.vsync ? "1" : "0");
+    upsert_ini_key(body, "Video", "FrameBlend", s.frame_blend ? "1" : "0");
+    upsert_ini_key(body, "Video", "LinearFilter", s.linear_filtering ? "1" : "0");
+    upsert_ini_key(body, "Video", "IgnoreAspect", s.ignore_aspect_ratio ? "1" : "0");
+    upsert_ini_key(body, "Video", "Aspect", kAspectLit[std::clamp(s.display_aspect, 0, 2)]);
+    upsert_ini_key(body, "Video", "Renderer", s.renderer);
+    upsert_ini_key(body, "Emulation", "RunAhead",
+                   std::to_string(std::clamp(s.run_ahead, 0, 10)));
+
     upsert_ini_key(body, "Sound", "EnableAudio", s.enable_audio ? "1" : "0");
     upsert_ini_key(body, "Sound", "AudioFreq", std::to_string(s.audio_freq));
-    upsert_ini_key(body, "GamepadMap", "EnableGamepad1", s.enable_gamepad[0] ? "true" : "false");
-    upsert_ini_key(body, "GamepadMap", "EnableGamepad2", s.enable_gamepad[1] ? "true" : "false");
+    upsert_ini_key(body, "Sound", "Volume", std::to_string(std::clamp(s.volume, 0, 100)));
+    upsert_ini_key(body, "General", "RunAhead", std::to_string(std::clamp(s.run_ahead, 0, 10)));
+    upsert_ini_key(body, "General", "Autosave", s.autosave ? "1" : "0");
+    upsert_ini_key(body, "General", "DisplayPerfInTitle", s.display_perf_title ? "1" : "0");
+    upsert_ini_key(body, "Controller", "RewindGesture", s.rewind_gesture);
+    upsert_ini_key(body, "Controller", "SaveStateMenuGesture", s.savestate_menu_gesture);
     upsert_ini_key(body, "GamepadMap", "GamepadDeadzone",
                    std::to_string(std::clamp(s.gamepad_deadzone, 1, 32767)));
-    upsert_ini_key(body, "GamepadMap", "Controls", join_controls(s.pad_controls[0]));
-    upsert_ini_key(body, "GamepadMap", "ControlsP2", join_controls(s.pad_controls[1]));
+    for (int p = 0; p < kP; ++p) {
+        const std::string n = std::to_string(p + 1);
+        // Derived from the seat's device rather than stored separately: the key
+        // means "let the runner open a pad for this seat", and a seat set to a
+        // gamepad wants exactly that, while None/Keyboard never does. A toggle
+        // that could disagree with the device was only ever a way to get a seat
+        // into a state the user could not explain.
+        upsert_ini_key(body, "GamepadMap", "EnableGamepad" + n,
+                       s.player_src[static_cast<size_t>(p)] == 2 ? "true" : "false");
+        upsert_ini_key(body, "GamepadMap", p == 0 ? "Controls" : "ControlsP" + n,
+                       join_controls(s.pad_controls[static_cast<size_t>(p)]));
+    }
     for (int p = 0; p < kP; ++p) {
         const std::string n = std::to_string(p + 1);
         upsert_ini_key(body, "Controller", "SourceP" + n,
@@ -288,7 +404,7 @@ bool save_snes_platform_settings(const Paths& paths, const SnesPlatformSettings&
     if (ini.empty())
         ini = "# Retro global Super Nintendo settings — merged into each title's "
               "config.ini on install/update/launch.\n";
-    write_ini_body(ini, s);
+    write_ini_body(ini, s, /*launcher_prefs=*/true);
     if (!write_text_file(snes_platform_settings_ini_path(paths), ini, error)) return false;
     return write_text_file(snes_platform_keybinds_ini_path(paths), keybinds_body(s), error);
 }
@@ -337,6 +453,132 @@ ApplySnesPlatformResult apply_snes_platform_defaults(const Paths& paths, const A
     }
     r.message = "applied Super Nintendo platform settings → " + game_cwd.string();
     return r;
+}
+
+// ---- Named pad profiles -----------------------------------------------------
+// Retro's own store (see the header): one [profile.<name>] section holding the
+// seat's twelve pad tokens and twelve key names. Written in the same ini shape
+// as everything else here so it can be read and edited by hand.
+
+fs::path snes_pad_profiles_path(const Paths& paths) {
+    return snes_platform_settings_dir(paths) / "pad_profiles.ini";
+}
+
+std::vector<SnesPadProfile> load_snes_pad_profiles(const Paths& paths) {
+    std::vector<SnesPadProfile> out;
+    std::error_code ec;
+    const fs::path p = snes_pad_profiles_path(paths);
+    if (!fs::is_regular_file(p, ec)) return out;
+    for_each_ini_pair(read_text_file(p), [&](const std::string& sec, const std::string& key,
+                                             const std::string& val) {
+        if (sec.rfind("profile.", 0) != 0) return;
+        const std::string name = sec.substr(8);
+        if (name.empty()) return;
+        auto it = std::find_if(out.begin(), out.end(),
+                               [&](const SnesPadProfile& e) { return e.name == name; });
+        if (it == out.end()) {
+            SnesPadProfile fresh;
+            fresh.name = name;
+            fresh.kb_scancode.fill(0);
+            out.push_back(fresh);
+            it = out.end() - 1;
+        }
+        if (ieq(key, "controls")) {
+            split_controls(val, it->pad_controls);
+        } else if (ieq(key, "keys")) {
+            // Same comma-separated shape as controls, but key names.
+            size_t i = 0, start = 0;
+            for (size_t c = 0; c <= val.size() && i < kN; ++c) {
+                if (c == val.size() || val[c] == ',') {
+                    std::string tok = val.substr(start, c - start);
+                    while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front())))
+                        tok.erase(tok.begin());
+                    while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back())))
+                        tok.pop_back();
+                    it->kb_scancode[i++] = sdl_scancode_from_name(tok.c_str());
+                    start = c + 1;
+                }
+            }
+        }
+    });
+    std::sort(out.begin(), out.end(),
+              [](const SnesPadProfile& a, const SnesPadProfile& b) { return a.name < b.name; });
+    return out;
+}
+
+namespace {
+
+bool write_snes_pad_profiles(const Paths& paths, const std::vector<SnesPadProfile>& list,
+                             std::string* error) {
+    std::string body =
+        "# Retro Super Nintendo controller profiles.\n"
+        "# Retro's own file: snesrecomp reads per-seat [GamepadMap] ControlsP<n>, not this.\n";
+    for (const auto& pr : list) {
+        const std::string sec = "profile." + pr.name;
+        upsert_ini_key(body, sec, "controls", join_controls(pr.pad_controls));
+        std::string keys;
+        for (int i = 0; i < kN; ++i) {
+            if (i) keys += ", ";
+            keys += sdl_scancode_name(pr.kb_scancode[static_cast<size_t>(i)]);
+        }
+        upsert_ini_key(body, sec, "keys", keys);
+    }
+    std::error_code ec;
+    fs::create_directories(snes_platform_settings_dir(paths), ec);
+    return write_text_file(snes_pad_profiles_path(paths), body, error);
+}
+
+}  // namespace
+
+bool save_snes_pad_profile(const Paths& paths, const SnesPadProfile& profile, std::string* error) {
+    if (profile.name.empty()) {
+        if (error) *error = "profile name is empty";
+        return false;
+    }
+    auto list = load_snes_pad_profiles(paths);
+    auto it = std::find_if(list.begin(), list.end(),
+                           [&](const SnesPadProfile& e) { return e.name == profile.name; });
+    if (it == list.end()) list.push_back(profile);
+    else *it = profile;
+    return write_snes_pad_profiles(paths, list, error);
+}
+
+bool rename_snes_pad_profile(const Paths& paths, const std::string& from, const std::string& to,
+                             std::string* error) {
+    if (to.empty()) {
+        if (error) *error = "profile name is empty";
+        return false;
+    }
+    auto list = load_snes_pad_profiles(paths);
+    auto it = std::find_if(list.begin(), list.end(),
+                           [&](const SnesPadProfile& e) { return e.name == from; });
+    if (it == list.end()) {
+        if (error) *error = "no profile named " + from;
+        return false;
+    }
+    // Renaming onto an existing name would leave two sections with one name.
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const SnesPadProfile& e) {
+                                  return e.name == to && e.name != from;
+                              }),
+               list.end());
+    it = std::find_if(list.begin(), list.end(),
+                      [&](const SnesPadProfile& e) { return e.name == from; });
+    it->name = to;
+    return write_snes_pad_profiles(paths, list, error);
+}
+
+bool delete_snes_pad_profile(const Paths& paths, const std::string& name, std::string* error) {
+    auto list = load_snes_pad_profiles(paths);
+    const size_t before = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const SnesPadProfile& e) { return e.name == name; }),
+               list.end());
+    if (list.size() == before) {
+        if (error) *error = "no profile named " + name;
+        return false;
+    }
+    return write_snes_pad_profiles(paths, list, error);
 }
 
 } // namespace retcomm

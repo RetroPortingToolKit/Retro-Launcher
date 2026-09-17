@@ -300,6 +300,34 @@ HttpResponse http_get(const std::string& url,
     return res;
 }
 
+void http_global_init() { ensure_curl_global(); }
+
+HttpResponse http_post_json(const std::string& url, const std::string& body,
+                            const std::vector<std::pair<std::string, std::string>>& headers) {
+    HttpResponse res;
+    CURL* curl = make_easy(url);
+    curl_slist* hdrs = nullptr;
+    auto all = headers;
+    all.emplace_back("Content-Type", "application/json");
+    all.emplace_back("Accept", "application/json");
+    apply_headers(curl, all, &hdrs);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res.body);
+    const CURLcode code = curl_easy_perform(curl);
+    if (code != CURLE_OK) {
+        res.error = curl_easy_strerror(code);
+    } else {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &res.status);
+        if (res.status < 200 || res.status >= 300) res.error = "HTTP " + std::to_string(res.status);
+    }
+    if (hdrs) curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+    return res;
+}
+
 bool http_download(const std::string& url, const fs::path& dest, std::string* error,
                    const std::vector<std::pair<std::string, std::string>>& headers,
                    HttpProgressFn on_progress, std::uint64_t expected_size) {

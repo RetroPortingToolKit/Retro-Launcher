@@ -53,6 +53,20 @@ struct LaunchOptions {
     bool dry_run = false;
 };
 
+// Whether this install boots straight into the game, skipping the engine's own
+// launcher screen. Per-install, and each engine spells it its own way:
+//   psxrecomp   settings.toml  [launcher] skip_launcher = true|false
+//   snesrecomp  config.ini     [General]  SkipLauncher  = 1|0
+// `platform` is the catalog slug (psx / snes / …); `game_dir` is the directory
+// the game runs from, which is LaunchPlan::cwd.
+//
+// plan_launch consults this: a command line beats a config file, so asking for
+// the launcher screen in argv would override the setting no matter what it
+// said. Writes are surgical — only that one key changes.
+bool title_skip_launcher(const fs::path& game_dir, const std::string& platform);
+bool set_title_skip_launcher(const fs::path& game_dir, const std::string& platform, bool on,
+                             std::string* error = nullptr);
+
 struct LaunchPlan {
     const Title* title = nullptr;
     LaunchMode mode = LaunchMode::Default;

@@ -42,6 +42,7 @@ set(RETCOMM_CORE_SOURCES
     src/core/config.cpp
     src/core/app_state.cpp
     src/core/texture_packs.cpp
+    src/core/mods.cpp
     src/catalog/catalog.cpp
     src/catalog/catalog_sync.cpp
     src/romscan/romscan.cpp
@@ -62,6 +63,9 @@ set(RETCOMM_CORE_SOURCES
     src/romm/romm.cpp
     src/romm/romm_fetch.cpp
     src/romm/romm_saves.cpp
+    src/netplay/netplay_ws.cpp
+    src/netplay/netplay_client.cpp
+    src/netplay/netplay_account.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
