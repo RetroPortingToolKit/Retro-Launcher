@@ -4210,6 +4210,20 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
         "Leave empty to keep saves inside each install.");
     ImGui::PopStyleColor();
 
+    // Relative roots are the answer to "my whole library lives on a share and I
+    // have to re-point every path when I move it". Shown here because nothing
+    // else would tell a user the option exists.
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped(
+        "These roots, and the install locations below, may be written relative in "
+        "config.json — \"roms\", \"./bios\", \"../shared/saves\" — and resolve against "
+        "%s. Written that way they move with the folder, so a setup copied to another "
+        "drive or machine needs no re-pointing; editing a path here replaces it with an "
+        "absolute one, the rest keep the form they were written in.",
+        retcomm::config_relative_base(hub.paths.config_path).string().c_str());
+    ImGui::PopStyleColor();
+
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::TextColored(th.text_muted, "Exclude dirs (comma-separated basenames)");
     if (hub_input_text("##exclude_dirs", hub.settings.exclude_dirs,

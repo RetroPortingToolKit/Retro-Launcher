@@ -247,6 +247,19 @@ fs::path AppConfig::saves_dir_for_platform(const std::string& platform, bool cre
     return dir;
 }
 
+fs::path config_relative_base(const fs::path& config_path) {
+    // A custom or portable root is laid out <root>/config + <root>/data
+    // (paths_for_root), so the folder above config/ is the one a user thinks of
+    // as "where Retro is" — and with a retcomm-root.json saying {"root": "."}
+    // beside the binary, that folder is the executable's own.
+    const fs::path dir = config_path.parent_path();
+    if (!dir.empty() && dir.filename() == "config" && dir.has_parent_path())
+        return dir.parent_path();
+    // Default install: config and data live in different trees, and the data
+    // folder is the one that holds Retro's own files.
+    return default_os_data_dir();
+}
+
 AppConfig load_app_config(const fs::path& config_path) {
     AppConfig cfg;
     cfg.platform_folders = default_platform_folders();
@@ -255,15 +268,27 @@ AppConfig load_app_config(const fs::path& config_path) {
     std::ifstream in(config_path);
     if (!in) return normalize_config(std::move(cfg));
 
+    // A relative path is resolved once, here, and remembered so that saving
+    // writes back what the user wrote rather than the absolute form.
+    const fs::path base = config_relative_base(config_path);
+    auto resolve = [&](const std::string& raw) -> fs::path {
+        if (raw.empty()) return {};
+        const fs::path p(raw);
+        if (p.is_absolute() || base.empty()) return p;
+        const fs::path abs = (base / p).lexically_normal();
+        cfg.relative_paths[abs.generic_string()] = raw;
+        return abs;
+    };
+
     try {
         json j;
         in >> j;
         if (j.contains("library_root") && j.at("library_root").is_string())
-            cfg.library_root = j.at("library_root").get<std::string>();
+            cfg.library_root = resolve(j.at("library_root").get<std::string>());
         if (j.contains("bios_root") && j.at("bios_root").is_string())
-            cfg.bios_root = j.at("bios_root").get<std::string>();
+            cfg.bios_root = resolve(j.at("bios_root").get<std::string>());
         if (j.contains("saves_root") && j.at("saves_root").is_string())
-            cfg.saves_root = j.at("saves_root").get<std::string>();
+            cfg.saves_root = resolve(j.at("saves_root").get<std::string>());
 
         if (j.contains("platform_folders") && j.at("platform_folders").is_object()) {
             for (auto it = j.at("platform_folders").begin();
@@ -306,16 +331,16 @@ AppConfig load_app_config(const fs::path& config_path) {
         if (j.contains("ui_scale")) cfg.ui_scale = j.value("ui_scale", 0.f);
 
         if (j.contains("default_install_root") && j.at("default_install_root").is_string())
-            cfg.default_install_root = j.at("default_install_root").get<std::string>();
+            cfg.default_install_root = resolve(j.at("default_install_root").get<std::string>());
         if (j.contains("install_roots") && j.at("install_roots").is_array()) {
             cfg.install_roots.clear();
             for (const auto& item : j.at("install_roots")) {
                 InstallRootEntry e;
                 if (item.is_string()) {
-                    e.path = item.get<std::string>();
+                    e.path = resolve(item.get<std::string>());
                 } else if (item.is_object()) {
                     e.label = item.value("label", "");
-                    e.path = item.value("path", "");
+                    e.path = resolve(item.value("path", std::string{}));
                 }
                 if (!e.path.empty()) cfg.install_roots.push_back(std::move(e));
             }
@@ -367,17 +392,26 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
         folders[plat] = names;
     }
 
+    // Write a path back the way config.json held it. A path the user has since
+    // changed no longer matches anything in the table, so it falls through to
+    // the absolute form — no bookkeeping needed at the places that edit paths.
+    auto store = [&](const fs::path& p) -> std::string {
+        if (p.empty()) return {};
+        const auto it = cfg.relative_paths.find(p.generic_string());
+        return it != cfg.relative_paths.end() ? it->second : p.string();
+    };
+
     json roots = json::array();
     for (const auto& e : cfg.install_roots) {
         if (e.path.empty()) continue;
-        roots.push_back({{"label", e.label}, {"path", e.path.string()}});
+        roots.push_back({{"label", e.label}, {"path", store(e.path)}});
     }
 
-    json j = {{"library_root", cfg.library_root.string()},
-              {"bios_root", cfg.bios_root.string()},
-              {"saves_root", cfg.saves_root.string()},
+    json j = {{"library_root", store(cfg.library_root)},
+              {"bios_root", store(cfg.bios_root)},
+              {"saves_root", store(cfg.saves_root)},
               {"install_roots", roots},
-              {"default_install_root", cfg.default_install_root.string()},
+              {"default_install_root", store(cfg.default_install_root)},
               {"platform_folders", folders},
               {"exclude_dirs", cfg.exclude_dirs},
               {"prefer_local_boxart", cfg.prefer_local_boxart},

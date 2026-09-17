@@ -38,6 +38,15 @@ struct InstallRootEntry {
 // User config (~/.config/retcomm/config.json). RomM/ES-style library layout:
 //   <library_root>/<platform_folder>/...
 struct AppConfig {
+    // Every path below may be written relative in config.json. It is resolved on
+    // load against config_relative_base() — the folder that holds config/ and
+    // data/, which for a portable install is the one the executable sits in — so
+    // a whole setup can be moved, or copied off a NAS and back, without being
+    // re-pointed by hand. Code downstream only ever sees the resolved absolute
+    // path; `relative_paths` remembers how each one was written so saving does
+    // not quietly rewrite it to an absolute path.
+    //   resolved generic path -> exactly what config.json held
+    std::map<std::string, std::string> relative_paths;
     fs::path library_root;
     fs::path bios_root;  // RomM/ES-DE style BIOS tree (flat + per-system folders)
     fs::path saves_root; // Native saves library (SRAM / memcard), per-title under platform
@@ -137,6 +146,12 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
 // data_dir/apps (always the built-in default install location).
 fs::path builtin_apps_dir(const Paths& paths);
 // Roots offered for new Install (config list, or single Default when unset).
+// What a relative path in config.json resolves against: the folder holding
+// config/ and data/ for a custom or portable root (so, the executable's folder
+// when a retcomm-root.json beside it says {"root": "."}), and Retro's data
+// folder for a default install.
+fs::path config_relative_base(const fs::path& config_path);
+
 std::vector<InstallRootEntry> effective_install_roots(const AppConfig& cfg, const Paths& paths);
 // Roots to scan for existing installs (effective ∪ builtin apps/).
 std::vector<InstallRootEntry> scan_install_roots(const AppConfig& cfg, const Paths& paths);
