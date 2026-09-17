@@ -104,7 +104,11 @@ target_compile_definitions(retcomm_core PUBLIC
 )
 target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz)
 if(WIN32)
-    target_link_libraries(retcomm_core PUBLIC shell32)
+    # ws2_32 for WSAPoll in src/netplay/netplay_ws.cpp. PUBLIC because the
+    # symbol is in this library, so every consumer needs it — retcomm-hub only
+    # linked without it by accident, SDL3 happening to drag winsock in, while
+    # retcomm.exe (no SDL) failed with an unresolved __imp_WSAPoll.
+    target_link_libraries(retcomm_core PUBLIC shell32 ws2_32)
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(retcomm_core PUBLIC stdc++fs)
