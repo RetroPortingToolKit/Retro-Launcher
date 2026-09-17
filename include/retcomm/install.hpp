@@ -77,7 +77,28 @@ struct InstallResult {
     bool skipped = false; // already up to date
     InstallPlan plan;
     std::string message;
+    // A build was asked for but upstream ships a finished package for this tag
+    // instead of a source bundle. install_title_auto / update_title_auto turn
+    // this into a prebuilt install rather than surfacing it as a failure.
+    bool prebuilt_asset_only = false;
 };
+
+// Where an AppImage install actually keeps the game's state.
+//
+// AppRun is handed a private XDG_DATA_HOME inside the install root and derives
+// its own directory under it; psxrecomp then anchors settings, saves, memory
+// cards and cache to argv[0], which AppRun points at a symlink in that same
+// directory. So this — not the release dir — is where Retro stages settings,
+// disc.cfg, bios.cfg and restores preserved user state for those installs. It
+// deliberately lives outside releases/, so an update to a new tag keeps it.
+//
+// `install_root/"appdata"` is the XDG_DATA_HOME; this returns the game's own
+// directory under it: the one that already exists, else the catalog's
+// install_dir_name, which is what every AppImage Retro installs today uses.
+fs::path appimage_data_home(const fs::path& install_root);
+fs::path appimage_data_dir(const Title& title, const fs::path& install_root);
+// True when this record launches through an AppImage payload's AppRun.
+bool install_is_appimage(const InstallRecord& rec);
 
 InstallRecord load_install_record(const fs::path& install_root);
 bool save_install_record(const fs::path& install_root, const InstallRecord& rec);

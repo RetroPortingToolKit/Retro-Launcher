@@ -18,4 +18,8 @@ std::string file_sha256_hex(const fs::path& path, std::uint64_t skip_bytes = 0);
 std::string crc32_hex(uint32_t crc);
 std::string to_lower_hex(const std::string& s);
 
+// In-memory digests, lowercase hex. HMAC per RFC 2104 (64-byte block).
+std::string sha256_hex(const std::string& data);
+std::string hmac_sha256_hex(const std::string& key, const std::string& msg);
+
 } // namespace retcomm

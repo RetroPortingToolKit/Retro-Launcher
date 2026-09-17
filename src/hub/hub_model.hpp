@@ -382,6 +382,19 @@ struct SnesSettingsDraft {
     // Keyboard bind capture: seat + button, or -1 when idle.
     int capturing_player = -1;
     int capturing_bind = -1;
+    // Per-seat controller page: the seat being configured, or -1 for the
+    // seat list. Five seats' worth of keyboard and pad maps do not fit as
+    // columns in one table, so each seat gets its own page.
+    int configuring_player = -1;
+    // Gamepads tab, same as the PlayStation page: the seats get the whole
+    // window instead of sharing it with Display/Audio.
+    bool gamepads_tab = false;
+    // Rewind pad-gesture capture: true while holding the chord, with the SDL
+    // buttons seen so far. snesrecomp has exactly one gesture, so this is a
+    // flag rather than an index.
+    // Which gesture is capturing: -1 none, 0 rewind, 1 save-state menu.
+    int capturing_gesture = -1;
+    unsigned rewind_gesture_mask = 0;
 };
 
 // Target buffer for an in-flight SDL folder dialog (callback may be off-thread).
@@ -412,10 +425,12 @@ enum class FilePickKind : int {
     ExportActivityLog,
 };
 
-// Center library panel: platforms list → titles for a platform (or all).
+// Body page: platform cards → title grid for a platform → one title's page.
+// Each is full-window; nothing is shown side by side with its parent.
 enum class LibraryNav : int {
     Platforms = 0,
     Titles,
+    Detail,
 };
 
 struct HubModel {
@@ -453,12 +468,44 @@ struct HubModel {
     bool setup_confirm_create_roots = false;
     std::vector<std::string> setup_missing_roots; // absolute paths to create
     bool setup_create_platform_folders = true;
-    bool pending_open_library = false; // Top-bar Library → open modal next frame
-    bool pending_open_menu = false;    // Top-bar Menu → open modal next frame
+    bool pending_open_mods = false;    // title page Mods button -> page next frame
+    // Mods is a full-window page, not a popup: it is a list you work down with
+    // a detail column beside it, which a floating dialog had no room for.
+    bool show_mods_page = false;
+    bool pending_open_library = false; // Drawer Add/Scan Files → open the page next frame
+    // Add/Scan Files is a full-window page like the settings pages, not a
+    // modal: it is a place you work in (pick platforms, import several files,
+    // watch a scan), and a 420px dialog floating over a dimmed library was the
+    // wrong shape for that.
+    bool show_library_panel = false;
+    bool pending_open_menu = false;    // Legacy: opens the drawer next frame
+    // Hamburger drawer (slides in from the left). `drawer_open` is the target,
+    // `drawer_t` the animated position; focus flags hand the nav cursor over
+    // and back so a controller lands on the first item and returns afterwards.
+    bool drawer_open = false;
+    float drawer_t = 0.f;
+    bool drawer_focus_pending = false;
+    bool hub_refocus_pending = false;
+    // Put the focus ring on the first Home card the next time Home is drawn
+    // (startup, Back, Escape/B, leaving a settings page). ImGui's own default
+    // focus only applies while a window is appearing, and the cards arrive a
+    // few frames later than the window does.
+    bool home_focus_pending = true;
+    // Same for the first title when a platform grid opens: the grid is a new
+    // child window, and without a hand-off the first move scores from a
+    // stale rectangle and jumps to the header.
+    bool grid_focus_pending = false;
+    // Same for the title page: the ring lands on its first action (Play /
+    // Install) so a pad can act without hunting for the column.
+    bool detail_focus_pending = false;
     // After setup Finish: ask whether to scan the library now.
     bool show_setup_scan_prompt = false;
     // Activity log collapsed by default; expand from the bottom bar.
-    bool log_expanded = false;
+    // Activity console: hidden until the ` (grave/tilde) key summons it as a
+    // translucent overlay over the top half of the window. `t` animates it.
+    bool log_overlay_open = false;
+    float log_overlay_t = 0.f;
+    bool log_overlay_focus_pending = false;
     // When set, ScanRoms/FullScanRoms quietly syncs the catalog first.
     bool job_prefetch_catalog = false;
     // Library modal Advanced scope (empty = all catalog platforms).

@@ -24,6 +24,15 @@ using HttpProgressFn = std::function<void(std::uint64_t downloaded, std::uint64_
 HttpResponse http_get(const std::string& url,
                       const std::vector<std::pair<std::string, std::string>>& headers = {});
 
+// POST a JSON body (Content-Type/Accept set). Non-2xx is reported in
+// `status` with the body kept, so callers can read the server's error JSON.
+HttpResponse http_post_json(const std::string& url, const std::string& body,
+                            const std::vector<std::pair<std::string, std::string>>& headers = {});
+
+// curl_global_init once; safe to call from any code path that builds its own
+// easy handle (the WebSocket client does).
+void http_global_init();
+
 // Stream download to a file path (creates parent dirs).
 // When expected_size > 0 and dest already has that many bytes, skips the transfer.
 // Resumes from dest.part when present (Range). Retries once without resume on

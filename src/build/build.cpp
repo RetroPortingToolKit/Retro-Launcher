@@ -3698,7 +3698,17 @@ bool stage_build_output(const fs::path& src_root, const fs::path& build_dir,
     // every launcher-installed SNES title with an empty Mods page while the
     // same build run standalone showed the catalog. Copy whichever exist:
     // a title has one, and a new framework adds a row here.
-    for (const fs::path& catalog_rel : {fs::path("mods") / "packages",
+    // mods/bundled is the CURRENT psxrecomp spelling: runtime.cmake stages the
+    // framework's mods/builtin/packages plus the title's mods/preloaded/packages
+    // into <exe-dir>/mods/bundled, and ModPackageManager reads bundled_root()
+    // from there. The two older spellings stay because an older build output
+    // still uses them and the runtime migrates mods/packages on first run.
+    //
+    // mods/installed and mods/state.toml are deliberately NOT here: those are
+    // the player's, and the whole reason the engine split the tree was that one
+    // shared directory meant a rebuild deleted every mod they had installed.
+    for (const fs::path& catalog_rel : {fs::path("mods") / "bundled",
+                                        fs::path("mods") / "packages",
                                         fs::path("mods") / "preloaded" / "packages"}) {
         if (!copy_tree_if_exists(exe_dir / catalog_rel, staging / catalog_rel, error))
             return false;
@@ -4157,14 +4167,17 @@ PackEnsureResult ensure_source_tree(const Paths& paths, const Title& title,
                         !launch.empty() && !find_named_file(payload, launch).empty();
                     fs::remove_all(staging, ec);
                     if (prebuilt) {
+                        // Not a failure: upstream shipped a finished package for
+                        // this tag instead of the source bundle (TombaRecomp
+                        // v0.13.0-alpha ships only an AppImage). The caller
+                        // installs the package rather than refusing the update.
                         r.tag = zip.tag;
+                        r.prebuilt_asset_only = true;
                         r.message =
                             "release asset " + zip.asset_name + " (" + zip.tag +
                             ") is a prebuilt package: it contains " + launch +
                             " but no CMakeLists.txt, so there is no source tree to "
-                            "build from. The installed local build was left untouched. "
-                            "Retro needs a source-bearing release zip for this tag "
-                            "(as v0.12.3-alpha shipped) before it can build it.";
+                            "build from.";
                         return r;
                     }
                     if (attempt == 0 && refetch_after_bad_zip("no source tree in archive"))
@@ -4334,6 +4347,7 @@ InstallResult build_title(const Paths& paths_in, const Title& title, const Build
                                   opts.hint_latest_tag, opts.engines_dir);
     if (!src.ok) {
         result.message = src.message;
+        result.prebuilt_asset_only = src.prebuilt_asset_only;
         return result;
     }
     // Before generate/cmake: some title CMakeLists POST_BUILD-copy game_options.toml
@@ -5188,6 +5202,29 @@ InstallResult build_title(const Paths& paths_in, const Title& title, const Build
     return result;
 }
 
+// Shared by install_title_auto / update_title_auto: install the finished
+// package upstream published for this tag, and say plainly that it was not
+// built locally — a package install is a different thing from a Retro build
+// (no regenerate, no BIOS choice applied at codegen time), and silently
+// swapping one for the other would be the kind of "it worked, somehow" the
+// user cannot audit later.
+InstallResult install_prebuilt_fallback(const Paths& paths, const Title& title,
+                                        const InstallOptions& base_opts,
+                                        const std::string& why) {
+    InstallOptions iopts = base_opts;
+    iopts.prefer_prebuilt = true;
+    iopts.force = true;  // the build path already decided this tag needs installing
+    InstallResult r = install_title(paths, title, iopts);
+    const std::string note =
+        "note: " + why +
+        "\n  Installed the published package for this tag instead of building it. "
+        "Retro manages its data directory, so saves, memory cards, disc choice and "
+        "platform settings still apply; Generate & Rebuild stays unavailable until "
+        "upstream ships a source-bearing asset again.\n";
+    r.message = note + r.message;
+    return r;
+}
+
 InstallResult install_title_auto(const Paths& paths, const Title& title,
                                  const InstallOptions& install_opts,
                                  const BuildOptions& build_opts) {
@@ -5214,7 +5251,15 @@ InstallResult install_title_auto(const Paths& paths, const Title& title,
     // GitHub release zip is treated as SOURCE (setup-host / one-zip), even when
     // that archive also happens to ship a launch binary. prefer_prebuilt
     // (InstallPrebuilt / Wine) forces zip extract via can_build == false.
-    if (can_build) return run_build();
+    if (can_build) {
+        InstallResult built = run_build();
+        if (built.ok || !built.prebuilt_asset_only) return built;
+        // Upstream shipped a finished package for this tag and no source bundle
+        // (TombaRecomp v0.13.0-alpha ships only an AppImage). Install the
+        // package rather than leaving the title uninstallable until upstream
+        // ships source again.
+        return install_prebuilt_fallback(paths, title, iopts, built.message);
+    }
     return install_title(paths, title, iopts);
 }
 
@@ -5295,7 +5340,13 @@ InstallResult update_title_auto(const Paths& paths, const Title& title,
         b.force = b.force || iopts.force;
         if (b.hint_latest_tag.empty()) b.hint_latest_tag = iopts.hint_latest_tag;
         // Leave force_generate as caller set (false → reuse codegen-cache).
-        return build_title(paths, title, b);
+        InstallResult built = build_title(paths, title, b);
+        if (built.ok || !built.prebuilt_asset_only) return built;
+        // Upstream replaced the source bundle with a finished package at this
+        // tag. Install it rather than failing the update and — as happened with
+        // Tomba v0.13.0-alpha — leaving the user to uninstall and discover the
+        // reinstall cannot succeed either.
+        return install_prebuilt_fallback(paths, title, iopts, built.message);
     }
 
     return update_title(paths, title, iopts);

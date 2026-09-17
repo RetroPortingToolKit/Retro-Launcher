@@ -109,6 +109,9 @@ inline void apply_imgui_style(const Theme& t) {
     c[ImGuiCol_Tab] = t.panel;
     c[ImGuiCol_TabHovered] = t.panel_hovered;
     c[ImGuiCol_TabActive] = t.control;
+    // Keyboard / gamepad focus ring. Cyan against the violet accent so a
+    // focused control never reads as merely "selected".
+    c[ImGuiCol_NavCursor] = t.focus;
 }
 
 } // namespace retcomm::hub

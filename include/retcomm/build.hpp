@@ -54,6 +54,11 @@ struct PackEnsureResult {
     fs::path root;
     std::string tag;
     std::string message;
+    // Set when the host release asset for this tag is a finished package
+    // (AppImage / prebuilt tree) rather than the source bundle the recipe needs.
+    // Not an error the user can act on — the caller installs the package
+    // instead of building it. See install_title_auto.
+    bool prebuilt_asset_only = false;
 };
 
 struct ToolchainUpdateInfo {

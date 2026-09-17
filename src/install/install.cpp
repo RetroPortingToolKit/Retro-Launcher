@@ -819,8 +819,35 @@ fs::path effective_archive_root(const fs::path& root) {
     return cur;
 }
 
+// An extracted AppImage launches through its own AppRun, never through
+// usr/bin/<game> directly: AppRun puts the bundled usr/lib on LD_LIBRARY_PATH,
+// seeds the game's data directory from the read-only payload, and execs the
+// real binary with the arguments it expects (TombaRecomp: a --game <data>
+// /game.toml pointing at the copy it just seeded, through a symlink, because
+// psxrecomp anchors settings/saves/cache to argv[0]). Running the inner binary
+// on its own gets a missing-library abort at best and a game that writes its
+// state somewhere nobody manages at worst.
+//
+// Returns the AppRun beside the payload, or empty when this is not an AppImage.
+fs::path find_appimage_apprun(const fs::path& root, const std::string& launch_name) {
+    std::error_code ec;
+    const fs::path base = effective_archive_root(root);
+    const fs::path apprun = base / "AppRun";
+    if (!fs::is_regular_file(apprun, ec)) return {};
+    // AppRun alone is not proof: require the catalog's launch binary under the
+    // same payload, so a stray script cannot be mistaken for an AppImage.
+    if (launch_name.empty() || find_named_file(base, launch_name).empty()) return {};
+    return apprun;
+}
+
 fs::path resolve_launch_binary(const fs::path& root, const std::string& expected_name,
                                const std::string& target_os, std::string* resolved_name) {
+    // AppImage payloads resolve to their AppRun, whatever the catalog names as
+    // the launch binary — that name is what AppRun itself goes on to exec.
+    if (fs::path apprun = find_appimage_apprun(root, expected_name); !apprun.empty()) {
+        if (resolved_name) *resolved_name = "AppRun";
+        return apprun;
+    }
     fs::path exact = find_named_file(root, expected_name);
     if (!exact.empty()) {
         if (resolved_name) *resolved_name = exact.filename().string();
@@ -1666,6 +1693,33 @@ OldReleaseCleanupResult cleanup_old_release_dirs(const Paths& paths, const Catal
     return result;
 }
 
+fs::path appimage_data_home(const fs::path& install_root) {
+    return install_root / "appdata";
+}
+
+fs::path appimage_data_dir(const Title& title, const fs::path& install_root) {
+    const fs::path home = appimage_data_home(install_root);
+    const std::string named = title.install_dir_name.empty() ? title.id : title.install_dir_name;
+    std::error_code ec;
+    const fs::path expected = home / named;
+    if (fs::is_directory(expected, ec)) return expected;
+    // Adopt a differently-named directory a previous launch created, rather than
+    // staging into one the game will never read.
+    fs::path only;
+    int seen = 0;
+    for (auto it = fs::directory_iterator(home, ec); !ec && it != fs::directory_iterator();
+         it.increment(ec)) {
+        if (!it->is_directory(ec)) continue;
+        only = it->path();
+        if (++seen > 1) break;
+    }
+    return seen == 1 ? only : expected;
+}
+
+bool install_is_appimage(const InstallRecord& rec) {
+    return rec.method == "appimage" || filename_eq_ci(rec.binary, "AppRun");
+}
+
 void restore_user_state(const fs::path& install_root, const fs::path& release_dir,
                         std::string* note) {
     const fs::path preserved = install_root / "preserved";
@@ -1686,7 +1740,8 @@ void restore_user_state(const fs::path& install_root, const fs::path& release_di
         if (!ec) ++n;
     }
     if (note && n > 0)
-        *note = "restored " + std::to_string(n) + " preserved save/config file(s) into release\n";
+        *note = "restored " + std::to_string(n) + " preserved save/config file(s) into " +
+                release_dir.filename().string() + "\n";
 }
 
 bool stash_user_state_for_update(const Paths& paths, const Title& title, std::string* note) {
@@ -1708,14 +1763,26 @@ bool stash_user_state_for_update(const Paths& paths, const Title& title, std::st
         if (!seen_roots.insert(use.string()).second) return;
         roots.push_back(use);
     };
-    const fs::path releases_dir = install_root / "releases";
-    if (fs::is_directory(releases_dir, ec)) {
-        for (auto it = fs::directory_iterator(releases_dir, ec);
-             !ec && it != fs::directory_iterator(); it.increment(ec)) {
-            if (it->is_directory(ec)) add_root(it->path());
+    // An AppImage install keeps user state only under appdata/. Its release dir
+    // is the read-only payload, whose usr/share/<game>/ ships the *defaults* —
+    // sweeping those into preserved/ would file release files as the player's
+    // own and restore them back over the real ones on the next install.
+    const bool appimage = plan.record && install_is_appimage(*plan.record);
+    if (appimage) {
+        add_root(appimage_data_dir(title, install_root));
+    } else {
+        const fs::path releases_dir = install_root / "releases";
+        if (fs::is_directory(releases_dir, ec)) {
+            for (auto it = fs::directory_iterator(releases_dir, ec);
+                 !ec && it != fs::directory_iterator(); it.increment(ec)) {
+                if (it->is_directory(ec)) add_root(it->path());
+            }
         }
+        if (!plan.binary_path.empty()) add_root(plan.binary_path.parent_path());
+        // A build install that has since been replaced by an AppImage one still
+        // has its old state here; picking it up is how the switch carries over.
+        add_root(appimage_data_dir(title, install_root));
     }
-    if (!plan.binary_path.empty()) add_root(plan.binary_path.parent_path());
 
     size_t n = 0;
     std::string err;
@@ -2546,8 +2613,14 @@ InstallResult install_title(const Paths& paths_in, const Title& title, const Ins
     const fs::path rel_bin = fs::relative(binary, release_dir, ec);
     set_current_symlink(install_root, tag);
 
+    // An AppImage runs out of its data dir, not the release payload: restoring
+    // into releases/<tag>/ would put the user's settings somewhere the game
+    // never looks and the next update deletes.
+    const bool appimage_install = filename_eq_ci(resolved_launch, "AppRun");
     std::string restore_note;
-    restore_user_state(install_root, release_dir, &restore_note);
+    restore_user_state(install_root,
+                       appimage_install ? appimage_data_dir(title, install_root) : release_dir,
+                       &restore_note);
 
     InstallRecord rec;
     rec.title_id = title.id;
@@ -2560,7 +2633,11 @@ InstallResult install_title(const Paths& paths_in, const Title& title, const Ins
     rec.runtime = use_wine ? "wine" : "native";
     rec.installed_at = iso8601_now();
     rec.release_url = rel.html_url;
-    rec.method = "zip";
+    // "appimage" is a zip install whose launch target is an AppRun: launch has
+    // to set APPDIR and a private XDG_DATA_HOME for it rather than exec the
+    // binary directly. Recorded rather than re-sniffed so an install whose
+    // payload later changes shape cannot be launched the wrong way.
+    rec.method = appimage_install ? "appimage" : "zip";
     if (!save_install_record(install_root, rec)) {
         // current/ already flipped — keep .old-* siblings for manual recovery.
         result.message = "installed files but failed to write install.json "

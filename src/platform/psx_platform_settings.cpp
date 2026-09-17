@@ -194,6 +194,19 @@ void parse_toml_settings(const std::string& body, PsxPlatformSettings& s) {
                 if (ieq(val, "immediate")) s.vsync = 0;
                 else if (ieq(val, "adaptive")) s.vsync = -1;
                 else s.vsync = 1;
+            } else if (key == "scanlines") {
+                parse_bool(val, &s.scanlines);
+            } else if (key == "scanline_strength") {
+                try {
+                    s.scanline_strength = std::clamp(std::stof(val), 0.f, 1.f);
+                } catch (...) {
+                }
+            } else if (key == "geometry_correction") {
+                parse_bool(val, &s.geometry_correction);
+            } else if (key == "fast_boot") {
+                parse_bool(val, &s.fast_boot);
+            } else if (key == "rewind") {
+                parse_bool(val, &s.rewind_enabled);
             } else if (key == "rewind_depth") {
                 try {
                     int d = std::stoi(val);
@@ -230,17 +243,21 @@ void parse_toml_settings(const std::string& body, PsxPlatformSettings& s) {
         } else if (table == "hotkeys") {
             // Pad chords. Out-of-range values are ignored rather than clamped:
             // a clamp would invent a binding the player never chose.
-            if (key == "rewind_pad" || key == "save_state_menu_pad") {
+            if (key == "rewind_pad" || key == "save_state_menu_pad" ||
+                key == "fast_forward_pad" || key == "fast_forward_toggle_pad") {
                 errno = 0;
                 char* end = nullptr;
                 const long v = std::strtol(val.c_str(), &end, 10);
                 const bool ok = end && end != val.c_str() && errno == 0 &&
                                 v >= 0 && v < 1000 + (1 << 21);
                 if (ok) {
-                    if (key == "rewind_pad")
-                        s.hotkey_pad_rewind = static_cast<int>(v);
-                    else
+                    if (key == "rewind_pad") s.hotkey_pad_rewind = static_cast<int>(v);
+                    else if (key == "save_state_menu_pad")
                         s.hotkey_pad_save_state_menu = static_cast<int>(v);
+                    else if (key == "fast_forward_pad")
+                        s.hotkey_pad_fast_forward = static_cast<int>(v);
+                    else
+                        s.hotkey_pad_fast_forward_toggle = static_cast<int>(v);
                 }
             }
         } else if (table == "audio") {
@@ -382,6 +399,14 @@ void write_toml_body(std::string& body, const PsxPlatformSettings& s,
     upsert_toml_key(body, "video", "antialiasing", bool_lit(s.antialiasing));
     upsert_toml_key(body, "video", "fmv_filter", fmv_filter_lit(s.fmv_filter));
     upsert_toml_key(body, "video", "crt_filter", screen_lit(s.screen_kind));
+    upsert_toml_key(body, "video", "scanlines", bool_lit(s.scanlines));
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.2f", std::clamp(s.scanline_strength, 0.f, 1.f));
+        upsert_toml_key(body, "video", "scanline_strength", buf);
+    }
+    upsert_toml_key(body, "video", "geometry_correction", bool_lit(s.geometry_correction));
+    upsert_toml_key(body, "video", "fast_boot", bool_lit(s.fast_boot));
     upsert_toml_key(body, "video", "frame_interpolation", bool_lit(s.frame_interpolation));
     upsert_toml_key(body, "video", "frame_interpolation_fps",
                     std::to_string(s.frame_interpolation_fps));
@@ -390,6 +415,7 @@ void write_toml_body(std::string& body, const PsxPlatformSettings& s,
     upsert_toml_key(body, "video", "low_latency_input", bool_lit(s.low_latency_input));
     upsert_toml_key(body, "video", "vsync", vsync_lit(s.vsync));
     {
+        upsert_toml_key(body, "video", "rewind", bool_lit(s.rewind_enabled));
         int d = s.rewind_depth;
         if (d != 50 && d != 100 && d != 150 && d != 200) d = 50;
         upsert_toml_key(body, "video", "rewind_depth", std::to_string(d));
@@ -404,6 +430,10 @@ void write_toml_body(std::string& body, const PsxPlatformSettings& s,
                     std::to_string(s.hotkey_pad_rewind));
     upsert_toml_key(body, "hotkeys", "save_state_menu_pad",
                     std::to_string(s.hotkey_pad_save_state_menu));
+    upsert_toml_key(body, "hotkeys", "fast_forward_pad",
+                    std::to_string(s.hotkey_pad_fast_forward));
+    upsert_toml_key(body, "hotkeys", "fast_forward_toggle_pad",
+                    std::to_string(s.hotkey_pad_fast_forward_toggle));
     upsert_toml_key(body, "controller", "multitap", bool_lit(s.multitap_enabled));
     // Digital + lock_mode titles reject DualShock; never push the multitap analog hack.
     if (apply_multitap_analog)
@@ -519,7 +549,8 @@ std::string PsxPlatformSettings::pad_bind_label(int value) {
 const char* PsxPlatformSettings::hotkey_ini_key(int i) {
     static const char* k[] = {"Fullscreen",  "Reset",        "Pause",       "Turbo",
                               "VolumeUp",    "VolumeDown",   "DisplayPerf", "ToggleRenderer",
-                              "Rewind"};
+                              "Rewind",      "PauseDimmed",  "WindowBigger",
+                              "WindowSmaller", "SaveStateMenu"};
     if (i < 0 || i >= kHotkeyCount) return "";
     return k[i];
 }
@@ -527,15 +558,20 @@ const char* PsxPlatformSettings::hotkey_ini_key(int i) {
 const char* PsxPlatformSettings::hotkey_label(int i) {
     static const char* k[] = {"Fullscreen",  "Reset",          "Pause",
                               "Fast-forward", "Volume up",     "Volume down",
-                              "Display perf", "Toggle renderer", "Rewind"};
+                              "Display perf", "Toggle renderer", "Rewind",
+                              "Pause (dimmed)", "Window bigger", "Window smaller",
+                              "Save-state menu"};
     if (i < 0 || i >= kHotkeyCount) return "";
     return k[i];
 }
 
 const char* PsxPlatformSettings::hotkey_default(int i) {
+    // Defaults from recomp-ui launcher_binds.c kHotkeyDef; "" = unbound, which
+    // is what WindowBigger / WindowSmaller ship as.
     static const char* k[] = {"Alt+Return", "Ctrl+R", "Shift+P", "Tab",
                               "Keypad +",   "Keypad -", "F",     "R",
-                              "F8"};
+                              "F8",         "P",      "",        "",
+                              "F7"};
     if (i < 0 || i >= kHotkeyCount) return "";
     return k[i];
 }

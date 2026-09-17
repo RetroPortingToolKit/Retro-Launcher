@@ -423,4 +423,51 @@ std::string file_sha256_hex(const fs::path& path, std::uint64_t skip_bytes) {
     return oss.str();
 }
 
+namespace {
+std::string hex_bytes(const uint8_t* p, size_t n) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < n; ++i)
+        oss << std::hex << std::nouppercase << std::setw(2) << std::setfill('0') << int(p[i]);
+    return oss.str();
+}
+} // namespace
+
+std::string sha256_hex(const std::string& data) {
+    Sha256Ctx ctx;
+    sha256_init(ctx);
+    if (!data.empty())
+        sha256_update(ctx, reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    uint8_t digest[32];
+    sha256_final(ctx, digest);
+    return hex_bytes(digest, sizeof(digest));
+}
+
+std::string hmac_sha256_hex(const std::string& key, const std::string& msg) {
+    uint8_t k[64] = {};
+    if (key.size() > sizeof(k)) {
+        Sha256Ctx c;
+        sha256_init(c);
+        sha256_update(c, reinterpret_cast<const uint8_t*>(key.data()), key.size());
+        sha256_final(c, k);
+    } else if (!key.empty()) {
+        std::memcpy(k, key.data(), key.size());
+    }
+    uint8_t pad[64];
+    for (size_t i = 0; i < sizeof(pad); ++i) pad[i] = static_cast<uint8_t>(k[i] ^ 0x36);
+    Sha256Ctx inner;
+    sha256_init(inner);
+    sha256_update(inner, pad, sizeof(pad));
+    if (!msg.empty()) sha256_update(inner, reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    uint8_t ih[32];
+    sha256_final(inner, ih);
+    for (size_t i = 0; i < sizeof(pad); ++i) pad[i] = static_cast<uint8_t>(k[i] ^ 0x5c);
+    Sha256Ctx outer;
+    sha256_init(outer);
+    sha256_update(outer, pad, sizeof(pad));
+    sha256_update(outer, ih, sizeof(ih));
+    uint8_t oh[32];
+    sha256_final(outer, oh);
+    return hex_bytes(oh, sizeof(oh));
+}
+
 } // namespace retcomm

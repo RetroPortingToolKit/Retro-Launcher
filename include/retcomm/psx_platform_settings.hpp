@@ -35,6 +35,15 @@ struct PsxPlatformSettings {
     // 0 nearest, 1 bilinear, 2 sharp-bilinear, 3 bicubic (default).
     int fmv_filter = 3;
     int screen_kind = 0; // 0 raw, 1 crt, 2 composite, 3 trinitron
+    // [video] scanlines / scanline_strength: a scanline overlay independent of
+    // the screen model above. Strength is 0..1; psxrecomp clamps it.
+    bool scanlines = false;
+    float scanline_strength = 0.5f;
+    // [video] geometry_correction: correct the PS1's integer vertex snapping
+    // (the "wobble"). recomp-ui carries this as a PSX display setting.
+    bool geometry_correction = false;
+    // [video] fast_boot: skip the BIOS boot animation.
+    bool fast_boot = false;
     bool frame_interpolation = false;
     int frame_interpolation_fps = 0; // 0 = display rate, else e.g. 120
     bool perspective_texturing = false;
@@ -42,6 +51,11 @@ struct PsxPlatformSettings {
     bool low_latency_input = false;
     // -1 adaptive, 0 immediate, 1 on
     int vsync = 1;
+    // Local rewind master switch (settings.toml [video] rewind). psxrecomp
+    // reads this key and defaults it OFF; Retro writes it explicitly so the
+    // depth/interval rows below actually mean something. PSX_REWIND=1/0 in the
+    // environment still outranks it.
+    bool rewind_enabled = true;
     // Local rewind snap capacity (settings.toml [video] rewind_depth).
     // UI offers 50 / 100 / 150 / 200; default 50.
     int rewind_depth = 50;
@@ -78,13 +92,20 @@ struct PsxPlatformSettings {
     static constexpr int kPadBindCombo = 1000;
     int hotkey_pad_rewind = 1272;           // select + r3
     int hotkey_pad_save_state_menu = 2040;  // select + r1
+    // The other two chords psxrecomp reads from settings.toml [hotkeys].
+    // 0 = unbound, which is what both ship as.
+    int hotkey_pad_fast_forward = 0;
+    int hotkey_pad_fast_forward_toggle = 0;
     // Human-readable chord ("select + r3"), for the settings row.
     static std::string pad_bind_label(int value);
 
     // --- Hotkeys (config.ini [KeyMap]) ---
     // Keys match recomp-ui / psxrecomp: Fullscreen, Reset, Pause, Turbo,
     // VolumeUp, VolumeDown, DisplayPerf, ToggleRenderer, Rewind.
-    static constexpr int kHotkeyCount = 9;
+    // 13: recomp-ui's [KeyMap] vocabulary (launcher_binds.c kHotkeyKey) also
+    // carries PauseDimmed, WindowBigger, WindowSmaller and SaveStateMenu. The
+    // save-state menu in particular already had a pad chord here but no key.
+    static constexpr int kHotkeyCount = 13;
     std::array<std::string, kHotkeyCount> hotkeys{};
 
     static const char* hotkey_ini_key(int i);
