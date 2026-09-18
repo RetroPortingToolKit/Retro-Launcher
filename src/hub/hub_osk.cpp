@@ -2,6 +2,15 @@
 
 #include <SDL3/SDL.h>
 
+// Added in SDL 3.4.12; build hosts on an older SDL3 have every other symbol
+// here (all 3.2.0 baseline) but not this one. Hints are looked up by name at
+// runtime, so declaring it ourselves keeps the Steam path compiled in and it
+// starts working the moment the binary meets a runtime new enough to read it —
+// on an older runtime setting an unknown hint is a no-op.
+#ifndef SDL_HINT_ENABLE_STEAM_SCREEN_KEYBOARD
+#define SDL_HINT_ENABLE_STEAM_SCREEN_KEYBOARD "SDL_ENABLE_STEAM_SCREEN_KEYBOARD"
+#endif
+
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
