@@ -2480,20 +2480,8 @@ void draw_detail_texture_packs_popup(HubModel& hub, const TitleRow& row, const T
     ImGui::EndPopup();
 }
 
-void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const Theme& th, bool busy) {
-    if (!ImGui::IsPopupOpen("Manage Game Data###detail_manage_game")) return;
-    constexpr float kW = 420.f;
-    center_modal_next();
-    ImGui::SetNextWindowSizeConstraints(ImVec2(kW, 0.f), ImVec2(kW, FLT_MAX));
-    ImGui::SetNextWindowSize(ImVec2(kW, 0.f), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Manage Game Data###detail_manage_game", nullptr,
-                                ImGuiWindowFlags_AlwaysAutoResize))
-        return;
-
-    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + kW - 40.f);
-    ImGui::TextWrapped("%s", row.name.c_str());
-    ImGui::Separator();
-    ImGui::BeginDisabled(busy);
+// Left column of Manage Game Data: everything that acts on the install itself.
+void draw_manage_install_column(HubModel& hub, const TitleRow& row, const Theme& th) {
 
     const bool can_open =
         row.installed || row.install_dir_present || row.has_preserved_state;
@@ -2624,6 +2612,11 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
     } else {
         ImGui::TextColored(th.text_muted, "No install folder or preserved data yet.");
     }
+}
+
+// Right column: the files behind the install — where its ROM comes from, what
+// RomM can re-fetch, and the Steam entry that starts it.
+void draw_manage_files_column(HubModel& hub, const TitleRow& row, const Theme& th) {
 
     // Add to Steam. A non-Steam shortcut is another way of pressing Play, so it
     // belongs with the rest of this install's management rather than beside the
@@ -2751,7 +2744,40 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
             ImGui::TextColored(th.text_muted, "No RomM download actions for this title.");
         }
     }
+}
 
+void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const Theme& th, bool busy) {
+    if (!ImGui::IsPopupOpen("Manage Game Data###detail_manage_game")) return;
+    // Two columns: the single stack had grown to the height of the window.
+    constexpr float kW = 840.f;
+    center_modal_next();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(kW, 0.f), ImVec2(kW, FLT_MAX));
+    ImGui::SetNextWindowSize(ImVec2(kW, 0.f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Manage Game Data###detail_manage_game", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // Wrap at the content edge rather than a fixed offset: inside a table cell
+    // that edge is the column's, so the same push serves both columns.
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextWrapped("%s", row.name.c_str());
+    ImGui::Separator();
+    ImGui::BeginDisabled(busy);
+
+    // A table rather than two child windows: the row is as tall as its tallest
+    // cell, so the columns stay aligned without either being given a height,
+    // and the popup still auto-resizes to its content.
+    if (ImGui::BeginTable("##manage_cols", 2,
+                          ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextColored(th.text_muted, "Installation");
+        draw_manage_install_column(hub, row, th);
+
+        ImGui::TableSetColumnIndex(1);
+        draw_manage_files_column(hub, row, th);
+        ImGui::EndTable();
+    }
     ImGui::EndDisabled();
     ImGui::PopTextWrapPos();
     ImGui::Dummy(ImVec2(0, 8));
