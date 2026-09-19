@@ -11,7 +11,13 @@ namespace fs = std::filesystem;
 // below (Env wins, Default means "no override — use OS conventions").
 enum class DataRootSource : int {
     Default = 0,   // XDG / AppData, exactly as Retro has always behaved
-    Env,           // $RETCOMM_HOME
+    Env,           // $RETCOMM_HOME set by the user or the environment
+    // $RETCOMM_HOME set by the portable launcher stub, which recomputes it from
+    // its own location on every start. Same slot as Env — it is the same
+    // variable — but it is not an external pin: the root follows the .exe, so
+    // it can still be changed from the UI (the change lands in the marker the
+    // stub reads next launch) and is worth showing relative to the launcher.
+    PortableExe,
     ExeMarker,     // <exe_dir>/retcomm-root.json — travels with a portable build
     ConfigPointer, // <os_default_config>/retcomm/root.json — written by the wizard
     Explicit,      // --root on the command line; never persisted

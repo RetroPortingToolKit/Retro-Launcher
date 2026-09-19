@@ -15,6 +15,8 @@ namespace {
 using nlohmann::json;
 
 constexpr const char* kEnvVar = "RETCOMM_HOME";
+// Set by the Windows portable stub alongside RETCOMM_HOME (win_portable_main.cpp).
+constexpr const char* kPortableExeVar = "RETCOMM_PORTABLE_EXE";
 constexpr const char* kExeMarkerName = "retcomm-root.json";
 constexpr const char* kConfigPointerName = "root.json";
 
@@ -106,6 +108,7 @@ bool write_marker_file(const fs::path& marker, const fs::path& root, std::string
 const char* data_root_source_label(DataRootSource s) {
     switch (s) {
     case DataRootSource::Env: return "RETCOMM_HOME";
+    case DataRootSource::PortableExe: return "beside the launcher";
     case DataRootSource::ExeMarker: return "portable marker";
     case DataRootSource::ConfigPointer: return "config pointer";
     case DataRootSource::Explicit: return "--root";
@@ -169,6 +172,15 @@ DataRootInfo resolve_data_root(const fs::path& exe_dir) {
             }
             info.root = p;
             info.source = DataRootSource::Env;
+            // The portable stub sets RETCOMM_HOME itself, recomputed from where
+            // the .exe sits, and also names that .exe. Both together mean this
+            // is not a pin someone put in their environment: the root travels
+            // with the launcher, and the UI should say so rather than greying
+            // out the control that changes it.
+            if (const char* pexe = std::getenv(kPortableExeVar); pexe && *pexe) {
+                info.source = DataRootSource::PortableExe;
+                info.pointer_file = fs::path(sanitize_root_string(pexe));
+            }
             return info;
         }
     }

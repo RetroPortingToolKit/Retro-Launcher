@@ -4181,9 +4181,36 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     // here — changing it relocates the tree, so it goes through its own dialog.
     {
         const bool custom = retcomm::using_custom_root(hub.paths);
+        // A portable install's folder has no fixed location — the launcher works
+        // out where it is on every start — so showing only an absolute path here
+        // reads as a hard-coded one. Lead with the path relative to the launcher
+        // whenever the folder sits under it, and keep the absolute form as the
+        // secondary line so nothing is hidden.
+        const fs::path launcher_dir = hub.root_marker_dir();
+        std::error_code rel_ec;
+        fs::path rel;
+        if (!launcher_dir.empty())
+            rel = fs::relative(hub.paths.data_dir, launcher_dir, rel_ec);
+        const bool under_launcher =
+            !rel_ec && !rel.empty() &&
+            rel.native().rfind(fs::path("..").native(), 0) != 0 && rel != fs::path(".");
+
         ImGui::TextColored(th.text_muted, "Retro data folder");
-        ImGui::TextWrapped("%s", hub.paths.data_dir.string().c_str());
+        if (under_launcher) {
+            // "./RetComM-Data" — built through fs::path so the separator is the
+            // platform's own.
+            ImGui::TextWrapped("%s", (fs::path(".") / rel).string().c_str());
+        } else {
+            ImGui::TextWrapped("%s", hub.paths.data_dir.string().c_str());
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        if (under_launcher) {
+            ImGui::TextWrapped("Relative to %s — the folder moves with it.",
+                               launcher_dir.filename().empty()
+                                   ? launcher_dir.string().c_str()
+                                   : (launcher_dir.filename().string() + "/").c_str());
+            ImGui::TextWrapped("%s", hub.paths.data_dir.string().c_str());
+        }
         ImGui::TextWrapped("Source: %s%s",
                            retcomm::data_root_source_label(hub.paths.root_source),
                            custom ? "" : " (toolchain, engines, installs and caches)");
@@ -4194,8 +4221,11 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                 hub.append_log("open data folder failed: " + err);
         }
         ImGui::SameLine();
-        // RETCOMM_HOME and --root are re-read on every launch, so a pointer we
-        // wrote here would be silently ignored. Say why instead of misleading.
+        // A user-set RETCOMM_HOME and --root are re-read on every launch, so a
+        // pointer we wrote here would be silently ignored. Say why instead of
+        // misleading. The portable stub's RETCOMM_HOME is not one of those: it
+        // derives from retcomm-root.json beside the .exe, which is exactly what
+        // changing the folder writes, so that change does take effect.
         const bool env_pinned = hub.paths.root_source == retcomm::DataRootSource::Env ||
                                 hub.paths.root_source == retcomm::DataRootSource::Explicit;
         ImGui::BeginDisabled(env_pinned || hub.job_running.load());
