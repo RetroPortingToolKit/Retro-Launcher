@@ -2,6 +2,12 @@
 
 ## Two launchers, one job each
 
+> **Being superseded (2026-09-23).** The model below — the hub `exec`s a title
+> that opens its own recomp-ui — is being replaced by one host with engine cores
+> in child processes behind an overlay menu. Design: `docs/HOST_LIFECYCLE.md`.
+> This section stays accurate for today's code and for "external titles" until
+> they migrate.
+
 | Layer | Repo | Job |
 |---|---|---|
 | Hub | **Retro-Launcher** (this) | Catalog, install/update, ROM/RomM match, recommend, spawn game |
