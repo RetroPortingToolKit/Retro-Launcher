@@ -48,7 +48,7 @@ extern "C" {
 
 #define RCORE_ABI_MAJOR 0u /* 0 = draft; the first implemented contract is 1 */
 #define RCORE_ABI_MINOR 0u
-#define RCORE_DRAFT_REVISION 4u /* draft-only counter; see docs/CORE_ABI.md */
+#define RCORE_DRAFT_REVISION 5u /* draft-only counter; see docs/CORE_ABI.md */
 
 #if defined(_WIN32)
 #  define RCORE_EXPORT __declspec(dllexport)
@@ -359,6 +359,18 @@ typedef struct rcore_host_api {
      * longer breaks DETERMINISTIC. A core never reads the system clock for
      * guest state. */
     uint64_t (*wall_clock_us)(void* host_ctx);
+
+    /* --- appended in draft revision 5 --- */
+
+    /* The nominal rate at which the core produces frames, as an exact
+     * fraction: frames per second = num / den (NTSC 60000/1001, PAL 50/1, an
+     * N64 VI field rate as its registers state it). Call it after load() and
+     * again whenever the guest reprograms its video timing; the host paces
+     * run_frame and presentation by it. It is the rate the HARDWARE runs at,
+     * not how fast this machine manages to emulate it. A core that never
+     * calls it leaves the host to pace by audio, then by a 60 Hz guess.
+     * num == 0 or den == 0 withdraws a stated rate. */
+    void (*set_frame_rate)(void* host_ctx, uint32_t num, uint32_t den);
 } rcore_host_api;
 
 /* ------------------------------------------------------------------------ */

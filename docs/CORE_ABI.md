@@ -12,6 +12,7 @@ only the shape of the contract and why.
 | Rev | Date | Change |
 |---|---|---|
 | 1 | 2026-09-23 | First draft. |
+| 5 | 2026-09-25 | `set_frame_rate(num, den)` on the host table: the nominal frame rate as an exact fraction, stated after `load()` and whenever the guest reprograms its video timing. Closes the pacing gap the hub link found. |
 | 4 | 2026-09-25 | Alex's ruling that the runner owns netplay: `rb_snap_*`, `run_frame_resim` and `state_hash_parts` for `CAP_ROLLBACK`, mapped onto recomp-net's `RNetRbHost`; host `wall_clock_us`, so a clock cartridge stays deterministic. |
 | 3 | 2026-09-24 | From the n64lle rcore session's fit report, with Alex's rulings: lent GL context (`RCORE_CAP_GL_COMPUTE`, `gl_get_proc_address`); `RCORE_OPT_STRING` and NULL = unset; `axis_direction` on input descriptors; `erase_value` on save regions; delay-based lockstep netplay for cores without `ROLLBACK`; optional `state_hash`; instrument env knobs allowed. Sidecar manifest specified. |
 | 2 | 2026-09-23 | Accessory slots (types, bindings, `RCORE_SAVE_ACCESSORY`, hot-plug); `state_compat_id` plus the host savestate envelope and refusal rule. Driven by the rust-parity session's Transfer Pak and savestate facts. |
@@ -307,6 +308,24 @@ claim with nothing enforcing it.
 
 **Rollback netplay uses no envelope.** Rollback states live in memory, inside
 one session whose peers already matched on the full identity at session start.
+
+## Frame rate
+
+A core states its nominal frame rate with `set_frame_rate(num, den)` (rev 5),
+as an exact fraction: NTSC is 60000/1001, PAL is 50/1, and an N64 core states
+the field rate its VI registers produce.
+
+- **Not `rcore_core_info`.** One core runs PAL and NTSC content, and a guest
+  may reprogram its video timing mid-run, so the rate is known only after
+  `load()` and may change. It follows `set_audio_rate`'s shape for the same
+  reason.
+- **It is the hardware's rate,** not how fast this machine manages to emulate
+  it. The host uses it to pace `run_frame` and presentation, and eventually to
+  choose a display mode.
+- **Optional.** A core that never calls it gets the fallback: pace by the
+  core's audio, then by a 60 Hz guess. A silent core that states no rate will
+  run at the wrong speed if its hardware was not 60 Hz; stating it is how a
+  core avoids that.
 
 ## Open
 
