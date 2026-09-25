@@ -367,11 +367,32 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     target_link_libraries(retcomm-hub PRIVATE retcomm_core retcomm_imgui)
     if(UNIX AND NOT APPLE)
         set_target_properties(retcomm-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
+        # A core running in the hub's window (docs/CORE_LINK.md). Linux only
+        # until the link has a Windows transport.
+        target_sources(retcomm-hub PRIVATE src/hub/hub_play.cpp src/corelink/link_io.cpp
+                                           src/corelink/core_link.cpp)
+        target_compile_definitions(retcomm-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     endif()
     install(TARGETS retcomm-hub RUNTIME DESTINATION bin)
     message(STATUS "retcomm-hub: enabled (ImGui=${RETCOMM_IMGUI_DIR})")
 else()
     message(STATUS "retcomm-hub: skipped (need SDL3 + ImGui with imgui_impl_sdl3)")
+endif()
+
+# --- the hub <-> runner link (docs/CORE_LINK.md) ----------------------------
+# Linux only for now: memfd, SOCK_SEQPACKET and SCM_RIGHTS. The Windows link
+# (named mappings, a named pipe, DuplicateHandle) is not built, and neither is
+# the runner there.
+if(UNIX AND NOT APPLE)
+add_library(retcomm_corelink STATIC
+    src/corelink/link_io.cpp
+    src/corelink/core_link.cpp
+)
+target_include_directories(retcomm_corelink PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_executable(retcomm-core-link-test src/corelink/link_test_main.cpp)
+target_link_libraries(retcomm-core-link-test PRIVATE retcomm_corelink)
+if(NOT WIN32 AND NOT APPLE)
+    target_link_libraries(retcomm-core-link-test PRIVATE stdc++fs)
 endif()
 
 # --- retcomm-core-runner --------------------------------------------------
@@ -381,11 +402,13 @@ endif()
 # starts once per game and should be small.
 add_executable(retcomm-core-runner
     src/runner/runner_main.cpp
+    src/runner/runner_link.cpp
     src/runner/core_library.cpp
     src/runner/core_manifest.cpp
     src/runner/host_session.cpp
     src/core/hash.cpp
 )
+target_link_libraries(retcomm-core-runner PRIVATE retcomm_corelink)
 target_include_directories(retcomm-core-runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(retcomm-core-runner PRIVATE ${CMAKE_DL_LIBS})
 if(NOT WIN32 AND NOT APPLE)
@@ -396,6 +419,7 @@ if(RETCOMM_HAVE_SDL3)
     target_compile_definitions(retcomm-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
 endif()
 install(TARGETS retcomm-core-runner RUNTIME DESTINATION bin)
+endif()
 
 install(TARGETS retcomm RUNTIME DESTINATION bin)
 install(FILES assets/retcomm.svg DESTINATION share/icons/hicolor/scalable/apps

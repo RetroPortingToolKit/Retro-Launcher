@@ -36,7 +36,10 @@ struct SaveRegion {
     std::uint32_t kind = 0;
     std::uint32_t seat = 0;
     std::uint32_t slot = 0;
-    std::vector<std::uint8_t> mem;
+    std::uint32_t erase_value = 0;
+    std::uint8_t* data = nullptr; // `owned`, or memory someone else maps
+    std::size_t size = 0;
+    std::vector<std::uint8_t> owned;
     std::optional<fs::path> file; // filled from and persisted to, if any
 };
 
@@ -65,6 +68,11 @@ public:
     // value, then from `files[id]` where one is given.
     void adopt_save_regions(const rcore_save_region* regions, std::uint32_t count,
                             const std::map<std::string, fs::path>& files);
+    // The same, over memory the caller provides (the hub link: one shared
+    // mapping per region, filled and persisted by the hub). `memory[i]` holds
+    // regions[i].size bytes and is already filled.
+    void adopt_external_save_regions(const rcore_save_region* regions, std::uint32_t count,
+                                     const std::vector<std::uint8_t*>& memory);
     const std::vector<SaveRegion>& save_regions() const { return regions_; }
     // Write every file-backed region back, as a frontend persists saves.
     void persist_save_regions() const;

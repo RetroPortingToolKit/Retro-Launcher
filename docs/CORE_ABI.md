@@ -308,6 +308,15 @@ claim with nothing enforcing it.
 **Rollback netplay uses no envelope.** Rollback states live in memory, inside
 one session whose peers already matched on the full identity at session start.
 
+## Input outside a frame
+
+A core may call `input_get` outside `run_frame`, for example while `load()`
+or `unserialize()` restores a state. The host then answers with the seats as
+they will stand for the **next** frame it runs. Never answer "no device" by
+default: `connected` is guest-visible. Found on 2026-09-25, when the hub link
+first answered that way and every savestate scenario diverged from headless
+(`CORE_LINK.md`).
+
 ## Open
 
 1. **Where the header lives.** Collaborators need it without this repo. Likely
@@ -321,6 +330,10 @@ one session whose peers already matched on the full identity at session start.
    (PSX: one memory card per port plus multitap; N64: one pak per controller).
 5. A gate that would let n64lle declare a `state_compat_id` — that is, states
    surviving a rebuild — if that is ever wanted.
+7. **A core states no frame rate.** The hub paces grants by the core's audio
+   and falls back to 60 Hz before audio exists (`CORE_LINK.md`, "Pacing").
+   A nominal rate in `rcore_core_info`, or reported beside the first frame,
+   would let a host pace a silent core correctly. Candidate for revision 5.
 6. **Resolved (2026-09-24).** n64lle's GL is compute only and its output still
    leaves as a CPU frame, so a lent context (ruling 1) is enough. No GPU-frame
    path is needed for it.

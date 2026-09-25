@@ -25,6 +25,7 @@
 #include "core_library.hpp"
 #include "core_manifest.hpp"
 #include "host_session.hpp"
+#include "runner_link.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -185,7 +186,7 @@ int main(int argc, char** argv) {
     std::uint64_t frames = 60;
     std::optional<fs::path> load_state, tpak_save, tpak_rtc;
     std::string tpak_rom;
-    bool gl = false, strict = false, seat0 = true, list_options = false;
+    bool gl = false, strict = false, seat0 = true, list_options = false, link = false;
     std::optional<std::uint64_t> replay_at;
     std::map<std::string, std::string> overrides;
     std::vector<std::pair<std::uint64_t, std::uint32_t>> script;
@@ -212,6 +213,7 @@ int main(int argc, char** argv) {
         else if (a == "--tpak1-save") tpak_save = fs::path(val());
         else if (a == "--tpak1-rtc") tpak_rtc = fs::path(val());
         else if (a == "--gl") gl = true;
+        else if (a == "--link") link = true;
         else if (a == "--strict") strict = true;
         else if (a == "--no-seats") seat0 = false;
         else if (a == "--list-options") list_options = true;
@@ -272,6 +274,27 @@ int main(int argc, char** argv) {
         die("this runner drives RUN_FRAME cores only; the core declares none");
     }
 
+    // ---- link mode: the hub drives the session -----------------------------
+    if (link) {
+#if !defined(RETCOMM_RUNNER_HAVE_SDL3)
+        if (gl) die("--gl: this runner was built without SDL3, so it has no GL context to lend");
+        void (*lend)(HostSession&) = nullptr;
+#else
+        void (*lend)(HostSession&) = lend_gl_context;
+#endif
+        LinkArgs la;
+        la.rom = rom;
+        la.title_dir = title_dir;
+        la.out = out;
+        la.gl = gl;
+        la.strict = strict;
+        la.overrides = overrides;
+        la.load_state = load_state;
+        la.tpak_rom = tpak_rom;
+        std::fflush(stdout);
+        return run_link_mode(core, manifest, la, lend);
+    }
+
     // ---- the session ------------------------------------------------------
     std::uint64_t frame = 0; // the frame being run, 1-based; the input script reads it
     HeadlessSink sink(out, seat0, std::move(script), &frame);
@@ -330,7 +353,7 @@ int main(int argc, char** argv) {
     session.adopt_save_regions(regs, nregs, save_files);
     for (const SaveRegion& r : session.save_regions()) {
         std::printf("save region %s: kind=%u seat=%u size=%zu from %s\n", r.id.c_str(), r.kind,
-                    r.seat, r.mem.size(), r.file ? r.file->string().c_str() : "(none)");
+                    r.seat, r.size, r.file ? r.file->string().c_str() : "(none)");
     }
 
     if (load_state) {

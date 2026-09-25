@@ -60,17 +60,35 @@ void HostSession::adopt_save_regions(const rcore_save_region* regions, std::uint
         s.slot = r.slot;
         // A region never saved is filled with its erase value (rev 3); the
         // core never learns whether it is fresh.
-        const std::uint8_t erase =
-            RCORE_HAS(&r, rcore_save_region, erase_value) ? std::uint8_t(r.erase_value) : 0;
-        s.mem.assign(static_cast<size_t>(r.size), erase);
+        s.erase_value = RCORE_HAS(&r, rcore_save_region, erase_value) ? r.erase_value : 0;
+        s.owned.assign(static_cast<size_t>(r.size), std::uint8_t(s.erase_value));
+        s.data = s.owned.data();
+        s.size = s.owned.size();
         if (auto f = files.find(s.id); f != files.end()) {
             s.file = f->second;
             std::ifstream in(f->second, std::ios::binary);
             if (in) {
-                in.read(reinterpret_cast<char*>(s.mem.data()),
-                        static_cast<std::streamsize>(s.mem.size()));
+                in.read(reinterpret_cast<char*>(s.data), static_cast<std::streamsize>(s.size));
             }
         }
+        regions_.push_back(std::move(s));
+    }
+}
+
+void HostSession::adopt_external_save_regions(const rcore_save_region* regions,
+                                              std::uint32_t count,
+                                              const std::vector<std::uint8_t*>& memory) {
+    regions_.clear();
+    for (std::uint32_t i = 0; i < count && i < memory.size(); ++i) {
+        const rcore_save_region& r = regions[i];
+        SaveRegion s;
+        s.id = r.id;
+        s.kind = r.kind;
+        s.seat = r.seat;
+        s.slot = r.slot;
+        s.erase_value = RCORE_HAS(&r, rcore_save_region, erase_value) ? r.erase_value : 0;
+        s.data = memory[i];
+        s.size = static_cast<size_t>(r.size);
         regions_.push_back(std::move(s));
     }
 }
@@ -79,8 +97,7 @@ void HostSession::persist_save_regions() const {
     for (const SaveRegion& r : regions_) {
         if (!r.file) continue;
         std::ofstream out(*r.file, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(r.mem.data()),
-                  static_cast<std::streamsize>(r.mem.size()));
+        out.write(reinterpret_cast<const char*>(r.data), static_cast<std::streamsize>(r.size));
     }
 }
 
@@ -134,7 +151,7 @@ std::uint32_t HostSession::h_options_changed(void*) { return 0; }
 
 void* HostSession::h_save(void* ctx, const char* id) {
     for (SaveRegion& r : self(ctx)->regions_) {
-        if (id && r.id == id) return r.mem.data();
+        if (id && r.id == id) return r.data;
     }
     return nullptr;
 }

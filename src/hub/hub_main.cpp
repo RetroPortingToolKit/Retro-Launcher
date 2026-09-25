@@ -1,6 +1,9 @@
 #include "hub/hub_boxart.hpp"
 #include "hub/hub_model.hpp"
 #include "hub/hub_osk.hpp"
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+#include "hub/hub_play.hpp"
+#endif
 #include "hub/hub_theme.hpp"
 
 #include "retcomm/catalog_sync.hpp"
@@ -8788,8 +8791,95 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 
 } // namespace
 
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+// Direct mode (docs/HOST_LIFECYCLE.md §3): `--run-core` boots straight into a
+// core in this window and exits when the player closes it. No library pages,
+// no setup wizard -- the same host a standalone release is.
+struct DirectPlay {
+    bool active = false;
+    retcomm::hub::PlayArgs args;
+};
+
+DirectPlay parse_direct_play(int argc, char** argv) {
+    DirectPlay d;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const bool has_val = i + 1 < argc;
+        if (a == "--run-core" && has_val) {
+            d.active = true;
+            d.args.core = argv[++i];
+        } else if (a == "--rom" && has_val) d.args.rom = argv[++i];
+        else if (a == "--title-dir" && has_val) d.args.title_dir = argv[++i];
+        else if (a == "--tpak1-rom" && has_val) d.args.tpak_rom = argv[++i];
+        else if (a == "--tpak1-save" && has_val) d.args.tpak_save = argv[++i];
+        else if (a == "--no-gl") d.args.gl = false;
+        else if (a == "--opt" && has_val) {
+            const std::string kv = argv[++i];
+            const auto eq = kv.find('=');
+            if (eq != std::string::npos) d.args.options[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+    }
+    return d;
+}
+
+int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
+    retcomm::hub::PlaySession play;
+    const std::string stem = d.args.core.stem().string();
+    const fs::path runner = hub.exe_dir / "retcomm-core-runner";
+    const fs::path session = hub.paths.data_dir / "sessions" / stem;
+    const fs::path saves = hub.paths.data_dir / "saves" / stem;
+    std::string err;
+    if (!play.start(d.args, runner, session, saves, &err)) {
+        std::fprintf(stderr, "retcomm-hub: cannot start %s: %s\n", d.args.core.string().c_str(),
+                     err.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "retcomm-hub: running %s (session %s, saves %s)\n",
+                 d.args.core.string().c_str(), session.string().c_str(), saves.string().c_str());
+    bool running = true;
+    while (running && !play.finished()) {
+        hub_sync_open_gamepads();
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            scale_mouse_event(e, ui.coords);
+            if (!play.handle_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
+            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                e.window.windowID == SDL_GetWindowID(window))
+                running = false;
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+                const bool fs_now = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                SDL_SetWindowFullscreen(window, !fs_now);
+            }
+        }
+        play.tick();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        apply_ui_scale_frame(window, ui);
+        ImGui::NewFrame();
+        play.draw();
+        ImGui::Render();
+        int fb_w = 0, fb_h = 0;
+        SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SDL_GL_SwapWindow(window);
+    }
+    play.shutdown();
+    return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
-    (void)argc;
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    const DirectPlay direct = parse_direct_play(argc, argv);
+    if (direct.active && direct.args.rom.empty()) {
+        std::fprintf(stderr, "retcomm-hub: --run-core needs --rom <image>\n");
+        return 2;
+    }
+#endif
 
     // Steam only reads its screen-keyboard hint at startup.
     retcomm::hub::osk_configure_hints();
@@ -8887,6 +8977,20 @@ int main(int argc, char** argv) {
                      static_cast<double>(ui.px), static_cast<double>(ui.coords),
                      hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
     }
+
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (direct.active) {
+        const int rc = run_direct_play(window, ui, direct, hub);
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        hub_close_all_gamepads();
+        SDL_GL_DestroyContext(gl);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return rc;
+    }
+#endif
 
     // First run: the wizard has not yet asked the user where Retro should keep
     // its files, so this launch must not create any of them. ensure_dirs() and

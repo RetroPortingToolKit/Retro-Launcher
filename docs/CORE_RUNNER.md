@@ -4,8 +4,8 @@ The child process that runs an rcore core for the Retro frontend. Design:
 `HOST_LIFECYCLE.md` (process model, states) and `CORE_ABI.md` (the contract).
 This page covers what exists and how it is checked.
 
-**Status, 2026-09-25: headless mode only.** The hub link (shared memory,
-`HOST_LIFECYCLE.md` §4) is not built yet, so the hub cannot run a core.
+**Status, 2026-09-25:** two modes. **Headless** is described here. **Link**
+(`--link`) is how the hub runs a core in its own window; see `CORE_LINK.md`.
 
 ## What it does today
 
@@ -78,8 +78,6 @@ line.
 
 ## Not built yet
 
-- **The hub link.** The shared-memory protocol, frame and audio hand-off,
-  input from the hub, pause and grant, and the fault screen's data.
 - **Netplay** (rev 4: the runner binds recomp-net's `rb_driver`).
 - **The savestate envelope** and its refuse-on-mismatch rule.
 - **A Windows GL path, and Windows testing.** `LoadLibrary` is written but
