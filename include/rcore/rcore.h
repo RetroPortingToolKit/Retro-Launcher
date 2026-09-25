@@ -13,7 +13,9 @@
  * difference and must not try to.
  *
  * WHAT A CORE MUST NOT DO. Open a window, a GPU context, an audio device or an
- * input device; read environment variables for settings; resolve paths from
+ * input device; read POLICY settings from environment variables (instrument
+ * knobs — dumps, censuses, trace logs — may stay environment-driven because
+ * they change nothing the machine computes); resolve paths from
  * its own location or the working directory; write files outside the
  * directories the host hands it. Everything it needs arrives through this
  * header.
@@ -46,7 +48,7 @@ extern "C" {
 
 #define RCORE_ABI_MAJOR 0u /* 0 = draft; the first implemented contract is 1 */
 #define RCORE_ABI_MINOR 0u
-#define RCORE_DRAFT_REVISION 2u /* draft-only counter; see docs/CORE_ABI.md */
+#define RCORE_DRAFT_REVISION 3u /* draft-only counter; see docs/CORE_ABI.md */
 
 #if defined(_WIN32)
 #  define RCORE_EXPORT __declspec(dllexport)
@@ -83,6 +85,8 @@ typedef int32_t rcore_result;
 #define RCORE_CAP_STRICT_MODE      (1ull << 6) /* honours RCORE_INIT_STRICT (bridges are fatal) */
 #define RCORE_CAP_GAME_PACKAGE     (1ull << 7) /* loads a separate generated-code package */
 #define RCORE_CAP_ACCESSORY_HOTPLUG (1ull << 8) /* accessory_changed() while running */
+#define RCORE_CAP_GL_COMPUTE       (1ull << 9) /* wants a lent GL 4.3+ context (gl_get_proc_address);
+                                                  must still run, in software, when none is lent */
 
 typedef struct rcore_core_info {
     uint32_t struct_size;
@@ -169,7 +173,8 @@ typedef struct rcore_input_descriptor {
     uint32_t struct_size;
     uint32_t button;              /* one RCORE_PAD_* bit, or 0 with axis set */
     uint32_t axis;                /* RCORE_AXIS_* + 1, or 0 */
-    uint32_t _pad0;
+    int32_t  axis_direction;      /* 0 = the whole axis; +1 / -1 = only that half,
+                                     e.g. RX -1 "C-Left", RX +1 "C-Right" */
     const char* label;            /* the console's name for it, e.g. "C-Up" */
 } rcore_input_descriptor;
 
@@ -214,6 +219,7 @@ typedef struct rcore_accessory_binding {
 #define RCORE_OPT_ENUM             1u
 #define RCORE_OPT_BOOL             2u
 #define RCORE_OPT_INT              3u
+#define RCORE_OPT_STRING           4u /* free text: names, hex addresses, paths inside title_dir */
 
 #define RCORE_OPT_FLAG_RESTART     (1u << 0) /* takes effect only on next load */
 #define RCORE_OPT_FLAG_NETPLAY     (1u << 1) /* affects simulation: part of the netplay match key */
@@ -227,7 +233,8 @@ typedef struct rcore_option {
     const char* key;              /* stable, e.g. "video.widescreen" */
     const char* label;
     const char* description;
-    const char* default_value;    /* always a string: "1", "fast", "60" */
+    const char* default_value;    /* always a string: "1", "fast", "60". NULL = unset:
+                                     the core applies its own built-in default */
     const char* const* values;    /* ENUM: NULL-terminated list; else NULL */
     int64_t int_min;              /* INT only */
     int64_t int_max;
@@ -251,8 +258,17 @@ typedef struct rcore_save_region {
     const char* id;               /* stable file stem, e.g. "eeprom", "cpak1".
                                      For ACCESSORY the host keys the file by the
                                      accessory content's hash too, so a Game Boy
-                                     save follows its cartridge, not the seat. */
+                                     save follows its cartridge, not the seat.
+                                     One accessory may own several regions, e.g.
+                                     "tpak1" (battery RAM) and "tpak1.rtc"
+                                     (MBC3 clock), so the battery file stays the
+                                     standard format other emulators read. */
     uint64_t size;
+    uint32_t erase_value;         /* low byte fills a region that has never been
+                                     saved: 0xFF for EEPROM and flash, 0x00 if the
+                                     hardware powers up zeroed. The core never
+                                     learns whether a region is fresh. */
+    uint32_t _pad1;
 } rcore_save_region;
 
 /* ------------------------------------------------------------------------ */
@@ -302,7 +318,10 @@ typedef struct rcore_host_api {
     void (*rumble)(void* host_ctx, uint32_t seat, uint16_t low, uint16_t high);
 
     /* Current value of an option the core declared, as a string. Stable for
-     * the whole frame. NULL for an undeclared key — which is a core bug. */
+     * the whole frame. NULL means unset: the core applies its built-in
+     * default. Asking for an undeclared key is a contract violation: the
+     * runner ends the session with a fault naming the key, so NULL can only
+     * ever mean "unset". */
     const char* (*option_get)(void* host_ctx, const char* key);
     /* Non-zero when any option changed since the last call. */
     uint32_t (*options_changed)(void* host_ctx);
@@ -317,6 +336,15 @@ typedef struct rcore_host_api {
      * return. Inside this call the host may re-enter serialize/unserialize/
      * reset — it is the core's safe point. */
     uint32_t (*frame_boundary)(void* host_ctx);
+
+    /* --- appended in draft revision 3 --- */
+
+    /* NULL = no GL lent; a CAP_GL_COMPUTE core then runs its software path
+     * and says so through log(). Non-NULL = a headless GL 4.3+ core-profile
+     * context is current on the core thread for every core call. The core
+     * never makes it current elsewhere, swaps it or presents from it: frames
+     * still leave through video_submit. */
+    void* (*gl_get_proc_address)(void* host_ctx, const char* name);
 } rcore_host_api;
 
 /* ------------------------------------------------------------------------ */
@@ -324,7 +352,9 @@ typedef struct rcore_host_api {
 /* ------------------------------------------------------------------------ */
 
 #define RCORE_INIT_STRICT          (1u << 0) /* any bridge is fatal */
-#define RCORE_INIT_NETPLAY         (1u << 1) /* determinism required; host refuses cores without it */
+#define RCORE_INIT_NETPLAY         (1u << 1) /* requires CAP_DETERMINISTIC. Rollback sessions
+                                                also require CAP_ROLLBACK; otherwise the
+                                                session is delay-based lockstep. */
 
 typedef struct rcore_init_params {
     uint32_t struct_size;
@@ -393,6 +423,15 @@ typedef struct rcore_core_api {
     rcore_result (*accessory_changed)(uint32_t seat, uint32_t slot,
                                       const rcore_accessory_binding* binding,
                                       const rcore_save_region** save_region);
+
+    /* --- appended in draft revision 3 --- */
+
+    /* Optional, for netplay desync detection: a hash of the simulation state
+     * at the current frame boundary. It must cover only what DETERMINISTIC
+     * promises. It must not include state racing asynchronous workers (e.g.
+     * RDRAM sampled mid-field). NULL = the host hashes serialize() output
+     * instead, at a lower rate. */
+    uint64_t (*state_hash)(void);
 } rcore_core_api;
 
 /* The single exported symbol. Returns NULL when the core cannot serve

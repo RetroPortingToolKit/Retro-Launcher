@@ -145,7 +145,9 @@ called, and a loop-owning core blocks in `present`.
 **rollback executor lives in the runner**, next to the core, because resimulating
 N frames through a shared-memory round-trip per frame would multiply latency.
 The host feeds confirmed and predicted inputs; the runner saves, restores and
-resimulates.
+resimulates. It snapshots every save region with each core state, because
+save memory is host-owned and not in core savestates. A core without
+`RCORE_CAP_ROLLBACK` gets delay-based lockstep instead (`CORE_ABI.md`, §Netplay).
 
 ---
 
