@@ -20,6 +20,8 @@ with cores built against a contract we own.
 | Where a core runs | In a **child process** — a generic `retcomm-core-runner` that loads the core library. Never in the host process. **(decided)** |
 | Quick menu pauses the core | **Yes offline. Never in netplay.** **(decided)** |
 | Contract shape | Our own versioned C ABI, not libretro — `include/rcore/rcore.h`, see `CORE_ABI.md`. **(decided)** |
+| Who runs netplay | The **runner**, one `rb_driver` binding for every core; cores provide snapshot/resim/digest. **(decided 2026-09-25)** |
+| Standalone releases | This host and runner dedicated to one title, auto-updated as a bundle with its core. **(decided 2026-09-25)** |
 
 Why a child process, recorded so it is not re-litigated:
 
@@ -114,6 +116,12 @@ The launcher and a standalone release are the **same host binary** in two modes.
 | Standalone (one bundled core + title) | Loading, for the bundled title | exits the app |
 | Direct (`retcomm run <title>`, Steam shortcuts) | Loading | exits the app |
 
+**A standalone dev release is this host and runner dedicated to one title**
+(ruling 2026-09-25). It is auto-updated as a bundle with the title's core, pinned
+together by the title's lock. Developers ship title data and a core build
+recipe, never a vendored host or runner, so there is nothing for them to keep
+current.
+
 In standalone mode the menu shows only that title's pages (settings, controls,
 mods, netplay). Because it is the same host and the same runner, a standalone
 player and a launcher player running the same core hash and game package are
@@ -141,13 +149,14 @@ Wake-ups use an eventfd / Windows event pair; nothing polls with sleeps.
 **Pause** is the host withholding the grant: a call-per-frame core is simply not
 called, and a loop-owning core blocks in `present`.
 
-**Rollback netplay:** the host owns the session, transport and lobby. The
-**rollback executor lives in the runner**, next to the core, because resimulating
-N frames through a shared-memory round-trip per frame would multiply latency.
-The host feeds confirmed and predicted inputs; the runner saves, restores and
-resimulates. It snapshots every save region with each core state, because
-save memory is host-owned and not in core savestates. A core without
-`RCORE_CAP_ROLLBACK` gets delay-based lockstep instead (`CORE_ABI.md`, §Netplay).
+**Rollback netplay — the runner owns it (ruling 2026-09-25).** The runner binds
+recomp-net's `rb_driver` once, for every core. It owns transport, lobby,
+identity, input rows and the snapshots of host-owned save memory. The core
+provides only its snapshot ring, a no-output resimulated frame and its digest
+(`CORE_ABI.md`, §Netplay). The executor sits in the runner, next to the core,
+because resimulating N frames through a shared-memory round-trip per frame
+would multiply latency. A core without `RCORE_CAP_ROLLBACK` gets delay-based
+lockstep instead.
 
 ---
 

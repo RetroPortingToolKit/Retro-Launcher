@@ -12,6 +12,7 @@ only the shape of the contract and why.
 | Rev | Date | Change |
 |---|---|---|
 | 1 | 2026-09-23 | First draft. |
+| 4 | 2026-09-25 | Alex's ruling that the runner owns netplay: `rb_snap_*`, `run_frame_resim` and `state_hash_parts` for `CAP_ROLLBACK`, mapped onto recomp-net's `RNetRbHost`; host `wall_clock_us`, so a clock cartridge stays deterministic. |
 | 3 | 2026-09-24 | From the n64lle rcore session's fit report, with Alex's rulings: lent GL context (`RCORE_CAP_GL_COMPUTE`, `gl_get_proc_address`); `RCORE_OPT_STRING` and NULL = unset; `axis_direction` on input descriptors; `erase_value` on save regions; delay-based lockstep netplay for cores without `ROLLBACK`; optional `state_hash`; instrument env knobs allowed. Sidecar manifest specified. |
 | 2 | 2026-09-23 | Accessory slots (types, bindings, `RCORE_SAVE_ACCESSORY`, hot-plug); `state_compat_id` plus the host savestate envelope and refusal rule. Driven by the rust-parity session's Transfer Pak and savestate facts. |
 
@@ -154,36 +155,81 @@ generated_utc   = "2026-09-24T00:00:00Z"
 
 ## Netplay
 
+**Ruling, 2026-09-25: the runner owns the session.** `retcomm-core-runner` binds
+recomp-net's `rb_driver` once, for every core. It owns transport, lobby,
+identity, the published input rows, and the snapshots of host-owned save
+memory. A core provides only the engine-specific pieces, as contract functions.
+One netplay implementation serves every engine, and a fix to it reaches every
+title with the next runner update.
+
+The alternative was each core binding `rb_driver` itself. That keeps netplay
+working inside hosts other than ours. It was declined: it means one netplay per
+engine, and a core cannot snapshot the save memory the host owns.
+
+**Standalone releases use the same runner.** A standalone dev release is our
+host and runner dedicated to one title, auto-updated as a bundle together with
+its core (`HOST_LIFECYCLE.md` §3). Developers ship title data and a core build
+recipe, never their own host or runner. So a standalone player and a launcher
+player on the same runner, core and title are netplay-compatible by
+construction, and nobody maintains a vendored runner.
+
 `RCORE_INIT_NETPLAY` requires `RCORE_CAP_DETERMINISTIC`. The session mode then
 follows from the core's capabilities:
 
 | Core declares | Session |
 |---|---|
-| `DETERMINISTIC` + `ROLLBACK` | Rollback. The executor lives in the runner. |
-| `DETERMINISTIC` only | **Delay-based lockstep.** Peers exchange inputs with a fixed input delay; no resimulation, no savestates. |
+| `DETERMINISTIC` + `ROLLBACK` | Rollback, driven by the runner's `rb_driver` in `RNET_RB_REPLAY_INCREMENTAL` mode. |
+| `DETERMINISTIC` only | **Delay-based lockstep.** Peers exchange inputs with a fixed input delay; no resimulation, no snapshots. |
 | neither | Refused for netplay. |
 
-Stadium today is lockstep. It declares no `ROLLBACK`: a load invalidates every
-dispatch guard and all learned state, and heavy scenes barely reach 1×.
+**How the contract maps onto `RNetRbHost`** (recomp-net `include/recomp_net/rb_driver.h`):
 
-- **Desync detection.** Peers compare a state hash every N frames, at the frame
-  boundary. `state_hash()` if the core provides one; otherwise the host hashes
-  `serialize()` output at a lower rate. The hash must cover only what
-  `DETERMINISTIC` promises. n64lle's async raster workers race RDRAM mid-field,
-  so the hash is taken at the field boundary only.
-- **Match key.** Core file hash, title, content hash, `NETPLAY` options and
-  `NETPLAY` accessory bindings must all match before a session starts.
+| `RNetRbHost` | Provided by |
+|---|---|
+| `snap_save` / `snap_load` / `snap_has` / `snap_oldest` / `snap_drop_after` | core `rb_snap_*`, plus the runner's own ring of every save region under the same tick |
+| `publish` | runner: rows become each seat's `rcore_pad` for that frame's `input_get` |
+| `run_tick` | not used; incremental mode |
+| live tick / replayed tick | core `run_frame` / `run_frame_resim` |
+| `resim_begin` / `resim_end` | runner: it chooses `run_frame_resim`, and presentation and audio are its own |
+| `digest_master` / `digest_parts` | core `state_hash` / `state_hash_parts` (folded to 32 bits by the runner) |
+| `decode_sample` / `neutral_row` / `sanitize_row` | runner, on the generic pad (all-zero is neutral); no core hook |
+| `boot_digest_noted`, `request_return_to_lobby`, `log`, `now_ms` | runner and host |
 
-**Save memory is not in core savestates, and rollback must cover it.** A
-console rewind does not rewind a cartridge battery, so n64lle deliberately keeps
-Transfer Pak battery RAM out of its savestates. Host-owned save memory in
-general is not guaranteed to be in `serialize()` output. Therefore:
+- **The ring is the core's** and sized by it (`rb_snap_depth`). It lives in
+  memory only and is never a player savestate. For n64lle it is the existing
+  snapshot ring (`state/rollback.rs`), and the digest is `rb_digest.rs`. The
+  per-field replay the SDL harness does today becomes `run_frame_resim`.
+- **Match key.** Before a session starts, all of these must match:
+  - the runner's netplay version;
+  - the core file hash;
+  - the title and content hash;
+  - `NETPLAY` options and `NETPLAY` accessory bindings, including accessory
+    content hashes;
+  - the agreed clock epoch.
+- **Clocks.** During a session, `wall_clock_us` is a pure function of the
+  agreed epoch and the frame number. That replaces n64lle's
+  `N64LLE_NET_RTC_EPOCH`, so an MBC3 cartridge no longer breaks determinism.
+- **Desync detection** compares `state_hash` at the frame boundary. The hash
+  covers only what `DETERMINISTIC` promises; n64lle's async raster workers race
+  RDRAM mid-field, so it is taken at the field boundary only.
 
-- a **rollback executor snapshots every save region** alongside each core state
-  and restores them together, or a resimulated frame sees a future write;
+**Save memory is not in core state, and rollback must cover it.** A console
+rewind does not rewind a cartridge battery, so n64lle keeps Transfer Pak battery
+RAM out of its states. Host-owned save memory is never in `rb_snap_*` or
+`serialize()` output. Therefore:
+
+- the **runner snapshots every save region** under each tick it asks the core to
+  snapshot, and restores them together, or a resimulated frame sees a future
+  write;
 - a **player savestate load does not restore save memory**, exactly like the
   hardware. The envelope still records accessory content hashes, so a state is
   refused against a different cartridge.
+
+**n64lle today.** Rollback runs on the unmerged `feat/rollback*` branches,
+binding `rb_driver` inside the SDL harness (`host_netplay.rs`). The SDL-free
+`netplay_rb.rs` is what becomes the core's side of the functions above. It has
+run 2–4 seats over UDP loopback on one machine, never over a real network and
+never with a player. The core still declares no `ROLLBACK`.
 
 ## Accessories
 

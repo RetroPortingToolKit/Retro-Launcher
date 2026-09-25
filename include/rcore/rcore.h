@@ -48,7 +48,7 @@ extern "C" {
 
 #define RCORE_ABI_MAJOR 0u /* 0 = draft; the first implemented contract is 1 */
 #define RCORE_ABI_MINOR 0u
-#define RCORE_DRAFT_REVISION 3u /* draft-only counter; see docs/CORE_ABI.md */
+#define RCORE_DRAFT_REVISION 4u /* draft-only counter; see docs/CORE_ABI.md */
 
 #if defined(_WIN32)
 #  define RCORE_EXPORT __declspec(dllexport)
@@ -80,7 +80,10 @@ typedef int32_t rcore_result;
 #define RCORE_CAP_OWNS_LOOP        (1ull << 1) /* run() owns the thread, yields at frame_boundary() */
 #define RCORE_CAP_SAVESTATE        (1ull << 2) /* serialize/unserialize at a frame boundary */
 #define RCORE_CAP_DETERMINISTIC    (1ull << 3) /* same inputs + same state => same state, bit-exact */
-#define RCORE_CAP_ROLLBACK         (1ull << 4) /* SAVESTATE + DETERMINISTIC, fast enough to resimulate */
+#define RCORE_CAP_ROLLBACK         (1ull << 4) /* DETERMINISTIC + the rb_* snapshot ring, run_frame_resim
+                                                  and state_hash/state_hash_parts (rev 4). The
+                                                  RUNNER owns the rollback session; the core
+                                                  only provides these. */
 #define RCORE_CAP_RESET            (1ull << 5)
 #define RCORE_CAP_STRICT_MODE      (1ull << 6) /* honours RCORE_INIT_STRICT (bridges are fatal) */
 #define RCORE_CAP_GAME_PACKAGE     (1ull << 7) /* loads a separate generated-code package */
@@ -345,6 +348,17 @@ typedef struct rcore_host_api {
      * never makes it current elsewhere, swaps it or presents from it: frames
      * still leave through video_submit. */
     void* (*gl_get_proc_address)(void* host_ctx, const char* name);
+
+    /* --- appended in draft revision 4 --- */
+
+    /* Wall-clock time as Unix microseconds -- the ONLY source a core may use
+     * for anything guest-visible that follows real time (a cartridge RTC, a
+     * BIOS time-of-day). Offline the host returns real time. In a netplay or
+     * replay session it returns a pure function of the session's agreed epoch
+     * and the frame number, identical on every peer, so a clock cartridge no
+     * longer breaks DETERMINISTIC. A core never reads the system clock for
+     * guest state. */
+    uint64_t (*wall_clock_us)(void* host_ctx);
 } rcore_host_api;
 
 /* ------------------------------------------------------------------------ */
@@ -432,6 +446,44 @@ typedef struct rcore_core_api {
      * RDRAM sampled mid-field). NULL = the host hashes serialize() output
      * instead, at a lower rate. */
     uint64_t (*state_hash)(void);
+
+    /* --- appended in draft revision 4: rollback (CAP_ROLLBACK) ---
+     *
+     * THE RUNNER OWNS THE SESSION (ruling 2026-09-25): it binds recomp-net's
+     * rb_driver once, for every core, and owns transport, lobby, identity,
+     * input rows and the snapshots of host-owned save memory. A core provides
+     * only the engine-specific pieces below, which map onto RNetRbHost:
+     *
+     *   rb_snap_save/load/has/oldest/drop_after  -> snap_*
+     *   run_frame / run_frame_resim              -> RNET_RB_REPLAY_INCREMENTAL
+     *   state_hash / state_hash_parts            -> digest_master / digest_parts
+     *
+     * Pads need no core hook: the runner decodes published rows into the
+     * generic rcore_pad that input_get returns, and the core maps that to its
+     * console exactly as it does offline.
+     *
+     * All of these are called only at a frame boundary, on the core thread.
+     * The ring is the CORE's, sized by the core. A snapshot keyed T is the
+     * state BEFORE frame T runs. It lives in memory only and is never a
+     * player savestate. */
+    rcore_result (*rb_snap_save)(uint32_t tick);
+    rcore_result (*rb_snap_load)(uint32_t tick);        /* RCORE_ERR_STATE if not held */
+    uint32_t     (*rb_snap_has)(uint32_t tick);
+    uint32_t     (*rb_snap_oldest)(uint32_t* oldest);   /* 0 = ring empty */
+    void         (*rb_snap_drop_after)(uint32_t tick);  /* a replay re-keyed the timeline */
+    uint32_t     (*rb_snap_depth)(void);                /* ring capacity, for reporting */
+
+    /* Emulate one frame exactly as run_frame does -- the same state
+     * afterwards, bit for bit -- but produce nothing the player already saw or
+     * heard: no video_submit, audio_push, rumble or per-frame instrument
+     * output. input_get still returns the published rows for that frame. */
+    rcore_result (*run_frame_resim)(void);
+
+    /* The digest broken into up to 3 named partitions, so a fork report names
+     * the first partition that differs. Partition names are fixed per core
+     * (e.g. "cpu", "rdram", "rsp"). state_hash must equal a pure function of
+     * the parts. */
+    void (*state_hash_parts)(uint64_t parts[3], const char* names[3]);
 } rcore_core_api;
 
 /* The single exported symbol. Returns NULL when the core cannot serve
