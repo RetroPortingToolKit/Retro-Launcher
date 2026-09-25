@@ -59,10 +59,12 @@ hub                                    runner
 
 ## Pacing
 
-A core states no frame rate (a gap in the contract; see `CORE_ABI.md`, open
-items). The hub paces grants by the core's own audio: it grants while fewer
-than 60 ms are queued in its SDL audio stream. Before the first audio arrives,
-or with no audio device, it falls back to a fixed 60 Hz.
+While the core produces audio, the hub paces grants by it, granting while
+fewer than 60 ms are queued in its SDL audio stream. The audio is what the
+player hears, so it is the clock that must not drift. With no audio yet, or no
+audio device, the hub paces by the core's stated frame rate
+(`set_frame_rate`, rev 5, carried in the shared header). Only a core that
+states neither falls back to a fixed 60 Hz.
 
 ## Direct mode
 
@@ -105,6 +107,12 @@ All on `pokemonstadium_core.so` built clean from n64lle `ffa84cfc`.
 - **Saves survive a crash.** The runner was `SIGKILL`ed 763 frames into a
   Transfer Pak session. The hub reported exit -9 and rewrote the pak's save
   from its own mapping afterwards.
+- **Frame-rate pacing** (rev 5, protocol v3). `tests/rcore_fake_core.c` is a
+  silent core that states 50/1 after `load()`. The hub, offscreen with dummy
+  audio, ran it for 10.07 s of wall time including start-up: 468 frames,
+  about 50 fps. The 60 Hz fallback would have run about 565. After the
+  shared-header change, `boot300_default` and `slot02_tpak` through the link
+  are still byte-identical to `rcore_probe`.
 - **Not checked:** the picture on a real screen, sound, controller feel and
   the menus. No one has looked at them. That verdict is Alex's.
 

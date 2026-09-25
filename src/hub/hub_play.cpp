@@ -174,9 +174,13 @@ void PlaySession::grant_if_due() {
         const double queued_ms = queued / (double(audio_hz_) * 4.0) * 1000.0;
         due = queued_ms < kTargetQueuedMs;
     } else {
+        // No audio to follow: the core's stated frame rate, else 60 Hz.
+        std::uint32_t num = 0, den = 0;
+        const std::uint64_t period =
+            link_.frame_rate(num, den) ? std::uint64_t(den) * kNsPerSec / num : kFallbackFrameNs;
         if (next_grant_ns_ == 0 || now > next_grant_ns_ + 100000000ull) next_grant_ns_ = now;
         due = now >= next_grant_ns_;
-        if (due) next_grant_ns_ += kFallbackFrameNs;
+        if (due) next_grant_ns_ += period;
     }
     if (!due) return;
     rcore_pad pads[RCORE_MAX_SEATS];

@@ -93,6 +93,8 @@ public:
     const std::uint8_t* frame_pixels() const;
 
     std::uint32_t audio_rate() const;
+    // The core's stated frame rate; false while it has stated none.
+    bool frame_rate(std::uint32_t& num, std::uint32_t& den) const;
     // Up to max_frames stereo frames into out (2 * max_frames samples).
     std::size_t drain_audio(std::int16_t* out, std::size_t max_frames);
 

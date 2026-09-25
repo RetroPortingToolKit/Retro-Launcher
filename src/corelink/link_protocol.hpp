@@ -23,7 +23,7 @@
 
 namespace retcomm::corelink {
 
-constexpr std::uint32_t kProtocolVersion = 2;
+constexpr std::uint32_t kProtocolVersion = 3;
 constexpr char kMagic[8] = {'R', 'C', 'L', 'I', 'N', 'K', '1', '\0'};
 
 // Frame slots big enough for any console this contract hosts at 1x: the
@@ -78,6 +78,10 @@ struct SharedHeader {
     std::atomic<std::uint32_t> audio_rate;
     std::uint32_t audio_capacity;
     std::atomic<std::uint64_t> audio_dropped; // frames the runner could not fit
+
+    // The core's nominal frame rate (rev 5 set_frame_rate), packed as
+    // num << 32 | den so one atomic carries both; 0 = unstated.
+    std::atomic<std::uint64_t> frame_rate;
 };
 
 constexpr std::size_t shared_frames_offset() {

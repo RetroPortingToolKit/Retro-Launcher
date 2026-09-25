@@ -29,6 +29,8 @@ public:
     // call within one frame (the contract's rollback-replay rule).
     virtual void input(std::uint32_t seat, rcore_pad& out) = 0;
     virtual void rumble(std::uint32_t, std::uint16_t, std::uint16_t) {}
+    // The core's nominal frame rate, num/den per second (rev 5); 0/0 = unstated.
+    virtual void frame_rate(std::uint32_t, std::uint32_t) {}
 };
 
 struct SaveRegion {
@@ -92,6 +94,7 @@ private:
     static void* h_save(void*, const char*);
     static void* h_gl_proc(void*, const char*);
     static std::uint64_t h_wall_clock(void*);
+    static void h_frame_rate(void*, std::uint32_t, std::uint32_t);
 
     const LoadedCore& core_;
     Sink& sink_;

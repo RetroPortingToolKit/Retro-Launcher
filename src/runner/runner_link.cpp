@@ -107,6 +107,10 @@ public:
         shm_->audio_rate.store(hz, std::memory_order_release);
     }
 
+    void frame_rate(std::uint32_t num, std::uint32_t den) override {
+        shm_->frame_rate.store((std::uint64_t(num) << 32) | den, std::memory_order_release);
+    }
+
     void input(std::uint32_t seat, rcore_pad& pad) override {
         if (seat < RCORE_MAX_SEATS) pad = pads[seat];
     }

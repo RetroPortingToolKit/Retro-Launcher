@@ -125,6 +125,16 @@ public:
 
     void audio(const std::int16_t*, std::uint32_t n) override { audio_frames += n; }
     void audio_rate(std::uint32_t hz) override { audio_hz = hz; }
+    void frame_rate(std::uint32_t num, std::uint32_t den) override {
+        if (num == rate_num && den == rate_den) return;
+        rate_num = num;
+        rate_den = den;
+        if (num) {
+            std::printf("frame rate: %u/%u (%.4f Hz)\n", num, den, double(num) / den);
+        } else {
+            std::printf("frame rate: withdrawn\n");
+        }
+    }
 
     void input(std::uint32_t seat, rcore_pad& pad) override {
         if (seat != 0 || !seat0_) return; // other seats: no controller
@@ -142,6 +152,7 @@ public:
     std::uint32_t last_w = 0, last_h = 0;
     std::uint64_t frames_seen = 0, audio_frames = 0;
     std::uint32_t audio_hz = 0, faults = 0, bridges = 0;
+    std::uint32_t rate_num = 0, rate_den = 0;
 
 private:
     bool seat0_;
@@ -407,11 +418,14 @@ int main(int argc, char** argv) {
         std::ofstream sm(out / "summary.txt");
         for (const auto& l : sink.summary) sm << l << '\n';
     }
-    std::printf("runner: %llu frame(s) submitted, %llu audio frame(s) at %u Hz, %u bridge "
-                "event(s), %u fault(s)%s%s\n",
+    std::printf("runner: %llu frame(s) submitted, %llu audio frame(s) at %u Hz, frame rate %s, "
+                "%u bridge event(s), %u fault(s)%s%s\n",
                 static_cast<unsigned long long>(sink.frames_seen),
-                static_cast<unsigned long long>(sink.audio_frames), sink.audio_hz, sink.bridges,
-                sink.faults, replay_verdict.empty() ? "" : "; ", replay_verdict.c_str());
+                static_cast<unsigned long long>(sink.audio_frames), sink.audio_hz,
+                sink.rate_num ? (std::to_string(sink.rate_num) + "/" + std::to_string(sink.rate_den)).c_str()
+                              : "unstated",
+                sink.bridges, sink.faults, replay_verdict.empty() ? "" : "; ",
+                replay_verdict.c_str());
     core.api->deinit();
     return (!ok || sink.faults) ? 1 : 0;
 }

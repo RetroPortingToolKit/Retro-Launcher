@@ -419,6 +419,16 @@ if(RETCOMM_HAVE_SDL3)
     target_compile_definitions(retcomm-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
 endif()
 install(TARGETS retcomm-core-runner RUNTIME DESTINATION bin)
+
+# A test fixture, never installed: the smallest core, silent and 50 Hz, so a
+# host's frame-rate pacing can be measured (docs/CORE_LINK.md). Its sidecar is
+# written beside it; the runner checks it like any other.
+add_library(rcore_fake_core SHARED tests/rcore_fake_core.c)
+target_include_directories(rcore_fake_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set_target_properties(rcore_fake_core PROPERTIES PREFIX "" OUTPUT_NAME fake_core
+                      C_VISIBILITY_PRESET hidden)
+file(GENERATE OUTPUT $<TARGET_FILE_DIR:rcore_fake_core>/fake_core.rcore.toml CONTENT
+"# Written by CMake for the rcore_fake_core test fixture.\n\n[core]\nabi_major       = 0\ndraft_revision  = 5\nid              = \"fake\"\nversion         = \"1.0\"\nlibrary         = \"fake_core.so\"\nplatforms       = [\"test\"]\ncapabilities    = [\"run_frame\"]\n\n[build]\nengine_commit   = \"\"\nengine_dirty    = false\ntoolchain       = \"\"\ngenerated_utc   = \"\"\n")
 endif()
 
 install(TARGETS retcomm RUNTIME DESTINATION bin)

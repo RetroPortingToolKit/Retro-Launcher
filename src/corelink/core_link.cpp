@@ -284,6 +284,13 @@ std::uint32_t CoreLink::audio_rate() const {
     return shm_ ? shm_->audio_rate.load(std::memory_order_acquire) : 0;
 }
 
+bool CoreLink::frame_rate(std::uint32_t& num, std::uint32_t& den) const {
+    const std::uint64_t packed = shm_ ? shm_->frame_rate.load(std::memory_order_acquire) : 0;
+    num = static_cast<std::uint32_t>(packed >> 32);
+    den = static_cast<std::uint32_t>(packed);
+    return num && den;
+}
+
 std::size_t CoreLink::drain_audio(std::int16_t* out, std::size_t max_frames) {
     if (!shm_) return 0;
     const std::uint64_t cap = shm_->audio_capacity;

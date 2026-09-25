@@ -25,6 +25,7 @@ HostSession::HostSession(const LoadedCore& core, Sink& sink) : core_(core), sink
     host_.frame_boundary = nullptr; // RUN_FRAME cores only, for now
     host_.gl_get_proc_address = nullptr; // set per session by lend_gl()
     host_.wall_clock_us = h_wall_clock;
+    host_.set_frame_rate = h_frame_rate;
 }
 
 bool HostSession::set_options(const std::map<std::string, std::string>& overrides,
@@ -159,6 +160,12 @@ void* HostSession::h_save(void* ctx, const char* id) {
 void* HostSession::h_gl_proc(void* ctx, const char* name) {
     HostSession* s = self(ctx);
     return s->gl_proc_ ? s->gl_proc_(name) : nullptr;
+}
+
+void HostSession::h_frame_rate(void* ctx, std::uint32_t num, std::uint32_t den) {
+    // num or den of 0 withdraws a stated rate; pass both through as 0.
+    if (!num || !den) num = den = 0;
+    self(ctx)->sink_.frame_rate(num, den);
 }
 
 std::uint64_t HostSession::h_wall_clock(void*) {
