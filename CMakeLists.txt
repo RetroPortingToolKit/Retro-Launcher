@@ -374,6 +374,29 @@ else()
     message(STATUS "retcomm-hub: skipped (need SDL3 + ImGui with imgui_impl_sdl3)")
 endif()
 
+# --- retcomm-core-runner --------------------------------------------------
+# The child process that loads an rcore core (docs/HOST_LIFECYCLE.md). It
+# links only what it uses -- the SHA-256 for the core's identity, and SDL3 when
+# present for lending a GL context -- never retcomm_core and its libcurl: it
+# starts once per game and should be small.
+add_executable(retcomm-core-runner
+    src/runner/runner_main.cpp
+    src/runner/core_library.cpp
+    src/runner/core_manifest.cpp
+    src/runner/host_session.cpp
+    src/core/hash.cpp
+)
+target_include_directories(retcomm-core-runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(retcomm-core-runner PRIVATE ${CMAKE_DL_LIBS})
+if(NOT WIN32 AND NOT APPLE)
+    target_link_libraries(retcomm-core-runner PRIVATE stdc++fs)
+endif()
+if(RETCOMM_HAVE_SDL3)
+    target_link_libraries(retcomm-core-runner PRIVATE ${RETCOMM_HUB_SDL_TARGET})
+    target_compile_definitions(retcomm-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
+endif()
+install(TARGETS retcomm-core-runner RUNTIME DESTINATION bin)
+
 install(TARGETS retcomm RUNTIME DESTINATION bin)
 install(FILES assets/retcomm.svg DESTINATION share/icons/hicolor/scalable/apps
         RENAME retcomm.svg)
