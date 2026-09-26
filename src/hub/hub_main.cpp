@@ -3,6 +3,8 @@
 #include "hub/hub_osk.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
+#include "link_protocol.hpp" // Retro-Runtime: kProtocolMajor / kProtocolMinor
+#include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
 #include "hub/hub_theme.hpp"
 
@@ -8883,7 +8885,47 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 }
 #endif
 
+#if !defined(RETCOMM_COMMIT)
+#define RETCOMM_COMMIT ""
+#endif
+
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+// Revision of the Direct-mode command line (the flags parse_direct_play reads).
+// Bump it on any incompatible change to those flags; adding a flag does not.
+constexpr int kDirectModeCliRevision = 1;
+#endif
+
+// `retro-hub --version`: one `key value` per line, exit 0, before SDL starts,
+// so a tool (and the release packager) can check an unpacked hub without a
+// display. Same shape as `retro-core-runner --version` (Retro-Runtime
+// docs/RELEASES.md); the bare-archive contract is in docs/RELEASES.md.
+int print_hub_version() {
+    const char* commit = RETCOMM_COMMIT;
+    std::printf("retro-hub %s\n", RETCOMM_VERSION);
+    std::printf("version %s\n", RETCOMM_VERSION);
+    std::printf("commit %s\n", commit[0] ? commit : "unknown");
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    std::printf("link_protocol %u.%u\n", static_cast<unsigned>(retro::corelink::kProtocolMajor),
+                static_cast<unsigned>(retro::corelink::kProtocolMinor));
+    std::printf("rcore_abi_major %u\n", static_cast<unsigned>(RCORE_ABI_MAJOR));
+    std::printf("rcore_draft_revision %u\n", static_cast<unsigned>(RCORE_DRAFT_REVISION));
+    std::printf("direct_mode %d\n", kDirectModeCliRevision);
+    std::printf("direct_mode_flags --run-core --rom --title-dir --tpak1-rom --tpak1-save "
+                "--no-gl --opt\n");
+    // resolve_runner (src/update/runtime_update.cpp): the override, else the
+    // newest of the bundled runner and the ones the runtime updater installed.
+    std::printf("runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner "
+                "data_dir/runtime/<version>/retro-core-runner\n");
+#else
+    std::printf("direct_mode 0\n"); // a build without the hub <-> runner link
+#endif
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--version") return print_hub_version();
+    }
     // `--play <title-id>`: start normally, press Play on that title, exit when
     // it closes. What `retcomm launch` hands a core title to, so a Steam
     // shortcut waits for the game.

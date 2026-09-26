@@ -2,7 +2,9 @@ name: Release
 
 # Manual only — does not run on push/PR. Leave version empty to auto-bump the
 # next x.x.x from the latest vX.Y.Z tag, then publish a GitHub Release after a
-# successful multi-platform build.
+# successful multi-platform build. Besides the installers, the release carries a
+# bare Linux retro-hub archive and hub-manifest.json for tools that run the hub
+# in Direct mode (docs/RELEASES.md).
 on:
   workflow_dispatch:
     inputs:
@@ -164,7 +166,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$PWD/out" \
             -DCMAKE_PREFIX_PATH="$HOME/sdl3" \
-            -DRETCOMM_VERSION="${{ needs.version.outputs.version }}"
+            -DRETCOMM_VERSION="${{ needs.version.outputs.version }}" \
+            -DRETCOMM_COMMIT="${GITHUB_SHA}"
           cmake --build build -j"$(nproc)"
           cmake --install build
           # Hub fonts must be in the install prefix for AppImage packaging.
@@ -184,6 +187,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/fetch_runtime.py --platform linux-x86_64 --prefix out
 
+      # The bare hub archive (docs/RELEASES.md), from the same build and SDL3
+      # the AppImage ships. The script's gates fail the job, not warn. The
+      # prefix now also holds the prebaked runner; the archive's allowlist
+      # leaves it out (the runner comes from Retro-Runtime's release).
+      - name: Package bare hub archive
+        run: |
+          chmod +x scripts/package_hub_archive.sh
+          scripts/package_hub_archive.sh \
+            --version "${{ needs.version.outputs.version }}" \
+            --platform linux-x86_64 \
+            --commit "${GITHUB_SHA}" \
+            --prefix "$PWD/out" \
+            --build build \
+            --sdl3-prefix "$HOME/sdl3" \
+            --out dist-hub
+          ls -lah dist-hub/
+
       - name: Package AppImage
         run: |
           export PATH="$HOME/sdl3/bin:$PATH"
@@ -202,6 +222,13 @@ jobs:
           name: linux-x86_64
           path: |
             dist/Retro-Launcher-linux-x86_64.AppImage
+          retention-days: 5
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-hub
+          path: dist-hub/*
+          if-no-files-found: error
           retention-days: 5
 
   windows:
@@ -505,6 +532,23 @@ jobs:
           test -f dist/Retro-Launcher-macos-x86_64.dmg
           # Do not publish the loose portable stub — only the zip (friendly exe inside).
           rm -f "dist/Retro Launcher.exe"
+
+      - name: Bare hub archive + manifest
+        run: |
+          set -euo pipefail
+          HUB=artifacts/linux-x86_64-hub
+          cp -v "${HUB}"/retro-hub-*.tar.gz "${HUB}"/retro-hub-*.tar.gz.sha256 dist/
+          python3 scripts/hub_manifest.py \
+            --version "${{ needs.version.outputs.version }}" \
+            --tag "${{ needs.version.outputs.tag }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --expect linux-x86_64 \
+            --out dist \
+            "${HUB}"/retro-hub-*.json
+          # Every archive must still match the hash its build recorded.
+          (cd dist && sha256sum -c SHA256SUMS)
+          test -f "dist/retro-hub-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz"
+          test -f dist/hub-manifest.json
 
       - name: Ensure release tag exists
         env:

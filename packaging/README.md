@@ -15,6 +15,10 @@ Filenames are stable across releases (version lives in the GitHub tag / binary
 desktop name). Self-update replaces AppImage / portable in place and keeps the
 user's path, so a versioned download name would go stale.
 
+Releases also carry a bare Linux hub for tools that run it in Direct mode:
+`retro-hub-<version>-linux-x86_64.tar.gz`, its `.sha256`, `SHA256SUMS` and
+`hub-manifest.json`. Contract: [`docs/RELEASES.md`](../docs/RELEASES.md).
+
 ## Icons
 
 ```sh

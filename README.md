@@ -245,8 +245,10 @@ Overrides: `--catalog DIR`, `$RETCOMM_CATALOG`.
 | Catalog cache | `~/.local/share/retcomm/catalog/` |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-[`docs/CATALOG.md`](docs/CATALOG.md), and
-[`docs/BUILD_PACKS.md`](docs/BUILD_PACKS.md).
+[`docs/CATALOG.md`](docs/CATALOG.md),
+[`docs/BUILD_PACKS.md`](docs/BUILD_PACKS.md), and
+[`docs/RELEASES.md`](docs/RELEASES.md) (release assets, and the bare hub
+archive + `hub-manifest.json` for Direct mode).
 
 ## Layout
 

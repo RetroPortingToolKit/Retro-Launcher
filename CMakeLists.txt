@@ -21,6 +21,8 @@ endif()
 
 # Embedded in binaries for Update Retro / about text.
 set(RETCOMM_VERSION "0.1.1" CACHE STRING "Retro Launcher semantic version")
+# Reported by `retro-hub --version`; the release workflow passes GITHUB_SHA.
+set(RETCOMM_COMMIT "" CACHE STRING "Git commit the build is from (empty: unknown)")
 set(RETCOMM_GITHUB_SLUG "RetroPortingToolKit/Retro-Launcher" CACHE STRING
     "GitHub owner/repo used for self-update")
 set(RETCOMM_CATALOG_GITHUB_REPO "RetroPortingToolKit/Retro-Catalog" CACHE STRING
@@ -403,6 +405,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${CMAKE_CURRENT_SOURCE_DIR}/../recomp-ui/src/third_party)
     endif()
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
+    target_compile_definitions(retro-hub PRIVATE "RETCOMM_COMMIT=\"${RETCOMM_COMMIT}\"")
     if(UNIX AND NOT APPLE)
         set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
     endif()
