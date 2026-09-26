@@ -10,6 +10,7 @@
 #include "retcomm/config.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
+#include "retcomm/runtime_update.hpp"
 #include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_input_profiles.hpp"
 #include "retcomm/snes_platform_settings.hpp"
@@ -8832,7 +8833,10 @@ DirectPlay parse_direct_play(int argc, char** argv) {
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
     retcomm::hub::PlaySession play;
     const std::string stem = d.args.core.stem().string();
-    const fs::path runner = hub.exe_dir / "retro-core-runner";
+    // The bundled runner, or a newer one the runtime updater installed.
+    const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+    std::fprintf(stderr, "retro-hub: runner: %s\n", rr.note.c_str());
+    const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     std::string err;
@@ -9218,11 +9222,15 @@ int main(int argc, char** argv) {
                 const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string err;
-                if (p->start(args, hub.exe_dir / "retro-core-runner", session, saves, &err)) {
+                // The bundled runner, or a newer one the runtime updater installed.
+                const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+                hub.append_log("Runner: " + rr.note);
+                if (!rr.path.empty() && p->start(args, rr.path, session, saves, &err)) {
                     play = std::move(p);
                     hub.append_log("Playing " + req->name + " through its core (session " +
                                    session.string() + ")");
                 } else {
+                    if (rr.path.empty()) err = rr.note;
                     hub.append_log("Cannot start " + req->name + ": " + err);
                     hub.set_status("Cannot start " + req->name);
                 }

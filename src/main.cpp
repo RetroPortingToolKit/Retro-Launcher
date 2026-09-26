@@ -1,3 +1,4 @@
+#include "retcomm/runtime_update.hpp"
 #include "retcomm/app_state.hpp"
 #include "retcomm/bios_index.hpp"
 #include "retcomm/build.hpp"
@@ -77,6 +78,8 @@ void print_help(const char* argv0) {
         << "                               Update installed title(s) if newer\n"
         << "      --force                  Force update even if pin matches\n"
         << "      --force-generate         Re-run disc→C on build updates\n"
+        << "  runtime [status|check|update]\n"
+        << "                               The core runner: which one is used, and its updates\n"
         << "  uninstall <title-id> [opts]  Remove installed title (alias: remove)\n"
         << "      --keep-saves             Keep memcards/SRAM/savestates (default)\n"
         << "      --delete-saves           Also wipe saves / preserved stash\n"
@@ -1423,6 +1426,33 @@ int cmd_root(const retcomm::Paths& paths, const std::vector<std::string>& args,
     return 0;
 }
 
+// retcomm runtime [status|check|update]: the runner cores run in, and its
+// updates (Retro-Runtime docs/RELEASES.md). RETRO_RUNTIME_MANIFEST_URL points
+// the check at another manifest (file:// too), for testing.
+int cmd_runtime(const retcomm::Paths& paths, const std::vector<std::string>& args,
+                const fs::path& exe_dir) {
+    const std::string sub = args.size() > 1 ? args[1] : "status";
+    if (sub == "status") {
+        const auto rr = retcomm::resolve_runner(paths, exe_dir);
+        std::cout << "platform:  " << retcomm::runtime_platform_key() << "\n"
+                  << "runner:    " << (rr.path.empty() ? "(none)" : rr.path.string()) << "\n"
+                  << "version:   " << (rr.version.empty() ? "?" : rr.version) << " (" << rr.source
+                  << ")\n"
+                  << "why:       " << rr.note << "\n"
+                  << "updates:   " << retcomm::runtime_dir(paths).string() << "\n"
+                  << "manifest:  " << retcomm::runtime_manifest_url() << "\n";
+        return rr.path.empty() ? 1 : 0;
+    }
+    if (sub == "check" || sub == "update") {
+        retcomm::ensure_dirs(paths);
+        const auto r = retcomm::update_runtime(paths, exe_dir, sub == "check");
+        std::cout << r.message << "\n";
+        return r.ok ? 0 : 1;
+    }
+    std::cerr << "usage: retcomm runtime [status|check|update]\n";
+    return 2;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1477,6 +1507,7 @@ int main(int argc, char** argv) {
     }
 
     if (cmd == "root") return cmd_root(paths, args, exe_dir_from(argv[0]));
+    if (cmd == "runtime") return cmd_runtime(paths, args, exe_dir_from(argv[0]));
 
     if (catalog_override.empty()) {
         try {

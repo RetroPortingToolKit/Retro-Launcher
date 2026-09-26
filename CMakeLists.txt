@@ -56,6 +56,7 @@ set(RETCOMM_CORE_SOURCES
     src/build/cache_gc.cpp
     src/build/disc_stage.cpp
     src/update/self_update.cpp
+    src/update/runtime_update.cpp
     src/launch/launch.cpp
     src/core/image_compose.cpp
     src/steam/steam_shortcut.cpp
@@ -109,7 +110,9 @@ target_compile_definitions(retcomm_core PUBLIC
     "RETCOMM_CATALOG_GITHUB_REPO=\"${RETCOMM_CATALOG_GITHUB_REPO}\""
     "RETCOMM_CATALOG_DOWNLOAD_URL=\"${RETCOMM_CATALOG_DOWNLOAD_URL}\""
 )
-target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz retro_core_support)
+# retro_corelink: runtime_update.cpp probes runners and checks the link major.
+target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz retro_core_support
+                      retro_corelink)
 if(WIN32)
     # ws2_32 for WSAPoll in src/netplay/netplay_ws.cpp. PUBLIC because the
     # symbol is in this library, so every consumer needs it — retro-hub only
@@ -283,7 +286,30 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime/CMakeLists.
     message(FATAL_ERROR "third_party/Retro-Runtime is empty: run `git submodule update --init`")
 endif()
 set(RETRO_RUNTIME_SDL3_TARGET "${RETCOMM_HUB_SDL_TARGET}")
+# The bundled runner reports the Retro-Runtime release the submodule is pinned
+# at, so the runtime updater (src/update/runtime_update.cpp) can tell whether a
+# published runner is newer. Off a release tag it stays "dev", which the
+# updater counts as older than any release.
+if(NOT DEFINED CACHE{RETRO_RUNTIME_VERSION})
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match --match "v[0-9]*"
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime
+                        OUTPUT_VARIABLE _rr_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_rr_tag MATCHES "^v([0-9].*)$")
+            set(RETRO_RUNTIME_VERSION "${CMAKE_MATCH_1}" CACHE STRING
+                "Version compiled into retro-core-runner (from the submodule's tag)")
+        endif()
+    endif()
+endif()
 add_subdirectory(third_party/Retro-Runtime)
+# The hub starts the runner from its own directory, so in the build tree the
+# runner must land there too, not under third_party/ (where, until this line, a
+# stale pre-split copy beside the hub was being run instead).
+if(TARGET retro-core-runner)
+    set_target_properties(retro-core-runner PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR})
+endif()
 
 if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # FreeType enables CBDT/CBLC color emoji (Noto Color Emoji) via LoadColor.
@@ -379,12 +405,12 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
     if(UNIX AND NOT APPLE)
         set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
-        # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md). Linux only
-        # until the link has a Windows transport.
-        target_sources(retro-hub PRIVATE src/hub/hub_play.cpp)
-        target_link_libraries(retro-hub PRIVATE retro_corelink)
-        target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     endif()
+    # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
+    # every OS the link has a transport for: Linux, macOS, Windows.
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp)
+    target_link_libraries(retro-hub PRIVATE retro_corelink)
+    target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
     # shortcuts, Steam entries and older self-updaters relaunch it by name.

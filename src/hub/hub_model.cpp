@@ -12,6 +12,7 @@
 #include "retcomm/romm_saves.hpp"
 #include "retcomm/romscan.hpp"
 #include "retcomm/release_tags.hpp"
+#include "retcomm/runtime_update.hpp"
 #include "retcomm/self_update.hpp"
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/http.hpp"
@@ -1969,6 +1970,15 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     launcher_latest_tag = lc.latest_tag;
                     // Do not open the modal yet — job_running would disable Update.
                     launcher_upd = lc.ok && lc.update_available;
+                }
+                {
+                    // The runner updates itself, silently: a newer one installs
+                    // beside the one in use and is picked up from the next
+                    // launch, so a session never loses its runner mid-game
+                    // (Retro-Runtime docs/RELEASES.md, the update rule).
+                    set_status("Checking runtime…");
+                    const auto rt = update_runtime(paths, exe_dir);
+                    append_log(rt.message);
                 }
                 bool toolchain_upd = false;
                 {
