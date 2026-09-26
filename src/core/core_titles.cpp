@@ -1,6 +1,6 @@
 #include "retcomm/core_titles.hpp"
 
-#include "../runner/core_manifest.hpp"
+#include "core_manifest.hpp" // Retro-Runtime: retro_core_support
 
 #include <algorithm>
 #include <fstream>

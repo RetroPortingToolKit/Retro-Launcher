@@ -40,8 +40,6 @@ set(RETCOMM_CORE_SOURCES
     src/paths/toolchain_env.cpp
     src/core/hash.cpp
     src/core/core_titles.cpp
-    src/runner/core_manifest.cpp
-    src/runner/core_library.cpp
     src/core/config.cpp
     src/core/app_state.cpp
     src/core/texture_packs.cpp
@@ -111,7 +109,7 @@ target_compile_definitions(retcomm_core PUBLIC
     "RETCOMM_CATALOG_GITHUB_REPO=\"${RETCOMM_CATALOG_GITHUB_REPO}\""
     "RETCOMM_CATALOG_DOWNLOAD_URL=\"${RETCOMM_CATALOG_DOWNLOAD_URL}\""
 )
-target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz)
+target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz retro_core_support)
 if(WIN32)
     # ws2_32 for WSAPoll in src/netplay/netplay_ws.cpp. PUBLIC because the
     # symbol is in this library, so every consumer needs it — retro-hub only
@@ -276,6 +274,17 @@ elseif(RETCOMM_HAVE_SDL3)
     endif()
 endif()
 
+# --- Retro-Runtime (third_party/Retro-Runtime, a submodule) ---------------------
+# The rcore contract, the hub <-> runner link and retro-core-runner, shared
+# with standalone releases. retcomm_core links retro_core_support (sidecar
+# reader); the hub links retro_corelink; the runner is built and installed
+# beside the hub. It lends GL through the hub's own SDL3.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime/CMakeLists.txt")
+    message(FATAL_ERROR "third_party/Retro-Runtime is empty: run `git submodule update --init`")
+endif()
+set(RETRO_RUNTIME_SDL3_TARGET "${RETCOMM_HUB_SDL_TARGET}")
+add_subdirectory(third_party/Retro-Runtime)
+
 if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # FreeType enables CBDT/CBLC color emoji (Noto Color Emoji) via LoadColor.
     set(RETCOMM_IMGUI_FREETYPE FALSE)
@@ -370,10 +379,10 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
     if(UNIX AND NOT APPLE)
         set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
-        # A core running in the hub's window (docs/CORE_LINK.md). Linux only
+        # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md). Linux only
         # until the link has a Windows transport.
-        target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/corelink/link_io.cpp
-                                           src/corelink/core_link.cpp)
+        target_sources(retro-hub PRIVATE src/hub/hub_play.cpp)
+        target_link_libraries(retro-hub PRIVATE retro_corelink)
         target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
@@ -399,57 +408,7 @@ else()
     message(STATUS "retro-hub: skipped (need SDL3 + ImGui with imgui_impl_sdl3)")
 endif()
 
-# --- the hub <-> runner link (docs/CORE_LINK.md) ----------------------------
-# Linux only for now: memfd, SOCK_SEQPACKET and SCM_RIGHTS. The Windows link
-# (named mappings, a named pipe, DuplicateHandle) is not built, and neither is
-# the runner there.
-if(UNIX AND NOT APPLE)
-add_library(retro_corelink STATIC
-    src/corelink/link_io.cpp
-    src/corelink/core_link.cpp
-)
-target_include_directories(retro_corelink PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_executable(retro-core-link-test src/corelink/link_test_main.cpp)
-target_link_libraries(retro-core-link-test PRIVATE retro_corelink)
-if(NOT WIN32 AND NOT APPLE)
-    target_link_libraries(retro-core-link-test PRIVATE stdc++fs)
-endif()
 
-# --- retro-core-runner --------------------------------------------------
-# The child process that loads an rcore core (docs/HOST_LIFECYCLE.md). It
-# links only what it uses -- the SHA-256 for the core's identity, and SDL3 when
-# present for lending a GL context -- never retcomm_core and its libcurl: it
-# starts once per game and should be small.
-add_executable(retro-core-runner
-    src/runner/runner_main.cpp
-    src/runner/runner_link.cpp
-    src/runner/core_library.cpp
-    src/runner/core_manifest.cpp
-    src/runner/host_session.cpp
-    src/core/hash.cpp
-)
-target_link_libraries(retro-core-runner PRIVATE retro_corelink)
-target_include_directories(retro-core-runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(retro-core-runner PRIVATE ${CMAKE_DL_LIBS})
-if(NOT WIN32 AND NOT APPLE)
-    target_link_libraries(retro-core-runner PRIVATE stdc++fs)
-endif()
-if(RETCOMM_HAVE_SDL3)
-    target_link_libraries(retro-core-runner PRIVATE ${RETCOMM_HUB_SDL_TARGET})
-    target_compile_definitions(retro-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
-endif()
-install(TARGETS retro-core-runner RUNTIME DESTINATION bin)
-
-# A test fixture, never installed: the smallest core, silent and 50 Hz, so a
-# host's frame-rate pacing can be measured (docs/CORE_LINK.md). Its sidecar is
-# written beside it; the runner checks it like any other.
-add_library(rcore_fake_core SHARED tests/rcore_fake_core.c)
-target_include_directories(rcore_fake_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-set_target_properties(rcore_fake_core PROPERTIES PREFIX "" OUTPUT_NAME fake_core
-                      C_VISIBILITY_PRESET hidden)
-file(GENERATE OUTPUT $<TARGET_FILE_DIR:rcore_fake_core>/fake_core.rcore.toml CONTENT
-"# Written by CMake for the rcore_fake_core test fixture.\n\n[core]\nabi_major       = 0\ndraft_revision  = 5\nid              = \"fake\"\nversion         = \"1.0\"\nlibrary         = \"fake_core.so\"\nplatforms       = [\"test\"]\ncapabilities    = [\"run_frame\"]\n\n[build]\nengine_commit   = \"\"\nengine_dirty    = false\ntoolchain       = \"\"\ngenerated_utc   = \"\"\n")
-endif()
 
 install(TARGETS retcomm RUNTIME DESTINATION bin)
 install(FILES assets/retcomm.svg DESTINATION share/icons/hicolor/scalable/apps

@@ -1,7 +1,7 @@
 # Core titles in the library
 
 A **core title** plays inside the hub's own window through an rcore core
-(`CORE_LINK.md`), instead of being spawned as its own program. This page covers
+(Retro-Runtime `docs/CORE_LINK.md`), instead of being spawned as its own program. This page covers
 how such a title gets into the library and how Play reaches it. Linux only,
 like the link. Code: `include/retcomm/core_titles.hpp`,
 `src/core/core_titles.cpp`, and the launch hook and play takeover in

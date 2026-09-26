@@ -1,11 +1,11 @@
 #pragma once
 
-// A core running inside the hub's window (docs/HOST_LIFECYCLE.md, "Running"):
+// A core running inside the hub's window (Retro-Runtime docs/HOST_LIFECYCLE.md, "Running"):
 // the picture drawn behind everything, the quick menu as an overlay, input
 // from the hub's own gamepads, audio through SDL. The core itself runs in
 // retro-core-runner, reached through corelink::CoreLink.
 
-#include "../corelink/core_link.hpp"
+#include "core_link.hpp" // Retro-Runtime: retro_corelink
 
 #include <SDL3/SDL.h>
 

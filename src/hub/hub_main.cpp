@@ -8799,7 +8799,7 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 } // namespace
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-// Direct mode (docs/HOST_LIFECYCLE.md §3): `--run-core` boots straight into a
+// Direct mode (Retro-Runtime docs/HOST_LIFECYCLE.md §3): `--run-core` boots straight into a
 // core in this window and exits when the player closes it. No library pages,
 // no setup wizard -- the same host a standalone release is.
 struct DirectPlay {
@@ -9076,7 +9076,7 @@ int main(int argc, char** argv) {
     bool play_seen = false;
     int exit_code = 0;
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-    // A core title being played in this window (HOST_LIFECYCLE.md "Running"):
+    // A core title being played in this window (Retro-Runtime docs/HOST_LIFECYCLE.md "Running"):
     // while set, it owns events and drawing, and the library waits behind it.
     std::unique_ptr<retcomm::hub::PlaySession> play;
 #endif

@@ -166,6 +166,7 @@ AppImage `cli` dispatch).
 ## Build from source
 
 ```sh
+git submodule update --init   # third_party/Retro-Runtime: the core runtime
 cmake -G Ninja -S . -B build
 cmake --build build -j
 ./build/retcomm --help

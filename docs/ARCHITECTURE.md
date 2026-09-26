@@ -4,7 +4,7 @@
 
 > **Being superseded (2026-09-23).** The model below — the hub `exec`s a title
 > that opens its own recomp-ui — is being replaced by one host with engine cores
-> in child processes behind an overlay menu. Design: `docs/HOST_LIFECYCLE.md`.
+> in child processes behind an overlay menu. Design: Retro-Runtime `docs/HOST_LIFECYCLE.md` (`third_party/Retro-Runtime`), with the contract (`CORE_ABI.md`), the link (`CORE_LINK.md`) and the runner (`CORE_RUNNER.md`) beside it; `docs/CORE_LIBRARY.md` here covers core titles in the library.
 > This section stays accurate for today's code and for "external titles" until
 > they migrate.
 
