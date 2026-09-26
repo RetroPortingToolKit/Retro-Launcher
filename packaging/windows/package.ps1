@@ -120,6 +120,15 @@ Copy-Item (Join-Path $PrefixBin "retro-hub.exe") $Stage
 # The hub's old name: a forwarder to retro-hub.exe for shortcuts and older
 # self-updaters that start retcomm-hub.exe.
 Copy-Item (Join-Path $PrefixBin "retcomm-hub.exe") $Stage
+# The core runner, beside the hub that starts it (the published one, prebaked
+# by scripts/fetch_runtime.py), and its licenses.
+Copy-Item (Join-Path $PrefixBin "retro-core-runner.exe") $Stage
+$RuntimeLicenses = Join-Path $Prefix "share\licenses\retro-runtime"
+if (Test-Path $RuntimeLicenses) {
+    $LicDst = Join-Path $Stage "licenses\retro-runtime"
+    New-Item -ItemType Directory -Force -Path $LicDst | Out-Null
+    Copy-Item (Join-Path $RuntimeLicenses "*") $LicDst -Force
+}
 
 # Prefer DLLs already installed beside the exes (CMake TARGET_RUNTIME_DLLS).
 # Note: TARGET_RUNTIME_DLLS often misses *transitive* deps (e.g. zlib behind

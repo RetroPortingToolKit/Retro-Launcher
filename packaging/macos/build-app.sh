@@ -20,6 +20,13 @@ mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources" "${OUT_DIR}"
 
 install -m 755 "${PREFIX}/bin/retcomm" "${APP}/Contents/MacOS/retcomm"
 install -m 755 "${PREFIX}/bin/retro-hub" "${APP}/Contents/MacOS/retro-hub"
+# The core runner, beside the hub that starts it (the published one, prebaked
+# by scripts/fetch_runtime.py), and its licenses.
+install -m 755 "${PREFIX}/bin/retro-core-runner" "${APP}/Contents/MacOS/retro-core-runner"
+if [[ -d "${PREFIX}/share/licenses/retro-runtime" ]]; then
+  mkdir -p "${APP}/Contents/Resources/licenses/retro-runtime"
+  cp -a "${PREFIX}/share/licenses/retro-runtime/." "${APP}/Contents/Resources/licenses/retro-runtime/"
+fi
 # The hub's old name: older self-updaters relaunch Contents/MacOS/retcomm-hub.
 ln -sf retro-hub "${APP}/Contents/MacOS/retcomm-hub"
 # Title catalog is fetched on-device (~/.local/share/retcomm/catalog, or

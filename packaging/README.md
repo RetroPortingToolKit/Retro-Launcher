@@ -45,6 +45,29 @@ CI fails the release job if `LatoLatin-Regular.ttf` is missing from the install
 prefix or the final package. Windows/macOS/Linux packagers also require
 `platforms/psx.png` and `controllers/pad_analog.png`.
 
+## The core runner (every OS)
+
+Every package ships `retro-core-runner` beside the hub, and it is the
+**published** runner, not the one CMake built from the Retro-Runtime submodule.
+After `cmake --install`, each release job runs:
+
+```sh
+python3 scripts/fetch_runtime.py --platform <linux-x86_64|macos-arm64|macos-x86_64|windows-x86_64> --prefix out
+```
+
+It takes the newest Retro-Runtime release (prereleases included) and refuses:
+- a runner whose link or rcore ABI major differs from the submodule's;
+- a platform the release marks unavailable;
+- an archive whose size or SHA-256 differs from the manifest;
+- an archive holding files the manifest does not list;
+- a runner whose own `--version` contradicts the manifest.
+
+On success it overwrites `out/bin/retro-core-runner`, puts the runtime's
+licenses under `out/share/licenses/retro-runtime/`, and records what it baked
+in `out/share/retcomm/runtime-baked.json`. Set `RETRO_RUNTIME_MANIFEST_URL` or
+pass `--manifest` to pin a specific release. After shipping, players' hubs keep
+the runner current themselves (`src/update/runtime_update.cpp`).
+
 ## Linux
 
 ### Local AppImage (one shot)

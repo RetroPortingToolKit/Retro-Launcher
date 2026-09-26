@@ -179,6 +179,11 @@ jobs:
           mkdir -p out/lib
           cp -a "$HOME/sdl3/lib/"*.so* out/lib/
 
+      - name: Prebake the published runner
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/fetch_runtime.py --platform linux-x86_64 --prefix out
+
       - name: Package AppImage
         run: |
           export PATH="$HOME/sdl3/bin:$PATH"
@@ -186,6 +191,11 @@ jobs:
           ./packaging/linux/build-appimage.sh "$PWD/out" "${{ needs.version.outputs.version }}" x86_64
           ls -lah dist/
           test -f "dist/Retro-Launcher-linux-x86_64.AppImage"
+          # The runner that ships is the one that was baked, after linuxdeploy.
+          baked="$(python3 -c 'import json; print(json.load(open("out/share/retcomm/runtime-baked.json"))["version"])')"
+          shipped="$(dist/Retro.AppDir/usr/bin/retro-core-runner --version | sed -n 's/^version //p')"
+          echo "runner: baked ${baked}, in the AppImage ${shipped}"
+          test "${baked}" = "${shipped}"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -264,6 +274,12 @@ jobs:
           test -f out/share/retcomm/fonts/LatoLatin-Regular.ttf
           test -f out/share/retcomm/setup/setup_easy_rocket.png
           test -f out/share/retcomm/setup/setup_advanced_wrench.png
+
+      - name: Prebake the published runner
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/fetch_runtime.py --platform windows-x86_64 --prefix out
 
       - name: Install Inno Setup
         shell: pwsh
@@ -426,6 +442,11 @@ jobs:
           # Smoke-check hub linked.
           file out/bin/retro-hub
           otool -L out/bin/retro-hub | head
+
+      - name: Prebake the published runner
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/fetch_runtime.py --platform "macos-${{ matrix.arch }}" --prefix out
 
       - name: Package DMG
         run: |
