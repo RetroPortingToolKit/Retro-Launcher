@@ -14,6 +14,7 @@
 
 #include "retcomm/paths.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -36,6 +37,9 @@ struct ResolvedRunner {
     fs::path path;       // empty when no usable runner was found
     std::string version; // as the runner reports it
     std::string source;  // "override" | "updated" | "bundled"
+    // What the runner reports it can do (`--version`): 1 when it takes
+    // --package for a GAME_PACKAGE core, 0 for one from before that.
+    std::uint32_t game_package = 0;
     std::string note;    // why this one; what was skipped
 };
 

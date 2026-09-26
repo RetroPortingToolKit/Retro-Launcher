@@ -22,8 +22,12 @@ namespace corelink = ::retro::corelink;
 
 struct PlayArgs {
     fs::path core;      // <title>_core.so, its .rcore.toml beside it
+    // A GAME_PACKAGE core's game shim (<slug>_game.so, the title's generated
+    // code; Retro-Runtime docs/CORE_ABI.md): runner --package. Empty for any
+    // other core.
+    fs::path package;
     std::string rom;
-    fs::path title_dir; // empty = the core's own directory
+    fs::path title_dir; // empty = the package's directory, else the core's
     std::string tpak_rom;
     fs::path tpak_save;
     std::map<std::string, std::string> options;

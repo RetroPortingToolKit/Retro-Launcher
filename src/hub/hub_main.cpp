@@ -43,6 +43,10 @@
 #include <unordered_set>
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -8818,7 +8822,8 @@ DirectPlay parse_direct_play(int argc, char** argv) {
         if (a == "--run-core" && has_val) {
             d.active = true;
             d.args.core = argv[++i];
-        } else if (a == "--rom" && has_val) d.args.rom = argv[++i];
+        } else if (a == "--package" && has_val) d.args.package = argv[++i];
+        else if (a == "--rom" && has_val) d.args.rom = argv[++i];
         else if (a == "--title-dir" && has_val) d.args.title_dir = argv[++i];
         else if (a == "--tpak1-rom" && has_val) d.args.tpak_rom = argv[++i];
         else if (a == "--tpak1-save" && has_val) d.args.tpak_save = argv[++i];
@@ -8832,23 +8837,158 @@ DirectPlay parse_direct_play(int argc, char** argv) {
     return d;
 }
 
+// The runtime updater, run once in the background while Direct mode plays:
+// a newer runner installs beside the one in use and is picked up from the
+// next launch (runtime_update.hpp), so the session never swaps runners.
+class DirectRuntimeUpdate {
+public:
+    void start(const HubModel& hub) {
+        if (!hub.cfg.check_updates_on_startup) return;
+        auto st = state_;
+        worker_ = std::thread([st, paths = hub.paths, exe_dir = hub.exe_dir] {
+            const retcomm::RuntimeUpdateResult r = retcomm::update_runtime(paths, exe_dir);
+            std::fprintf(stderr, "retro-hub: %s\n", r.message.c_str());
+            std::lock_guard<std::mutex> lock(st->mu);
+            st->message = r.message;
+            st->updated = r.updated;
+            st->done = true;
+        });
+    }
+    // "" while it runs (or when it never ran).
+    std::string message() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        return state_->done ? state_->message : std::string();
+    }
+    bool running() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        return worker_.joinable() && !state_->done;
+    }
+    // Never holds up the exit on a slow network: an unfinished update is
+    // abandoned (it only ever writes into a staging directory it clears first,
+    // then renames into place).
+    ~DirectRuntimeUpdate() {
+        if (!worker_.joinable()) return;
+        bool done;
+        {
+            std::lock_guard<std::mutex> lock(state_->mu);
+            done = state_->done;
+        }
+        if (done) worker_.join();
+        else worker_.detach();
+    }
+
+private:
+    struct State {
+        std::mutex mu;
+        bool done = false;
+        bool updated = false;
+        std::string message;
+    };
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::thread worker_;
+};
+
+// Direct mode could not start the session: say why in the window (the player
+// launched a game and would otherwise see nothing, or a hang) and wait for
+// them to close it. Returns 1, Direct mode's exit status for "did not run".
+std::string corelink_version_label(const retcomm::ResolvedRunner& rr) {
+    return rr.version.empty() ? "(version unknown)" : rr.version;
+}
+
+int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
+                     const std::vector<std::string>& lines, const DirectRuntimeUpdate* update) {
+    std::fprintf(stderr, "retro-hub: %s\n", what.c_str());
+    for (const auto& l : lines) std::fprintf(stderr, "retro-hub:   %s\n", l.c_str());
+    bool running = true;
+    while (running) {
+        hub_sync_open_gamepads();
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            scale_mouse_event(e, ui.coords);
+            ImGui_ImplSDL3_ProcessEvent(&e);
+            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                e.window.windowID == SDL_GetWindowID(window))
+                running = false;
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE)
+                running = false;
+        }
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        apply_ui_scale_frame(window, ui);
+        ImGui::NewFrame();
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(vp->Size.x * 0.7f, 0.f), ImGuiCond_Always);
+        ImGui::Begin("##direct_error", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings);
+        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.4f, 1.f), "%s", what.c_str());
+        ImGui::Separator();
+        for (const auto& l : lines) ImGui::TextWrapped("%s", l.c_str());
+        if (update) {
+            const std::string m = update->message();
+            if (update->running()) ImGui::TextDisabled("Checking for a newer runner...");
+            else if (!m.empty()) ImGui::TextWrapped("%s", m.c_str());
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Close")) running = false;
+        ImGui::SetItemDefaultFocus();
+        ImGui::End();
+        ImGui::Render();
+        int fb_w = 0, fb_h = 0;
+        SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SDL_GL_SwapWindow(window);
+    }
+    return 1;
+}
+
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
     retcomm::hub::PlaySession play;
-    const std::string stem = d.args.core.stem().string();
-    // The bundled runner, or a newer one the runtime updater installed.
+    const bool packaged = !d.args.package.empty();
+    // Sessions and saves belong to the title. With a package that is the shim
+    // (<slug>_game): the core is the generic one every packaged title shares.
+    const std::string stem = (packaged ? d.args.package : d.args.core).stem().string();
+    // resolve_runner: RETRO_CORE_RUNNER (override), else the newest of the
+    // bundled runner and the ones the runtime updater installed.
     const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
-    std::fprintf(stderr, "retro-hub: runner: %s\n", rr.note.c_str());
+    std::fprintf(stderr, "retro-hub: runner: %s: %s (%s)\n",
+                 rr.source.empty() ? "none" : rr.source.c_str(),
+                 rr.path.empty() ? "-" : rr.path.string().c_str(), rr.note.c_str());
+    DirectRuntimeUpdate update;
+    update.start(hub);
+    if (rr.path.empty()) {
+        return run_direct_error(window, ui, "No usable retro-core-runner was found.",
+                                {rr.note,
+                                 "Place retro-core-runner beside retro-hub, or set "
+                                 "RETRO_CORE_RUNNER to its path."},
+                                &update);
+    }
+    if (packaged && rr.game_package == 0) {
+        return run_direct_error(
+            window, ui, "This runner cannot load a game package.",
+            {"--package " + d.args.package.string() + " needs a retro-core-runner that reports "
+             "game_package 1 in --version.",
+             "The " + rr.source + " runner " + corelink_version_label(rr) + " at " +
+                 rr.path.string() + " does not (" + rr.note + ").",
+             "Use a newer Retro-Runtime runner (RETRO_CORE_RUNNER=<path>, or beside retro-hub)."},
+            &update);
+    }
     const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     std::string err;
     if (!play.start(d.args, runner, session, saves, &err)) {
-        std::fprintf(stderr, "retro-hub: cannot start %s: %s\n", d.args.core.string().c_str(),
-                     err.c_str());
-        return 1;
+        return run_direct_error(window, ui, "Cannot start " + d.args.core.string(), {err}, nullptr);
     }
-    std::fprintf(stderr, "retro-hub: running %s (session %s, saves %s)\n",
-                 d.args.core.string().c_str(), session.string().c_str(), saves.string().c_str());
+    std::fprintf(stderr, "retro-hub: running %s%s%s (session %s, saves %s)\n",
+                 d.args.core.string().c_str(), packaged ? " with package " : "",
+                 packaged ? d.args.package.string().c_str() : "", session.string().c_str(),
+                 saves.string().c_str());
     bool running = true;
     while (running && !play.finished()) {
         hub_sync_open_gamepads();
@@ -8891,8 +9031,12 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 // Revision of the Direct-mode command line (the flags parse_direct_play reads).
-// Bump it on any incompatible change to those flags; adding a flag does not.
-constexpr int kDirectModeCliRevision = 1;
+// It goes up whenever that set of flags changes, so a tool can require the
+// revision that introduced the flags it passes; each revision still accepts
+// every earlier revision's command line unless docs/RELEASES.md says otherwise.
+//   1  --run-core --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt
+//   2  + --package (a GAME_PACKAGE core's game shim)
+constexpr int kDirectModeCliRevision = 2;
 #endif
 
 // `retro-hub --version`: one `key value` per line, exit 0, before SDL starts,
@@ -8910,8 +9054,8 @@ int print_hub_version() {
     std::printf("rcore_abi_major %u\n", static_cast<unsigned>(RCORE_ABI_MAJOR));
     std::printf("rcore_draft_revision %u\n", static_cast<unsigned>(RCORE_DRAFT_REVISION));
     std::printf("direct_mode %d\n", kDirectModeCliRevision);
-    std::printf("direct_mode_flags --run-core --rom --title-dir --tpak1-rom --tpak1-save "
-                "--no-gl --opt\n");
+    std::printf("direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom "
+                "--tpak1-save --no-gl --opt\n");
     // resolve_runner (src/update/runtime_update.cpp): the override, else the
     // newest of the bundled runner and the ones the runtime updater installed.
     std::printf("runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner "

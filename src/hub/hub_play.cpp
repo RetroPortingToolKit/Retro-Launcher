@@ -48,7 +48,11 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.runner = runner;
     spec.core = args.core;
     spec.rom = args.rom;
-    spec.title_dir = args.title_dir.empty() ? args.core.parent_path() : args.title_dir;
+    if (!args.package.empty()) spec.package = corelink::path_utf8(args.package);
+    // A packaged title's game.toml sits beside its shim, not beside the
+    // generic core every packaged title shares.
+    const fs::path& owner = args.package.empty() ? args.core : args.package;
+    spec.title_dir = args.title_dir.empty() ? owner.parent_path() : args.title_dir;
     spec.session_dir = session_dir;
     spec.save_dir = save_dir;
     spec.gl = args.gl;
@@ -297,7 +301,8 @@ void PlaySession::draw_loading() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
     const std::string& id = link_.identity().core_id;
-    ImGui::Text("Loading %s…", id.empty() ? args_.core.filename().string().c_str() : id.c_str());
+    const fs::path& what = args_.package.empty() ? args_.core : args_.package;
+    ImGui::Text("Loading %s…", id.empty() ? what.filename().string().c_str() : id.c_str());
     ImGui::End();
 }
 

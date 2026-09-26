@@ -139,7 +139,10 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
         out.source = "override";
         corelink::RunnerVersion v;
         std::string err;
-        if (corelink::probe_runner(out.path, v, &err)) out.version = v.version;
+        if (corelink::probe_runner(out.path, v, &err)) {
+            out.version = v.version;
+            out.game_package = v.game_package;
+        }
         out.note = "RETRO_CORE_RUNNER names it" + (err.empty() ? "" : " (" + err + ")");
         return out;
     }
@@ -192,6 +195,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
         if (version_cmp(c.info.version, best->info.version) > 0) best = &c;
     out.path = best->path;
     out.version = best->info.version;
+    out.game_package = best->info.game_package;
     out.source = best->source;
     out.note = best->source + " runner " + best->info.version;
     for (const auto& s : skipped) out.note += "; skipped " + s;
