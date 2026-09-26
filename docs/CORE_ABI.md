@@ -156,7 +156,7 @@ generated_utc   = "2026-09-24T00:00:00Z"
 
 ## Netplay
 
-**Ruling, 2026-09-25: the runner owns the session.** `retcomm-core-runner` binds
+**Ruling, 2026-09-25: the runner owns the session.** `retro-core-runner` binds
 recomp-net's `rb_driver` once, for every core. It owns transport, lobby,
 identity, the published input rows, and the snapshots of host-owned save
 memory. A core provides only the engine-specific pieces, as contract functions.

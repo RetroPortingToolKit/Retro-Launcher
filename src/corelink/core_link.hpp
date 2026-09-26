@@ -1,6 +1,6 @@
 #pragma once
 
-// The hub's side of the link to retcomm-core-runner (docs/CORE_LINK.md):
+// The hub's side of the link to retro-core-runner (docs/CORE_LINK.md):
 // spawn the runner, own the shared region and the save memory, grant frames,
 // take pictures and audio, and report how the runner ended. The hub's
 // frontend and the link test tool both drive a session through this class.
@@ -14,12 +14,12 @@
 #include <string>
 #include <vector>
 
-namespace retcomm::corelink {
+namespace retro::corelink {
 
 namespace fs = std::filesystem;
 
 struct LaunchSpec {
-    fs::path runner;       // the retcomm-core-runner binary
+    fs::path runner;       // the retro-core-runner binary
     fs::path core;         // <title>_core.so, its .rcore.toml beside it
     std::string rom;
     fs::path title_dir;
@@ -44,6 +44,8 @@ struct CoreIdentity {
     std::uint64_t capabilities = 0;
     std::uint32_t abi_major = 0, draft_revision = 0;
     bool engine_dirty = false;
+    // The link minor this session speaks: min(host, runner).
+    std::uint32_t protocol_minor = 0;
 };
 
 struct LinkLog {
@@ -143,4 +145,4 @@ private:
     std::string exit_reason_;
 };
 
-} // namespace retcomm::corelink
+} // namespace retro::corelink

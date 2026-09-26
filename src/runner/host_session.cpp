@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <fstream>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 HostSession::HostSession(const LoadedCore& core, Sink& sink) : core_(core), sink_(sink) {
     host_.struct_size = sizeof(rcore_host_api);
@@ -139,7 +139,7 @@ const char* HostSession::h_option(void* ctx, const char* key) {
         // Rev 3: an undeclared key is a contract violation, and NULL must only
         // ever mean "unset" -- so the session ends here, naming the key.
         std::fprintf(stderr,
-                     "retcomm-core-runner: FAULT: option_get(\"%s\"): the core asked for a key "
+                     "retro-core-runner: FAULT: option_get(\"%s\"): the core asked for a key "
                      "it did not declare\n",
                      key ? key : "(null)");
         std::fflush(stderr);
@@ -176,4 +176,4 @@ std::uint64_t HostSession::h_wall_clock(void*) {
         duration_cast<microseconds>(system_clock::now().time_since_epoch()).count());
 }
 
-} // namespace retcomm::runner
+} // namespace retro::runner

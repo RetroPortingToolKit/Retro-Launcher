@@ -12,7 +12,7 @@
 #  include <unistd.h>
 #endif
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 namespace {
 
@@ -64,7 +64,7 @@ bool load_core(const fs::path& path, LoadedCore& out, std::string* error) {
     HANDLE f = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return fail("cannot open");
-    out.sha256 = file_sha256_hex(path);
+    out.sha256 = retcomm::file_sha256_hex(path);
     HMODULE lib = LoadLibraryW(path.wstring().c_str());
     CloseHandle(f);
     if (!lib) return fail("LoadLibrary failed (error " + std::to_string(GetLastError()) + ")");
@@ -77,7 +77,7 @@ bool load_core(const fs::path& path, LoadedCore& out, std::string* error) {
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) return fail(std::string("cannot open: ") + std::strerror(errno));
     const std::string via = "/proc/self/fd/" + std::to_string(fd);
-    out.sha256 = file_sha256_hex(via);
+    out.sha256 = retcomm::file_sha256_hex(via);
     void* lib = ::dlopen(via.c_str(), RTLD_NOW | RTLD_LOCAL);
     ::close(fd);
     if (!lib) return fail(std::string("dlopen: ") + ::dlerror());
@@ -102,4 +102,4 @@ bool load_core(const fs::path& path, LoadedCore& out, std::string* error) {
     return true;
 }
 
-} // namespace retcomm::runner
+} // namespace retro::runner

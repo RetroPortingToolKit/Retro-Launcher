@@ -21,7 +21,7 @@
 
 extern char** environ;
 
-namespace retcomm::corelink {
+namespace retro::corelink {
 
 CoreLink::~CoreLink() {
     if (state_ != LinkState::Idle) stop();
@@ -53,7 +53,8 @@ bool CoreLink::start(const LaunchSpec& spec, std::string* error) {
     if (map == MAP_FAILED) return fail(std::string("map shared region: ") + std::strerror(errno));
     shm_ = new (map) SharedHeader{};
     std::memcpy(shm_->magic, kMagic, sizeof kMagic);
-    shm_->version = kProtocolVersion;
+    shm_->protocol_major = kProtocolMajor;
+    shm_->protocol_minor = kProtocolMinor;
     shm_->header_size = sizeof(SharedHeader);
     shm_->total_size = shared_total_size();
     shm_->frames_offset = shared_frames_offset();
@@ -122,7 +123,7 @@ bool CoreLink::start(const LaunchSpec& spec, std::string* error) {
         ::dup2(s_tmp, kSocketFd);
         ::dup2(m_tmp, kSharedFd);
         ::execve(argv[0], argv.data(), envp.data());
-        const char msg[] = "retcomm-core-runner: exec failed\n";
+        const char msg[] = "retro-core-runner: exec failed\n";
         (void)!::write(2, msg, sizeof msg - 1);
         ::_exit(127);
     }
@@ -173,6 +174,7 @@ void CoreLink::handle_packet(const std::vector<unsigned char>& buf, std::vector<
             identity_.abi_major = m.abi_major;
             identity_.draft_revision = m.draft_revision;
             identity_.engine_dirty = m.engine_dirty != 0;
+            identity_.protocol_minor = std::min(m.protocol_minor, kProtocolMinor);
             break;
         }
         case Msg::SaveRegions: {
@@ -361,4 +363,4 @@ void CoreLink::stop(int grace_ms) {
     if (state_ != LinkState::Ended) on_ended(exit_code_);
 }
 
-} // namespace retcomm::corelink
+} // namespace retro::corelink

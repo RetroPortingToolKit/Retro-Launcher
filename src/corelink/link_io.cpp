@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-namespace retcomm::corelink {
+namespace retro::corelink {
 
 bool send_packet(int sock, const void* msg, std::size_t size, const int* fds, std::size_t nfds) {
     iovec iov{const_cast<void*>(msg), size};
@@ -64,4 +64,4 @@ RecvResult recv_packet(int sock, std::vector<unsigned char>& buf, std::vector<in
     }
 }
 
-} // namespace retcomm::corelink
+} // namespace retro::corelink

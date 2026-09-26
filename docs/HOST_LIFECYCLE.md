@@ -17,7 +17,7 @@ with cores built against a contract we own.
 | Decision | Ruling |
 |---|---|
 | Where the host lives | One generalized host (this repo). Cores never own a window, audio device, input, config source or UI. **(decided)** |
-| Where a core runs | In a **child process** — a generic `retcomm-core-runner` that loads the core library. Never in the host process. **(decided)** |
+| Where a core runs | In a **child process** — a generic `retro-core-runner` that loads the core library. Never in the host process. **(decided)** |
 | Quick menu pauses the core | **Yes offline. Never in netplay.** **(decided)** |
 | Contract shape | Our own versioned C ABI, not libretro — `include/rcore/rcore.h`, see `CORE_ABI.md`. **(decided)** |
 | Who runs netplay | The **runner**, one `rb_driver` binding for every core; cores provide snapshot/resim/digest. **(decided 2026-09-25)** |

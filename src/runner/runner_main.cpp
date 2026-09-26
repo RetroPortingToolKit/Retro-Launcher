@@ -1,4 +1,4 @@
-// retcomm-core-runner -- the child process that runs an rcore core for the
+// retro-core-runner -- the child process that runs an rcore core for the
 // Retro frontend (docs/HOST_LIFECYCLE.md, docs/CORE_ABI.md).
 //
 // This first cut is the HEADLESS mode: load a core, check its sidecar
@@ -42,12 +42,12 @@
 #  include <SDL3/SDL.h>
 #endif
 
-using namespace retcomm::runner;
+using namespace retro::runner;
 
 namespace {
 
 [[noreturn]] void die(const std::string& msg) {
-    std::fprintf(stderr, "retcomm-core-runner: %s\n", msg.c_str());
+    std::fprintf(stderr, "retro-core-runner: %s\n", msg.c_str());
     std::exit(2);
 }
 
@@ -180,7 +180,7 @@ void* sdl_gl_proc(const char* name) {
 void lend_gl_context(HostSession& session) {
     if (!SDL_Init(SDL_INIT_VIDEO)) die(std::string("SDL_Init: ") + SDL_GetError());
     SDL_Window* win =
-        SDL_CreateWindow("retcomm-core-runner", 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+        SDL_CreateWindow("retro-core-runner", 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
     if (!win) die(std::string("SDL_CreateWindow: ") + SDL_GetError());
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
     if (!ctx || !SDL_GL_MakeCurrent(win, ctx)) die(std::string("GL context: ") + SDL_GetError());
@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
     if (!read_manifest(manifest_path_for(core.path), manifest, &err)) die(err);
     const auto diffs = verify_manifest(manifest, core);
     if (!diffs.empty()) {
-        std::fprintf(stderr, "retcomm-core-runner: %s disagrees with the library it describes:\n",
+        std::fprintf(stderr, "retro-core-runner: %s disagrees with the library it describes:\n",
                      manifest.path.string().c_str());
         for (const auto& d : diffs) std::fprintf(stderr, "  %s\n", d.c_str());
         return 2;
@@ -382,7 +382,7 @@ int main(int argc, char** argv) {
         for (std::uint64_t k = from; k <= to; ++k) {
             frame = k;
             if (const rcore_result rc = core.api->run_frame(); rc != RCORE_OK) {
-                std::fprintf(stderr, "retcomm-core-runner: run_frame %llu -> %d\n",
+                std::fprintf(stderr, "retro-core-runner: run_frame %llu -> %d\n",
                              static_cast<unsigned long long>(k), rc);
                 return false;
             }

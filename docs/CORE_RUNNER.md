@@ -1,4 +1,4 @@
-# retcomm-core-runner
+# retro-core-runner
 
 The child process that runs an rcore core for the Retro frontend. Design:
 `HOST_LIFECYCLE.md` (process model, states) and `CORE_ABI.md` (the contract).
@@ -52,9 +52,9 @@ Because the command line matches, n64lle's own gate grades this runner with no
 change:
 
 ```sh
-RCORE_PROBE=build/retcomm-core-runner \
+RCORE_PROBE=build/retro-core-runner \
   <port>/n64lle/tools/rust_parity/core_parity.sh check  <port>/build-release/<title>_core.so
-RCORE_PROBE=build/retcomm-core-runner \
+RCORE_PROBE=build/retro-core-runner \
   <port>/n64lle/tools/rust_parity/core_parity.sh replay <port>/build-release/<title>_core.so
 ```
 

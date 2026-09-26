@@ -8,7 +8,7 @@
  * WHO IS WHO. A *core* is a shared library built by an engine (n64lle,
  * snesrecomp, psxrecomp, or a collaborator's). The *host* is the Retro
  * frontend. The core is never loaded into the host process: the generic
- * `retcomm-core-runner` loads it in a child process and implements the host
+ * `retro-core-runner` loads it in a child process and implements the host
  * side of this header by forwarding over shared memory. A core cannot tell the
  * difference and must not try to.
  *

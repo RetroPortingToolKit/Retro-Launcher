@@ -10,7 +10,7 @@
 #include <filesystem>
 #include <string>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 namespace fs = std::filesystem;
 
@@ -36,9 +36,9 @@ bool has_field(const T* s, std::size_t member_offset, std::size_t member_size) {
     return s && s->struct_size >= member_offset + member_size;
 }
 #define RCORE_HAS(ptr, type, member) \
-    ::retcomm::runner::has_field((ptr), offsetof(type, member), sizeof(((type*)0)->member))
+    ::retro::runner::has_field((ptr), offsetof(type, member), sizeof(((type*)0)->member))
 
 // The capability bits by their manifest names, in bit order.
 std::string capability_names(std::uint64_t caps, std::uint64_t* unnamed = nullptr);
 
-} // namespace retcomm::runner
+} // namespace retro::runner

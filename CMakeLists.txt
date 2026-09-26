@@ -387,23 +387,23 @@ endif()
 # (named mappings, a named pipe, DuplicateHandle) is not built, and neither is
 # the runner there.
 if(UNIX AND NOT APPLE)
-add_library(retcomm_corelink STATIC
+add_library(retro_corelink STATIC
     src/corelink/link_io.cpp
     src/corelink/core_link.cpp
 )
-target_include_directories(retcomm_corelink PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_executable(retcomm-core-link-test src/corelink/link_test_main.cpp)
-target_link_libraries(retcomm-core-link-test PRIVATE retcomm_corelink)
+target_include_directories(retro_corelink PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_executable(retro-core-link-test src/corelink/link_test_main.cpp)
+target_link_libraries(retro-core-link-test PRIVATE retro_corelink)
 if(NOT WIN32 AND NOT APPLE)
-    target_link_libraries(retcomm-core-link-test PRIVATE stdc++fs)
+    target_link_libraries(retro-core-link-test PRIVATE stdc++fs)
 endif()
 
-# --- retcomm-core-runner --------------------------------------------------
+# --- retro-core-runner --------------------------------------------------
 # The child process that loads an rcore core (docs/HOST_LIFECYCLE.md). It
 # links only what it uses -- the SHA-256 for the core's identity, and SDL3 when
 # present for lending a GL context -- never retcomm_core and its libcurl: it
 # starts once per game and should be small.
-add_executable(retcomm-core-runner
+add_executable(retro-core-runner
     src/runner/runner_main.cpp
     src/runner/runner_link.cpp
     src/runner/core_library.cpp
@@ -411,17 +411,17 @@ add_executable(retcomm-core-runner
     src/runner/host_session.cpp
     src/core/hash.cpp
 )
-target_link_libraries(retcomm-core-runner PRIVATE retcomm_corelink)
-target_include_directories(retcomm-core-runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(retcomm-core-runner PRIVATE ${CMAKE_DL_LIBS})
+target_link_libraries(retro-core-runner PRIVATE retro_corelink)
+target_include_directories(retro-core-runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(retro-core-runner PRIVATE ${CMAKE_DL_LIBS})
 if(NOT WIN32 AND NOT APPLE)
-    target_link_libraries(retcomm-core-runner PRIVATE stdc++fs)
+    target_link_libraries(retro-core-runner PRIVATE stdc++fs)
 endif()
 if(RETCOMM_HAVE_SDL3)
-    target_link_libraries(retcomm-core-runner PRIVATE ${RETCOMM_HUB_SDL_TARGET})
-    target_compile_definitions(retcomm-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
+    target_link_libraries(retro-core-runner PRIVATE ${RETCOMM_HUB_SDL_TARGET})
+    target_compile_definitions(retro-core-runner PRIVATE RETCOMM_RUNNER_HAVE_SDL3=1)
 endif()
-install(TARGETS retcomm-core-runner RUNTIME DESTINATION bin)
+install(TARGETS retro-core-runner RUNTIME DESTINATION bin)
 
 # A test fixture, never installed: the smallest core, silent and 50 Hz, so a
 # host's frame-rate pacing can be measured (docs/CORE_LINK.md). Its sidecar is

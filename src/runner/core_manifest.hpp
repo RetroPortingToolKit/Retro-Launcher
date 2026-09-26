@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 struct CoreManifest {
     fs::path path;
@@ -50,4 +50,4 @@ bool read_manifest(const fs::path& path, CoreManifest& out, std::string* error);
 // naming both values. Empty = they agree.
 std::vector<std::string> verify_manifest(const CoreManifest& m, const LoadedCore& core);
 
-} // namespace retcomm::runner
+} // namespace retro::runner

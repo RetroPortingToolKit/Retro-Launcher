@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 class Sink {
 public:
@@ -104,4 +104,4 @@ private:
     void* (*gl_proc_)(const char*) = nullptr;
 };
 
-} // namespace retcomm::runner
+} // namespace retro::runner

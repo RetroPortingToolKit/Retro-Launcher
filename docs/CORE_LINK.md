@@ -1,7 +1,7 @@
 # The hub ↔ runner link
 
 How the hub runs a core in its own window. The core runs in
-`retcomm-core-runner` (`CORE_RUNNER.md`), a child process; this link is how the
+`retro-core-runner` (`CORE_RUNNER.md`), a child process; this link is how the
 two talk. The design is `HOST_LIFECYCLE.md` §4; this page is what was built.
 Code: `src/corelink/` (shared), `src/runner/runner_link.cpp` (runner side),
 `src/hub/hub_play.*` (hub side).
@@ -21,6 +21,24 @@ play mode.
 Everything the hub needs after a runner crash is memory the hub holds: the
 picture, the queued audio, and every save region. EOF on the socket is how the
 hub learns the runner died.
+
+## Versioning
+
+The runner is released and updated separately from the hosts that start it
+(`Retro-Runtime`), so the link is versioned the way `rcore.h` is:
+
+- **Protocol major.** Host and runner must agree exactly. The host writes its
+  major into the shared header, and the runner refuses a mismatch before
+  anything else, naming both: "protocol major 2 from the host, 1 in this
+  runner -- update whichever is older" (exit 2).
+- **Protocol minor.** Only append-only edits: a new message type, or a field
+  at the end of a message or of the shared header. The host states its minor
+  in the shared header and the runner states its own in Hello. The session
+  speaks the lower of the two, and neither side sends anything the other's
+  minor does not know.
+
+**1.0** (2026-09-25) is the layout described on this page. It resets the
+unreleased development counter, which had reached 3.
 
 ## A session
 
@@ -93,7 +111,7 @@ standalone release takes (`HOST_LIFECYCLE.md` §3).
 
 All on `pokemonstadium_core.so` built clean from n64lle `ffa84cfc`.
 
-- **The link reproduces the machine exactly.** `retcomm-core-link-test`
+- **The link reproduces the machine exactly.** `retro-core-link-test`
   drives a core through `CoreLink` the way the hub does and writes headless
   mode's artifacts. Through n64lle's `core_parity.sh`, all 10 scenarios give
   artifacts byte-identical to that build's own `rcore_probe`: `summary.txt`,

@@ -9,7 +9,7 @@
 #include <cstring>
 #include <vector>
 
-namespace retcomm::corelink {
+namespace retro::corelink {
 
 // True when the whole packet (and any fds) went out.
 bool send_packet(int sock, const void* msg, std::size_t size, const int* fds = nullptr,
@@ -43,4 +43,4 @@ bool as_msg(const std::vector<unsigned char>& buf, M& out) {
     return true;
 }
 
-} // namespace retcomm::corelink
+} // namespace retro::corelink

@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 namespace {
 
@@ -226,4 +226,4 @@ std::vector<std::string> verify_manifest(const CoreManifest& m, const LoadedCore
     return diffs;
 }
 
-} // namespace retcomm::runner
+} // namespace retro::runner

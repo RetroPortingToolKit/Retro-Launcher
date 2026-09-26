@@ -7,6 +7,8 @@
 
 namespace retcomm {
 
+namespace runner = ::retro::runner;
+
 namespace {
 
 // [game] name from the title's game.toml, the port's own display name.

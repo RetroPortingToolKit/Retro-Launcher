@@ -13,9 +13,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
-using namespace retcomm::corelink;
+using namespace retro::corelink;
 
 namespace {
 
@@ -134,7 +134,7 @@ int exiting(int sock, int code, const std::string& reason) {
     m.code = code;
     copy_str(m.reason, sizeof m.reason, reason.c_str());
     send_msg(sock, m);
-    std::fprintf(stderr, "retcomm-core-runner: %s\n", reason.c_str());
+    std::fprintf(stderr, "retro-core-runner: %s\n", reason.c_str());
     return code;
 }
 
@@ -153,15 +153,21 @@ int run_link_mode(const LoadedCore& core, const CoreManifest& manifest, const Li
                        kSharedFd, 0);
     if (map == MAP_FAILED) return exiting(sock, 2, "link: cannot map the shared region");
     auto* shm = static_cast<SharedHeader*>(map);
-    if (std::memcmp(shm->magic, kMagic, sizeof kMagic) != 0 ||
-        shm->version != kProtocolVersion) {
-        return exiting(sock, 2, "link: protocol mismatch (hub and runner from different builds)");
+    if (std::memcmp(shm->magic, kMagic, sizeof kMagic) != 0) {
+        return exiting(sock, 2, "link: the shared region is not a link region");
+    }
+    if (shm->protocol_major != kProtocolMajor) {
+        return exiting(sock, 2,
+                       "link: protocol major " + std::to_string(shm->protocol_major) +
+                           " from the host, " + std::to_string(kProtocolMajor) +
+                           " in this runner -- update whichever is older");
     }
 
     // ---- identity first, so the hub can show what it is about to run --------
     HelloMsg hello{};
     hello.h.type = Msg::Hello;
-    hello.protocol_version = kProtocolVersion;
+    hello.protocol_major = kProtocolMajor;
+    hello.protocol_minor = kProtocolMinor;
     hello.abi_major = core.info->abi_major;
     hello.draft_revision = static_cast<std::uint32_t>(manifest.draft_revision);
     hello.engine_dirty = manifest.engine_dirty ? 1u : 0u;
@@ -304,4 +310,4 @@ int run_link_mode(const LoadedCore& core, const CoreManifest& manifest, const Li
     return code ? code : (sink.faults ? 1 : 0);
 }
 
-} // namespace retcomm::runner
+} // namespace retro::runner

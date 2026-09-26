@@ -1,8 +1,16 @@
 #pragma once
 
-// The hub <-> retcomm-core-runner link (docs/CORE_LINK.md). Shared by both
-// sides; both are built from this tree at the same commit, so the protocol
-// version is a guard against a stale runner binary, not an evolution scheme.
+// The host <-> runner link (docs/CORE_LINK.md). Shared by both sides.
+//
+// VERSIONING, so the runner can update separately from the hosts that start it
+// (the same rules as rcore.h's ABI):
+//   kProtocolMajor  changes on any incompatible edit. Host and runner must
+//                   agree exactly; the runner refuses a mismatch, naming both.
+//   kProtocolMinor  changes on append-only edits: a new message type, a new
+//                   field at the END of a message or of SharedHeader. Each side
+//                   states its minor (host in SharedHeader, runner in Hello);
+//                   the session speaks min(host, runner), and neither side
+//                   sends anything the other's minor does not know.
 //
 //   control  SOCK_SEQPACKET socketpair: one message per packet, fds passed
 //            with SCM_RIGHTS, EOF when the runner dies.
@@ -21,9 +29,10 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace retcomm::corelink {
+namespace retro::corelink {
 
-constexpr std::uint32_t kProtocolVersion = 3;
+constexpr std::uint32_t kProtocolMajor = 1;
+constexpr std::uint32_t kProtocolMinor = 0;
 constexpr char kMagic[8] = {'R', 'C', 'L', 'I', 'N', 'K', '1', '\0'};
 
 // Frame slots big enough for any console this contract hosts at 1x: the
@@ -56,8 +65,10 @@ struct FrameInfo {
 // kFrameSlotBytes apart, always tightly packed (stride == width * 4).
 struct SharedHeader {
     char magic[8];
-    std::uint32_t version;
-    std::uint32_t header_size;
+    std::uint32_t protocol_major; // the host's; must equal the runner's
+    std::uint32_t protocol_minor; // the host's; the session speaks min(host, runner)
+    std::uint32_t header_size;    // sizeof(SharedHeader) as the host built it
+    std::uint32_t _pad0;
     std::uint64_t total_size;
     std::uint64_t frames_offset;
     std::uint64_t audio_offset;
@@ -118,7 +129,8 @@ struct MsgHeader {
 
 struct HelloMsg {
     MsgHeader h;
-    std::uint32_t protocol_version;
+    std::uint32_t protocol_major;
+    std::uint32_t protocol_minor; // the runner's
     std::uint32_t abi_major;
     std::uint32_t draft_revision;
     std::uint32_t engine_dirty;
@@ -193,4 +205,4 @@ constexpr std::size_t kMaxMsgSize = sizeof(SaveRegionsMsg) > sizeof(LogMsg)
                                         ? sizeof(SaveRegionsMsg)
                                         : sizeof(LogMsg);
 
-} // namespace retcomm::corelink
+} // namespace retro::corelink

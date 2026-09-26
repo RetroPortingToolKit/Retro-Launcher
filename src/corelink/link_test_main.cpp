@@ -1,10 +1,10 @@
-// retcomm-core-link-test -- drives a core through the hub's link, the way the
+// retro-core-link-test -- drives a core through the hub's link, the way the
 // hub does, and writes what headless mode writes. If the link is correct, its
-// artifacts are byte-identical to `retcomm-core-runner` headless and to
+// artifacts are byte-identical to `retro-core-runner` headless and to
 // n64lle's rcore_probe on the same core and scenario (docs/CORE_LINK.md).
 //
 // Same flags as headless mode (a subset: no --replay-at, which needs the
-// savestate envelope), plus --runner <path to retcomm-core-runner>.
+// savestate envelope), plus --runner <path to retro-core-runner>.
 // Outputs in --out: core.log, events.tsv and state_hash.tsv come from the
 // runner's session dir, which is --out; shot.ppm is the last picture taken
 // from shared memory; summary.txt is grepped from core.log.
@@ -19,12 +19,12 @@
 #include <utility>
 #include <vector>
 
-using namespace retcomm::corelink;
+using namespace retro::corelink;
 
 namespace {
 
 [[noreturn]] void die(const std::string& m) {
-    std::fprintf(stderr, "retcomm-core-link-test: %s\n", m.c_str());
+    std::fprintf(stderr, "retro-core-link-test: %s\n", m.c_str());
     std::exit(2);
 }
 
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
     link.stop();
     if (link.exit_code() != 0) {
         ok = false;
-        std::fprintf(stderr, "retcomm-core-link-test: runner exit %d%s%s\n", link.exit_code(),
+        std::fprintf(stderr, "retro-core-link-test: runner exit %d%s%s\n", link.exit_code(),
                      link.exit_reason().empty() ? "" : ": ", link.exit_reason().c_str());
     }
 

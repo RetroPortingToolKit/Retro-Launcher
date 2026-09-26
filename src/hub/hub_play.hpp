@@ -3,7 +3,7 @@
 // A core running inside the hub's window (docs/HOST_LIFECYCLE.md, "Running"):
 // the picture drawn behind everything, the quick menu as an overlay, input
 // from the hub's own gamepads, audio through SDL. The core itself runs in
-// retcomm-core-runner, reached through corelink::CoreLink.
+// retro-core-runner, reached through corelink::CoreLink.
 
 #include "../corelink/core_link.hpp"
 
@@ -18,6 +18,7 @@
 namespace retcomm::hub {
 
 namespace fs = std::filesystem;
+namespace corelink = ::retro::corelink;
 
 struct PlayArgs {
     fs::path core;      // <title>_core.so, its .rcore.toml beside it
@@ -36,7 +37,7 @@ public:
     PlaySession& operator=(const PlaySession&) = delete;
     ~PlaySession();
 
-    // runner: the retcomm-core-runner binary. session_dir: logs and the core's
+    // runner: the retro-core-runner binary. session_dir: logs and the core's
     // cache. save_dir: where save regions persist.
     bool start(const PlayArgs& args, const fs::path& runner, const fs::path& session_dir,
                const fs::path& save_dir, std::string* error);

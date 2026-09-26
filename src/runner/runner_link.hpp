@@ -11,7 +11,7 @@
 #include <optional>
 #include <string>
 
-namespace retcomm::runner {
+namespace retro::runner {
 
 struct LinkArgs {
     std::string rom;
@@ -29,4 +29,4 @@ struct LinkArgs {
 int run_link_mode(const LoadedCore& core, const CoreManifest& manifest, const LinkArgs& args,
                   void (*lend_gl)(HostSession&));
 
-} // namespace retcomm::runner
+} // namespace retro::runner
