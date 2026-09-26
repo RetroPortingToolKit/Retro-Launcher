@@ -30,9 +30,15 @@ is_system_lib() {
   return 1
 }
 
-# Install names from otool -L (skip the Mach-O path header).
+# Install names from otool -L: the TAB-INDENTED lines only. A universal (fat)
+# binary prints one unindented "<path> (architecture <arch>):" header PER
+# SLICE, and skipping just the first line read the second header as a
+# dependency -- cut at the first space, so ".../dist/Retro Launcher.app/..."
+# became ".../dist/Retro" and both macOS jobs failed (2026-09-26: the
+# prebaked retro-core-runner is Retro-Runtime's macos-universal build).
+# Deduplicated, because each slice lists the same libraries.
 load_names() {
-  otool -L "$1" | awk 'NR > 1 { print $1 }'
+  otool -L "$1" | awk '/^[ \t]/ { print $1 }' | sort -u
 }
 
 # LC_ID_DYLIB for a dylib; empty for an executable.
@@ -258,9 +264,22 @@ if command -v codesign >/dev/null 2>&1; then
     [[ -f "${lib}" ]] || continue
     codesign --force --sign - --timestamp=none "${lib}"
   done
+  # ORDER MATTERS. Signing the bundle's MAIN executable (CFBundleExecutable,
+  # retro-hub) seals the whole app, and that refuses any nested executable not
+  # yet signed. MacOS/ also holds retcomm-hub, a SYMLINK to retro-hub, which
+  # sorts first and so sealed the app before retro-core-runner (new beside the
+  # hub on 2026-09-26) was signed: "code object is not signed at all / In
+  # subcomponent: .../retro-core-runner". So: never sign a symlink, sign every
+  # helper first, the main executable last, then the app.
+  main_exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+              "${APP}/Contents/Info.plist" 2>/dev/null || true)"
   for bin in "${EXES[@]}"; do
+    [[ -L "${bin}" || "$(basename "${bin}")" == "${main_exe}" ]] && continue
     codesign --force --sign - --timestamp=none "${bin}"
   done
+  if [[ -n "${main_exe}" && -f "${MACOS}/${main_exe}" && ! -L "${MACOS}/${main_exe}" ]]; then
+    codesign --force --sign - --timestamp=none "${MACOS}/${main_exe}"
+  fi
   codesign --force --sign - --timestamp=none "${APP}"
 else
   echo "warning: codesign not found; arm64 may reject rewritten dylibs" >&2
