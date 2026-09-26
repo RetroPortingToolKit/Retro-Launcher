@@ -18,6 +18,7 @@
 #include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_saves.hpp"
 #include "retcomm/mods.hpp"
+#include "retcomm/core_titles.hpp"
 #include "retcomm/self_update.hpp"
 
 #include "imgui.h"
@@ -47,6 +48,9 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <fstream>
+#include <future>
+#include <map>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -527,6 +531,22 @@ using retcomm::hub::HubModel;
 using retcomm::hub::Theme;
 using retcomm::hub::TitleRow;
 
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+// The core settings page ("n64lle Settings"), defined with Direct mode below:
+// the library reaches it from a platform header's Configure button.
+bool core_settings_platform(const std::string& platform);
+const char* core_settings_button_label(const std::string& platform);
+bool core_settings_dirty();
+bool save_core_settings(HubModel& hub, std::string* err);
+void close_core_settings(HubModel& hub);
+void open_core_settings_for_library(HubModel& hub, const std::string& platform,
+                                    const TitleRow* row);
+bool core_settings_capture_event(HubModel& hub, const SDL_Event& e);
+void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart);
+#else
+bool core_settings_platform(const std::string&) { return false; }
+#endif
+
 void SDLCALL on_folder_dialog(void* userdata, const char* const* filelist, int /*filter*/) {
     auto* hub = static_cast<HubModel*>(userdata);
     if (!hub) return;
@@ -965,7 +985,7 @@ void cancel_snes_gesture_capture(HubModel& hub);
 
 bool any_settings_page_open(const HubModel& hub) {
     return hub.show_settings || hub.show_romm_settings || hub.show_psx_settings ||
-           hub.show_snes_settings;
+           hub.show_snes_settings || hub.show_core_settings;
 }
 
 bool active_settings_dirty(const HubModel& hub) {
@@ -973,6 +993,9 @@ bool active_settings_dirty(const HubModel& hub) {
     if (hub.show_romm_settings) return hub.romm_settings.dirty;
     if (hub.show_psx_settings) return hub.psx_settings.dirty;
     if (hub.show_snes_settings) return hub.snes_settings.dirty;
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (hub.show_core_settings) return core_settings_dirty();
+#endif
     return false;
 }
 
@@ -994,6 +1017,11 @@ bool save_active_settings(HubModel& hub) {
     } else if (hub.show_snes_settings) {
         what = "Super Nintendo settings";
         ok = hub.save_snes_settings(&err);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    } else if (hub.show_core_settings) {
+        what = "core settings";
+        ok = save_core_settings(hub, &err);
+#endif
     } else {
         return false;
     }
@@ -1052,6 +1080,9 @@ void close_settings_pages(HubModel& hub) {
     hub.snes_settings.configuring_player = -1;
     cancel_snes_bind_capture(hub);
     cancel_snes_gesture_capture(hub);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (hub.show_core_settings) close_core_settings(hub); // drops the draft
+#endif
 }
 
 // Panel width. Shared by the slide, the dim and the click-outside test.
@@ -1710,10 +1741,19 @@ PageHeaderAction draw_page_header(const Theme& th, const char* header,
     const float content_right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
     ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, row_h));
 
+    const bool core_cfg = !config_platform.empty() && core_settings_platform(config_platform);
     const bool show_configure =
-        !config_platform.empty() && retcomm::platform_has_config_section(config_platform);
+        !config_platform.empty() &&
+        (retcomm::platform_has_config_section(config_platform) || core_cfg);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    const char* cfg_label =
+        !show_configure ? ""
+        : core_cfg      ? core_settings_button_label(config_platform)
+                        : retcomm::platform_config_button_label(config_platform);
+#else
     const char* cfg_label =
         show_configure ? retcomm::platform_config_button_label(config_platform) : "";
+#endif
     const float cfg_w =
         show_configure ? ImGui::CalcTextSize(cfg_label).x + kBtnPadX * 2.f : 0.f;
 
@@ -1739,10 +1779,15 @@ PageHeaderAction draw_page_header(const Theme& th, const char* header,
         if (accent_button(cfg_label, th, ImVec2(cfg_w, btn_h)))
             action = PageHeaderAction::Configure;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip(
-                "Global %s settings (Display, Audio, Input, Hotkeys).\n"
-                "Applied to titles on install, update, and launch unless excluded.",
-                snes ? "Super Nintendo" : "PlayStation");
+            if (core_cfg)
+                ImGui::SetTooltip("Controllers and the core's options for every %s title.\n"
+                                  "Read by each game when it starts.",
+                                  platform_display_name(config_platform));
+            else
+                ImGui::SetTooltip(
+                    "Global %s settings (Display, Audio, Input, Hotkeys).\n"
+                    "Applied to titles on install, update, and launch unless excluded.",
+                    snes ? "Super Nintendo" : "PlayStation");
         }
     }
     ImGui::PopStyleVar();
@@ -1769,6 +1814,12 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
         const std::string config_platform = on_titles ? hub.library_platform : std::string();
         switch (draw_page_header(th, header, config_platform)) {
             case PageHeaderAction::Configure:
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+                if (core_settings_platform(hub.library_platform)) {
+                    open_core_settings_for_library(hub, hub.library_platform, nullptr);
+                    break;
+                }
+#endif
                 if (retcomm::is_snes_platform(hub.library_platform)) hub.open_snes_settings();
                 else hub.open_psx_settings();
                 break;
@@ -3362,6 +3413,7 @@ void draw_title_info_panel(HubModel& hub, const TitleRow& row, BoxartCache& boxa
 // install that is the release dir; for an AppImage it is the data dir AppRun
 // cds into, not the read-only payload.
 fs::path title_game_dir(const HubModel& hub, const TitleRow& row) {
+    if (!row.game_dir_override.empty()) return fs::path(row.game_dir_override);
     if (row.binary_path.empty()) return {};
     const fs::path bin(row.binary_path);
     if (bin.filename() == "AppRun" && !row.install_root.empty()) {
@@ -3475,12 +3527,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
         std::string err;
         bool ok = true;
         for (const retcomm::ModPackageInfo& p : st.scan.packages) {
-            if (p.has_features()) {
-                for (const retcomm::ModFeatureInfo& f : p.features)
-                    ok &= retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, f.id, on, &err);
-            } else {
-                ok &= retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, {}, on, &err);
-            }
+            if (!p.builtin)
+                ok &= retcomm::set_scanned_mod_all(st.scan, title_game_dir(hub, row), p, on, &err);
         }
         if (!ok) hub.append_log("Mod toggle failed: " + err);
         refresh_mods_page(hub, row);
@@ -3597,7 +3645,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
                 ImGui::BeginDisabled(p.builtin);
                 if (ImGui::Checkbox("##en", &on) && !p.builtin) {
                     std::string err;
-                    if (retcomm::set_mod_enabled(title_game_dir(hub, row), p.id, fid, on, &err))
+                    if (retcomm::set_scanned_mod_enabled(st.scan, title_game_dir(hub, row), p,
+                                                         fid, on, &err))
                         refresh_mods_page(hub, row);
                     else
                         hub.append_log("Mod toggle failed: " + err);
@@ -4143,6 +4192,12 @@ void draw_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window
             row.platform.empty() ? "LIBRARY" : platform_display_name(row.platform);
         switch (draw_page_header(th, header, row.platform)) {
             case PageHeaderAction::Configure:
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+                if (core_settings_platform(row.platform)) {
+                    open_core_settings_for_library(hub, row.platform, &row);
+                    break;
+                }
+#endif
                 if (retcomm::is_snes_platform(row.platform)) hub.open_snes_settings();
                 else hub.open_psx_settings();
                 break;
@@ -8806,11 +8861,15 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 } // namespace
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-// Direct mode (Retro-Runtime docs/HOST_LIFECYCLE.md §3): `--run-core` boots straight into a
-// core in this window and exits when the player closes it. No library pages,
-// no setup wizard -- the same host a standalone release is.
+// Direct mode (Retro-Runtime docs/HOST_LIFECYCLE.md §3): `--run-core` runs one core's
+// title in this window. No library pages, no setup wizard -- the same host a
+// standalone release is. It opens on the title's home page (run_direct_home);
+// `--boot` plays at once and exits when the player closes the game.
 struct DirectPlay {
     bool active = false;
+    // --boot: play at once and exit with the game (the pre-revision-3 Direct
+    // mode). Without it Direct mode opens the title's home page first.
+    bool boot = false;
     retcomm::hub::PlayArgs args;
 };
 
@@ -8828,6 +8887,7 @@ DirectPlay parse_direct_play(int argc, char** argv) {
         else if (a == "--tpak1-rom" && has_val) d.args.tpak_rom = argv[++i];
         else if (a == "--tpak1-save" && has_val) d.args.tpak_save = argv[++i];
         else if (a == "--no-gl") d.args.gl = false;
+        else if (a == "--boot") d.boot = true;
         else if (a == "--opt" && has_val) {
             const std::string kv = argv[++i];
             const auto eq = kv.find('=');
@@ -8947,6 +9007,1466 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
     return 1;
 }
 
+// ---- Direct home ------------------------------------------------------------
+//
+// Direct mode's own page (direct_mode 3): what a port's run script lands on.
+// One title -- the one on the command line -- with Play, and everything a
+// player sets up before pressing it: controls, the core's settings, mods.
+// Leaving the game comes back here; Quit leaves the app. `--boot` skips the
+// page and plays at once (run_direct_play), for scripts.
+//
+// Nothing here is a second copy of the library's settings. Controls are the
+// platform's bindings and options the title's values (hub_core_settings.hpp),
+// the same files the library's play path reads; the Mods page is the
+// library's, pointed at the title dir.
+
+// The title dir a session will use: PlaySession::start's rule.
+fs::path direct_title_dir(const retcomm::hub::PlayArgs& a) {
+    if (!a.title_dir.empty()) return a.title_dir;
+    return (a.package.empty() ? a.core : a.package).parent_path();
+}
+
+// Sessions, saves and option values belong to the title: the shim's stem for a
+// package (the generic core is shared by every packaged title), else the core's.
+std::string direct_title_key(const retcomm::hub::PlayArgs& a) {
+    return (a.package.empty() ? a.core : a.package).stem().string();
+}
+
+std::string toml_string_value(const std::string& raw) {
+    std::string v = raw;
+    const auto hash = v.find(" #");
+    if (v.empty() || v[0] != '"') v = v.substr(0, hash);
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.erase(0, 1);
+    if (v.size() >= 2 && v.front() == '"') {
+        const auto close = v.find('"', 1);
+        if (close != std::string::npos) return v.substr(1, close - 1);
+    }
+    return v;
+}
+
+// `key = value` lines of one [section] of a small TOML file, as written: what
+// the page shows, never what the core resolves (it reads these files itself).
+std::map<std::string, std::string> read_toml_section(const fs::path& p,
+                                                     const std::string& want) {
+    std::map<std::string, std::string> out;
+    std::ifstream in(p);
+    std::string line, section;
+    while (std::getline(in, line)) {
+        const auto b = line.find_first_not_of(" \t");
+        if (b == std::string::npos || line[b] == '#') continue;
+        if (line[b] == '[') {
+            const auto e = line.find(']', b);
+            section = e == std::string::npos ? "" : line.substr(b + 1, e - b - 1);
+            continue;
+        }
+        const auto eq = line.find('=');
+        if (section != want || eq == std::string::npos) continue;
+        std::string k = line.substr(b, eq - b);
+        while (!k.empty() && std::isspace(static_cast<unsigned char>(k.back()))) k.pop_back();
+        out[k] = toml_string_value(line.substr(eq + 1));
+    }
+    return out;
+}
+
+// The core's platform, from the sidecar the runner already insists on
+// (<core>.rcore.toml, [core] platforms = ["n64"]): known before --describe
+// answers, and when it cannot.
+std::string rcore_manifest_platform(const fs::path& core) {
+    fs::path m = core;
+    m.replace_extension(".rcore.toml");
+    const auto core_sec = read_toml_section(m, "core");
+    const auto it = core_sec.find("platforms");
+    if (it == core_sec.end()) return {};
+    std::string v = it->second; // ["n64"] after toml_string_value's trim
+    const auto q = v.find('"');
+    if (q == std::string::npos) return {};
+    const auto q2 = v.find('"', q + 1);
+    return q2 == std::string::npos ? std::string() : v.substr(q + 1, q2 - q - 1);
+}
+
+// Loads the player's seats and option values into a session's arguments:
+// the platform's options, the title's over them, and the command line's --opt
+// over both (it is the most specific request).
+void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
+                           const std::string& platform, const std::string& title_key) {
+    if (platform.empty()) return;
+    std::vector<std::string> warnings;
+    args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
+    for (const std::string& w : warnings) std::fprintf(stderr, "retro-hub: %s\n", w.c_str());
+    args.options = retcomm::hub::layer_core_options(
+        retcomm::hub::load_core_options(data_dir, platform, ""),
+        retcomm::hub::load_core_options(data_dir, platform, title_key), args.options);
+}
+
+namespace {
+
+// ---- Core settings page -------------------------------------------------------
+//
+// "n64lle Settings": one page for a platform whose titles run through an rcore
+// core, laid out the way the Super Nintendo page is -- a System tab of cards
+// (the core's options) and a Gamepads tab of seat cards, each opening a
+// controller page over a picture of the pad. The library opens it from the
+// platform header's Configure button; Direct mode from the title's home page.
+//
+// What is on it comes from two places and no third: the core's own
+// declarations (retro-core-runner --describe, cached per platform for when no
+// core is at hand), and the files hub_core_settings.hpp names. Edits are a
+// draft until Save, as on every other settings page.
+
+struct CoreSettingsPage {
+    std::string platform;
+    // A title the page was opened for. With one, the System tab can edit that
+    // title's layer instead of every title's.
+    std::string title_key, title_name;
+    bool title_scope = false;
+
+    std::future<retcomm::hub::CoreDescription> describing;
+    retcomm::hub::CoreDescription desc;
+    bool desc_ready = false;
+    std::string described_from; // which core, for the page's footnote
+
+    retcomm::hub::PlatformInput input, input_saved;
+    std::map<std::string, std::string> plat_opts, plat_saved, title_opts, title_saved;
+
+    bool gamepads_tab = false;
+    bool show_developer = false;
+    int configuring = -1;     // seat whose controller page is open
+    bool map_keyboard = false; // that page shows the keyboard map (Auto seats)
+    int cap_target = -1;
+    bool cap_pad = false;
+    std::uint64_t cap_armed_ns = 0;
+    std::string status;
+
+    bool dirty() const {
+        return input != input_saved || plat_opts != plat_saved || title_opts != title_saved;
+    }
+};
+
+CoreSettingsPage& core_settings_page() {
+    static CoreSettingsPage p;
+    return p;
+}
+
+// Platforms whose settings are the core's rather than an installed app's
+// files (retcomm::platform_has_config_section is the latter).
+bool core_settings_platform(const std::string& platform) { return platform == "n64"; }
+
+const char* core_settings_button_label(const std::string& platform) {
+    return platform == "n64" ? "n64lle Config" : "Core Config";
+}
+
+// A core the library knows for this platform: the title's own when it has
+// one, else the first registered core title of the platform.
+fs::path library_core_for(const HubModel& hub, const std::string& platform,
+                          const std::string& title_id) {
+    fs::path found;
+    for (const retcomm::Title& t : hub.catalog.titles) {
+        if (t.platform != platform || t.core_manifest.empty()) continue;
+        retcomm::CoreTitle ct;
+        if (!retcomm::read_core_title(t.core_manifest, ct, nullptr)) continue;
+        if (t.id == title_id) return ct.library;
+        if (found.empty()) found = ct.library;
+    }
+    return found;
+}
+
+void cancel_core_capture(CoreSettingsPage& p) { p.cap_target = -1; }
+
+// Opens the page. `core`/`package` name what to describe; `known` is a
+// description the caller already has (Direct mode asked at startup).
+void open_core_settings(HubModel& hub, const std::string& platform, const std::string& title_key,
+                        const std::string& title_name, const fs::path& core,
+                        const fs::path& package,
+                        const retcomm::hub::CoreDescription* known = nullptr) {
+    CoreSettingsPage& p = core_settings_page();
+    const fs::path& data = hub.paths.data_dir;
+    p.platform = platform;
+    p.title_key = title_key;
+    p.title_name = title_name;
+    p.title_scope = false;
+    p.input = p.input_saved = retcomm::hub::load_platform_input(data, platform);
+    p.plat_opts = p.plat_saved = retcomm::hub::load_core_options(data, platform, "");
+    p.title_opts = p.title_saved =
+        title_key.empty() ? std::map<std::string, std::string>{}
+                          : retcomm::hub::load_core_options(data, platform, title_key);
+    p.gamepads_tab = false;
+    p.configuring = -1;
+    p.status.clear();
+    cancel_core_capture(p);
+
+    const fs::path lib = core.empty() ? library_core_for(hub, platform, title_key) : core;
+    if (known && known->ok) {
+        p.desc = *known;
+        p.desc_ready = true;
+        p.described_from = core.string();
+    } else if (!lib.empty()) {
+        const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+        p.desc_ready = false;
+        p.described_from = lib.string();
+        if (rr.path.empty()) {
+            std::promise<retcomm::hub::CoreDescription> pr;
+            retcomm::hub::CoreDescription none;
+            none.error = "No usable retro-core-runner was found (" + rr.note + ").";
+            pr.set_value(none);
+            p.describing = pr.get_future();
+        } else {
+            p.describing = std::async(std::launch::async, [runner = rr.path, lib, package] {
+                return retcomm::hub::describe_core(runner, lib, package);
+            });
+        }
+    } else {
+        p.desc = retcomm::hub::load_description_cache(data, platform);
+        p.desc_ready = true;
+        p.described_from.clear();
+    }
+
+    hub.show_settings = false;
+    hub.show_romm_settings = false;
+    hub.show_psx_settings = false;
+    hub.show_snes_settings = false;
+    hub.show_mods_page = false;
+    hub.show_core_settings = true;
+}
+
+// Once per frame while the page is open: pick up the description when it
+// lands, keep the cache current, and fall back to the cache on failure.
+void tick_core_settings(HubModel& hub) {
+    CoreSettingsPage& p = core_settings_page();
+    if (p.desc_ready || !p.describing.valid() ||
+        p.describing.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    p.desc = p.describing.get();
+    p.desc_ready = true;
+    if (p.desc.ok) {
+        std::string err;
+        if (!retcomm::hub::save_description_cache(hub.paths.data_dir, p.platform, p.desc, &err))
+            hub.append_log("Core description cache not written: " + err);
+    } else {
+        const std::string why = p.desc.error;
+        retcomm::hub::CoreDescription cached =
+            retcomm::hub::load_description_cache(hub.paths.data_dir, p.platform);
+        if (cached.ok) {
+            p.desc = cached;
+            p.status = "Showing the last description this platform's core gave: " + why;
+        }
+    }
+}
+
+bool save_core_settings(HubModel& hub, std::string* err) {
+    CoreSettingsPage& p = core_settings_page();
+    const fs::path& data = hub.paths.data_dir;
+    if (!retcomm::hub::save_platform_input(data, p.platform, p.input, err)) return false;
+    if (!retcomm::hub::save_core_options(data, p.platform, "", p.plat_opts, err)) return false;
+    if (!p.title_key.empty() &&
+        !retcomm::hub::save_core_options(data, p.platform, p.title_key, p.title_opts, err))
+        return false;
+    p.input_saved = p.input;
+    p.plat_saved = p.plat_opts;
+    p.title_saved = p.title_opts;
+    hub.append_log("Wrote " + p.platform + " settings to " +
+                   retcomm::hub::platform_settings_dir(data, p.platform).string());
+    return true;
+}
+
+void close_core_settings(HubModel& hub) {
+    CoreSettingsPage& p = core_settings_page();
+    p.input = p.input_saved;
+    p.plat_opts = p.plat_saved;
+    p.title_opts = p.title_saved;
+    p.configuring = -1;
+    cancel_core_capture(p);
+    hub.show_core_settings = false;
+}
+
+// ---- binding capture --------------------------------------------------------
+
+constexpr std::uint64_t kCaptureSettleNs = 300'000'000ull; // the press that armed it
+constexpr std::uint64_t kCaptureTimeoutNs = 6'000'000'000ull;
+constexpr int kCaptureAxis = 24000;
+
+void begin_core_capture(CoreSettingsPage& p, int target, bool pad) {
+    p.cap_target = target;
+    p.cap_pad = pad;
+    p.cap_armed_ns = SDL_GetTicksNS();
+}
+
+// Every SDL event while a capture is armed, before ImGui. True = consumed.
+// A pad capture takes every pad event (so the button being bound does not also
+// press something on the page) and gives up after a few idle seconds; a key
+// capture leaves the pad free to drive the dialog.
+bool core_settings_capture_event(HubModel& hub, const SDL_Event& e) {
+    CoreSettingsPage& p = core_settings_page();
+    if (!hub.show_core_settings || p.configuring < 0 || p.cap_target < 0) return false;
+    retcomm::hub::InputBindings& map = p.input.maps[static_cast<size_t>(p.configuring)];
+    const bool settled = SDL_GetTicksNS() - p.cap_armed_ns > kCaptureSettleNs;
+    using retcomm::hub::PadSource;
+    if (p.cap_pad) {
+        const bool pad_event = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                               e.type == SDL_EVENT_GAMEPAD_BUTTON_UP ||
+                               e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
+        if (!pad_event) {
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) {
+                cancel_core_capture(p);
+                return true;
+            }
+            return false;
+        }
+        if (!settled) return true;
+        PadSource got;
+        if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+            e.gbutton.button != SDL_GAMEPAD_BUTTON_GUIDE) // Guide opens the game's menu
+            got = {PadSource::Button, e.gbutton.button};
+        else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.value > kCaptureAxis)
+            got = {PadSource::AxisPlus, e.gaxis.axis};
+        else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.value < -kCaptureAxis &&
+                 e.gaxis.axis != SDL_GAMEPAD_AXIS_LEFT_TRIGGER &&
+                 e.gaxis.axis != SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+            got = {PadSource::AxisMinus, e.gaxis.axis};
+        if (got.kind != PadSource::None) {
+            map.pad[static_cast<size_t>(p.cap_target)] = got;
+            cancel_core_capture(p);
+        }
+        return true;
+    }
+    if (e.type != SDL_EVENT_KEY_DOWN || e.key.repeat) return false;
+    if (e.key.key == SDLK_ESCAPE) {
+        cancel_core_capture(p);
+        return true;
+    }
+    if (!settled) return true;
+    map.key[static_cast<size_t>(p.cap_target)] = e.key.scancode;
+    cancel_core_capture(p);
+    return true;
+}
+
+// ---- System tab ----------------------------------------------------------------
+
+// How a bool option spells true and false. The rcore ABI does not say
+// (rcore.h: RCORE_OPT_BOOL has no stated encoding), so only a core whose own
+// default shows the spelling gets a checkbox; any other is a text field.
+bool bool_spelling(const retcomm::hub::CoreOptionDecl& o, std::string& t, std::string& f) {
+    if (o.default_value == "true" || o.default_value == "false") { t = "true"; f = "false"; return true; }
+    if (o.default_value == "1" || o.default_value == "0") { t = "1"; f = "0"; return true; }
+    return false;
+}
+
+// A section heading from a key's prefix: video.renderer -> VIDEO.
+std::string option_group(const std::string& key) {
+    std::string g = key.substr(0, key.find('.'));
+    for (char& c : g) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return g == key ? std::string("OTHER") : g;
+}
+
+// One option as a settings row. In title scope the value may be inherited:
+// the row then shows the all-titles value and offers it as its first choice.
+void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o,
+                          const Theme& th) {
+    std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
+    const auto own = layer.find(o.key);
+    const bool set = own != layer.end();
+    std::string inherited = o.has_default ? o.default_value : std::string();
+    if (p.title_scope)
+        if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) inherited = it->second;
+    const std::string cur = set ? own->second : inherited;
+    const std::string label = o.label.empty() ? o.key : o.label;
+    const char* inherit_word = p.title_scope ? "All titles" : "Default";
+
+    ImGui::PushID(o.key.c_str());
+    std::string t, f;
+    if (o.type == "enum" && !o.values.empty()) {
+        settings_row(label.c_str(), th, kSettingsCtrlW);
+        const std::string preview = set ? cur : std::string(inherit_word) + ": " + cur;
+        if (ImGui::BeginCombo("##v", preview.c_str())) {
+            if (ImGui::Selectable((std::string(inherit_word) + " (" + inherited + ")").c_str(),
+                                  !set))
+                layer.erase(o.key);
+            for (const std::string& v : o.values) {
+                if (ImGui::Selectable(v.c_str(), set && v == cur)) layer[o.key] = v;
+                if (set && v == cur) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    } else if (o.type == "bool" && bool_spelling(o, t, f)) {
+        bool on = cur == t;
+        if (settings_checkbox(label.c_str(), "##v", th, &on)) layer[o.key] = on ? t : f;
+    } else if (o.type == "int") {
+        settings_row(label.c_str(), th, kSettingsCtrlW);
+        long long v = 0;
+        try { v = std::stoll(cur); } catch (...) { v = o.int_min; }
+        // Committed on every edit: v is rebuilt from the draft each frame, so
+        // waiting for the field to lose focus would read back the old value.
+        if (ImGui::InputScalar("##v", ImGuiDataType_S64, &v)) {
+            if (o.int_min < o.int_max) v = std::clamp<long long>(v, o.int_min, o.int_max);
+            layer[o.key] = std::to_string(v);
+        }
+    } else {
+        settings_row(label.c_str(), th, kSettingsCtrlW * 1.4f);
+        char buf[512];
+        copy_buf(buf, sizeof buf, set ? cur : std::string());
+        const std::string hint = inherited.empty() ? std::string("unset") : inherited;
+        if (ImGui::InputTextWithHint("##v", hint.c_str(), buf, sizeof buf)) {
+            if (buf[0]) layer[o.key] = buf;
+            else layer.erase(o.key);
+        }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip("%s\n\n%s%s%s%s", o.description.c_str(), o.key.c_str(),
+                          o.has_default ? "  \xC2\xB7  default " : "",
+                          o.has_default ? o.default_value.c_str() : "",
+                          o.restart ? "\nApplies the next time a game starts." : "");
+    }
+    ImGui::PopID();
+}
+
+void draw_core_option_group(CoreSettingsPage& p, const Theme& th, bool developer) {
+    std::string group;
+    for (const retcomm::hub::CoreOptionDecl& o : p.desc.options) {
+        if (o.developer != developer) continue;
+        const std::string g = option_group(o.key);
+        if (g != group) {
+            if (!group.empty()) ImGui::Dummy(ImVec2(0, 8));
+            group = g;
+            ImGui::TextColored(th.text_muted, "%s", g.c_str());
+            ImGui::Separator();
+        }
+        draw_core_option_row(p, o, th);
+    }
+}
+
+void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
+                          float col_w, float gap) {
+    ImGui::BeginChild("core_player_opts", ImVec2(col_w, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    if (!p.desc_ready) {
+        ImGui::TextDisabled("Asking the core what it declares...");
+    } else if (!p.desc.ok) {
+        ImGui::TextColored(th.warn, "The core's settings are unavailable.");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("%s", p.desc.error.c_str());
+        ImGui::TextWrapped("Open a %s title once (Direct mode, or Play from the library) with "
+                           "a runner that reports 'describe 1', and this page remembers what "
+                           "its core declared.",
+                           platform_display_name(p.platform));
+        ImGui::PopStyleColor();
+    } else {
+        draw_core_option_group(p, th, false);
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.f, gap);
+    ImGui::BeginChild("core_dev_opts", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    size_t dev = 0;
+    for (const auto& o : p.desc.options) dev += o.developer ? 1 : 0;
+    ImGui::TextColored(th.text_muted, "DEVELOPER");
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped(
+        "Options the core marks as developer-only: diagnostics, and the engine's policy knobs. "
+        "Leave them alone to play; an unset knob is the engine's own default.");
+    ImGui::PopStyleColor();
+    const std::string lbl = "Show developer options (" + std::to_string(dev) + ")";
+    ImGui::BeginDisabled(dev == 0);
+    if (settings_checkbox(lbl.c_str(), "##showdev", th, &p.show_developer)) {}
+    ImGui::EndDisabled();
+    if (p.show_developer && p.desc.ok) {
+        ImGui::Dummy(ImVec2(0, 6));
+        draw_core_option_group(p, th, true);
+    }
+    // Values stored for keys the core no longer declares: the runner refuses an
+    // --opt it does not know, so they are shown to be removed, not hidden.
+    std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
+    std::vector<std::string> stale;
+    if (p.desc.ok)
+        for (const auto& [k, v] : layer)
+            if (std::none_of(p.desc.options.begin(), p.desc.options.end(),
+                             [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == k; }))
+                stale.push_back(k);
+    if (!stale.empty()) {
+        ImGui::Dummy(ImVec2(0, 10));
+        ImGui::TextColored(th.warn, "NOT DECLARED BY THIS CORE");
+        ImGui::Separator();
+        for (const std::string& k : stale) {
+            ImGui::PushID(k.c_str());
+            const std::string row = k + " = " + layer[k];
+            settings_row(row.c_str(), th, 110.f);
+            if (ImGui::Button("Remove", ImVec2(110.f, 0))) layer.erase(k);
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+}
+
+// ---- Gamepads tab -------------------------------------------------------------
+
+struct CorePadHit {
+    retcomm::hub::PadTarget target;
+    float nx, ny; // on pad_n64.png (720x400), the SVG's button centres
+};
+
+const CorePadHit* n64_pad_hits(int* count) {
+    using retcomm::hub::PadTarget;
+    static const CorePadHit kHits[] = {
+        {PadTarget::L1, 210.f / 720, 82.f / 400},        {PadTarget::R1, 510.f / 720, 82.f / 400},
+        {PadTarget::DpadUp, 180.f / 720, 120.f / 400},   {PadTarget::DpadDown, 180.f / 720, 180.f / 400},
+        {PadTarget::DpadLeft, 145.f / 720, 150.f / 400}, {PadTarget::DpadRight, 215.f / 720, 150.f / 400},
+        {PadTarget::Start, 360.f / 720, 150.f / 400},
+        {PadTarget::LyPlus, 360.f / 720, 212.f / 400},   {PadTarget::LyMinus, 360.f / 720, 288.f / 400},
+        {PadTarget::LxMinus, 322.f / 720, 250.f / 400},  {PadTarget::LxPlus, 398.f / 720, 250.f / 400},
+        {PadTarget::L2, 360.f / 720, 356.f / 400},
+        {PadTarget::West, 465.f / 720, 160.f / 400},     {PadTarget::South, 505.f / 720, 195.f / 400},
+        {PadTarget::RyPlus, 560.f / 720, 105.f / 400},   {PadTarget::RyMinus, 560.f / 720, 155.f / 400},
+        {PadTarget::RxMinus, 525.f / 720, 130.f / 400},  {PadTarget::RxPlus, 595.f / 720, 130.f / 400},
+    };
+    *count = static_cast<int>(sizeof(kHits) / sizeof(kHits[0]));
+    return kHits;
+}
+
+constexpr float kN64CropU0 = 0.10f;
+constexpr float kN64CropV0 = 0.12f;
+constexpr float kN64CropU1 = 0.90f;
+constexpr float kN64CropV1 = 0.95f;
+
+// A chip's worth of text for a pad input.
+std::string pad_source_short(const retcomm::hub::PadSource& s) {
+    using retcomm::hub::PadSource;
+    if (s.kind == PadSource::None) return "-";
+    if (s.kind == PadSource::Button) {
+        switch (static_cast<SDL_GamepadButton>(s.code)) {
+            case SDL_GAMEPAD_BUTTON_SOUTH: return "A";
+            case SDL_GAMEPAD_BUTTON_EAST: return "B";
+            case SDL_GAMEPAD_BUTTON_WEST: return "X";
+            case SDL_GAMEPAD_BUTTON_NORTH: return "Y";
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return "LB";
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "RB";
+            case SDL_GAMEPAD_BUTTON_LEFT_STICK: return "LS click";
+            case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return "RS click";
+            case SDL_GAMEPAD_BUTTON_START: return "Start";
+            case SDL_GAMEPAD_BUTTON_BACK: return "Back";
+            case SDL_GAMEPAD_BUTTON_DPAD_UP: return "D-Up";
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return "D-Down";
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return "D-Left";
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "D-Right";
+            default: return retcomm::hub::pad_source_to_string(s);
+        }
+    }
+    const bool plus = s.kind == PadSource::AxisPlus;
+    switch (static_cast<SDL_GamepadAxis>(s.code)) {
+        case SDL_GAMEPAD_AXIS_LEFTX: return plus ? "LS Right" : "LS Left";
+        case SDL_GAMEPAD_AXIS_LEFTY: return plus ? "LS Down" : "LS Up";
+        case SDL_GAMEPAD_AXIS_RIGHTX: return plus ? "RS Right" : "RS Left";
+        case SDL_GAMEPAD_AXIS_RIGHTY: return plus ? "RS Down" : "RS Up";
+        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: return "LT";
+        case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: return "RT";
+        default: return retcomm::hub::pad_source_to_string(s);
+    }
+}
+
+struct ConnectedPad {
+    std::string guid, name;
+};
+
+std::vector<ConnectedPad> connected_pads() {
+    std::vector<ConnectedPad> out;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        const char* n = SDL_GetGamepadNameForID(ids[i]);
+        out.push_back({retcomm::hub::gamepad_guid_string(ids[i]), n ? n : "Gamepad"});
+    }
+    SDL_free(ids);
+    return out;
+}
+
+void draw_core_seat_source_combo(CoreSettingsPage& p, int seat,
+                                 const std::vector<ConnectedPad>& pads) {
+    using retcomm::hub::SeatAssign;
+    SeatAssign& s = p.input.seats[static_cast<size_t>(seat)];
+    std::string preview;
+    switch (s.source) {
+        case SeatAssign::Auto: preview = "Auto"; break;
+        case SeatAssign::Keyboard: preview = "Keyboard"; break;
+        case SeatAssign::None: preview = "None (unplugged)"; break;
+        case SeatAssign::Gamepad: preview = s.name.empty() ? s.guid : s.name; break;
+    }
+    if (!ImGui::BeginCombo("##src", preview.c_str())) return;
+    if (ImGui::Selectable("Auto (next free gamepad)", s.source == SeatAssign::Auto))
+        s = {SeatAssign::Auto, "", ""};
+    if (ImGui::Selectable("Keyboard", s.source == SeatAssign::Keyboard))
+        s = {SeatAssign::Keyboard, "", ""};
+    bool listed = false;
+    for (size_t i = 0; i < pads.size(); ++i) {
+        const bool sel = s.source == SeatAssign::Gamepad && s.guid == pads[i].guid;
+        listed |= sel;
+        const std::string item = pads[i].name + "##pad" + std::to_string(i);
+        if (ImGui::Selectable(item.c_str(), sel)) s = {SeatAssign::Gamepad, pads[i].guid, pads[i].name};
+    }
+    if (s.source == SeatAssign::Gamepad && !listed)
+        ImGui::Selectable((preview + " (not connected)").c_str(), true);
+    if (ImGui::Selectable("None (unplugged)", s.source == SeatAssign::None))
+        s = {SeatAssign::None, "", ""};
+    ImGui::EndCombo();
+}
+
+// The pad picture with a chip on every input the core has, the SNES page's
+// shape. Clicking a chip starts a capture for it.
+void draw_core_pad_map(CoreSettingsPage& p, const Theme& th, bool keyboard, BoxartCache& boxart) {
+    using namespace retcomm::hub;
+    const InputBindings& map = p.input.maps[static_cast<size_t>(p.configuring)];
+    fs::path art = find_hub_asset_file("controllers", "pad_n64.png");
+    const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("n64:pad", art);
+
+    ImGui::BeginChild("core_map_panel", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::TextColored(th.text_muted, keyboard ? "KEYBOARD BINDINGS" : "GAMEPAD BINDINGS");
+    ImGui::TextColored(th.text_muted,
+                       keyboard ? "Click a button, then press the key to bind (Esc cancels). "
+                                  "Chips light while a bound key is held."
+                                : "Click a button, then press the gamepad button or push the "
+                                  "stick or trigger that should drive it.");
+    ImGui::Separator();
+
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float avail_h = std::max(140.f, ImGui::GetContentRegionAvail().y - 4.f);
+    const float crop_w = kN64CropU1 - kN64CropU0;
+    const float crop_h = kN64CropV1 - kN64CropV0;
+    const float aspect = (720.f / 400.f) * (crop_w / crop_h);
+    constexpr float kEdgePad = 4.f;
+    float img_w = std::max(1.f, avail_w - kEdgePad * 2.f);
+    float img_h = img_w / aspect;
+    if (img_h > avail_h - kEdgePad * 2.f) {
+        img_h = std::max(1.f, avail_h - kEdgePad * 2.f);
+        img_w = img_h * aspect;
+    }
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float img_x = origin.x + (avail_w - img_w) * 0.5f;
+    const float img_y = origin.y + (avail_h - img_h) * 0.5f;
+    ImGui::Dummy(ImVec2(avail_w, avail_h));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (tex && tex->gl_id) {
+        dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)),
+                     ImVec2(img_x, img_y), ImVec2(img_x + img_w, img_y + img_h),
+                     ImVec2(kN64CropU0, kN64CropV0), ImVec2(kN64CropU1, kN64CropV1));
+    } else {
+        dl->AddRectFilled(ImVec2(img_x, img_y), ImVec2(img_x + img_w, img_y + img_h),
+                          ImGui::ColorConvertFloat4ToU32(th.control));
+        dl->AddText(ImVec2(img_x + 12.f, img_y + 12.f), ImGui::ColorConvertFloat4ToU32(th.warn),
+                    art.empty() ? "pad art missing (assets/controllers/pad_n64.png)"
+                                : "pad art failed to load");
+    }
+
+    int n = 0;
+    const CorePadHit* hits = n64_pad_hits(&n);
+    const float ui_scale = std::clamp(img_w / 570.f, 0.95f, 2.1f);
+    const float chip_w = 64.f * ui_scale;
+    const float chip_h = 18.f * ui_scale;
+    int nkeys = 0;
+    const bool* keys = keyboard ? SDL_GetKeyboardState(&nkeys) : nullptr;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.f * ui_scale, 0.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f * ui_scale);
+    ImGui::SetWindowFontScale(0.74f * ui_scale);
+    for (int i = 0; i < n; ++i) {
+        const int t = static_cast<int>(hits[i].target);
+        std::string bound;
+        bool live = false;
+        if (keyboard) {
+            const SDL_Scancode sc = map.key[static_cast<size_t>(t)];
+            bound = sc == SDL_SCANCODE_UNKNOWN ? "-" : SDL_GetScancodeName(sc);
+            live = sc > 0 && sc < nkeys && keys[sc];
+        } else {
+            bound = pad_source_short(map.pad[static_cast<size_t>(t)]);
+        }
+        const bool capturing = p.cap_target == t && p.cap_pad == !keyboard;
+        const float cx = img_x + ((hits[i].nx - kN64CropU0) / crop_w) * img_w;
+        const float cy = img_y + ((hits[i].ny - kN64CropV0) / crop_h) * img_h;
+        ImGui::SetCursorScreenPos(ImVec2(cx - chip_w * 0.5f, cy - chip_h * 0.5f));
+        ImGui::PushID(t);
+        if (capturing) ImGui::PushStyleColor(ImGuiCol_Button, th.accent);
+        else if (live) ImGui::PushStyleColor(ImGuiCol_Button, th.good_button);
+        else ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(th.control.x, th.control.y, th.control.z, 0.9f));
+        if (ImGui::Button(capturing ? "[ ... ]" : bound.c_str(), ImVec2(chip_w, chip_h)))
+            begin_core_capture(p, t, !keyboard);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            const PadTarget pt = static_cast<PadTarget>(t);
+            ImGui::SetTooltip("%s  (%s)\nBound: %s", pad_target_label(pt, p.desc).c_str(),
+                              pad_target_generic_name(pt),
+                              keyboard ? bound.c_str()
+                                       : pad_source_display(map.pad[static_cast<size_t>(t)]).c_str());
+        }
+        ImGui::PopID();
+    }
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::PopStyleVar(2);
+    ImGui::EndChild();
+}
+
+// One seat's controller page, as a modal over the seat cards: the Super
+// Nintendo page's shape (header row, the pad inside a sized child, a footer).
+void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache& boxart) {
+    using namespace retcomm::hub;
+    if (p.configuring < 0 || p.configuring >= kInputSeats) return;
+    const int seat = p.configuring;
+    SeatAssign& sa = p.input.seats[static_cast<size_t>(seat)];
+
+    ImGui::OpenPopup("##core_pad_cfg");
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
+                                    std::min(860.f, vp->WorkSize.y * 0.94f)),
+                             ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##core_pad_cfg", nullptr, ImGuiWindowFlags_None)) return;
+
+    ImGui::TextColored(th.accent, "CONTROLLER - PLAYER %d", seat + 1);
+    ImGui::SameLine();
+    {
+        constexpr float kCloseW = 80.f;
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - kCloseW);
+        if (ImGui::Button("Close", ImVec2(kCloseW, 0))) {
+            cancel_core_capture(p);
+            p.configuring = -1;
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            return;
+        }
+    }
+    ImGui::Separator();
+    ImGui::PushID(seat);
+
+    // The map is the seat's device. An Auto seat can end up on either (port 1
+    // falls back to the keyboard), so it is the one seat that picks.
+    const bool is_auto = sa.source == SeatAssign::Auto;
+    if (!is_auto) p.map_keyboard = sa.source == SeatAssign::Keyboard;
+    if (ImGui::BeginTable("core_cfg_top", is_auto ? 3 : 2,
+                          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(th.text_muted, "Input source");
+        if (is_auto) {
+            ImGui::TableNextColumn();
+            ImGui::TextColored(th.text_muted, "Map shown");
+        }
+        ImGui::TableNextColumn();
+        ImGui::TextColored(th.text_muted, "Stick deadzone (all seats)");
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1.f);
+        draw_core_seat_source_combo(p, seat, connected_pads());
+        if (is_auto) {
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(-1.f);
+            int which = p.map_keyboard ? 1 : 0;
+            static const char* kMaps[] = {"Gamepad", "Keyboard"};
+            if (ImGui::Combo("##map", &which, kMaps, 2)) {
+                p.map_keyboard = which == 1;
+                cancel_core_capture(p);
+            }
+        }
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1.f);
+        int dz = p.input.deadzone_pct;
+        if (ImGui::SliderInt("##dz", &dz, 0, 50, dz == 0 ? "Off" : "%d%%")) p.input.deadzone_pct = dz;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Stick travel ignored around the centre, then rescaled so a full "
+                              "push is still full. Off sends the stick as the pad reports it; "
+                              "most N64 games have a deadzone of their own.");
+        ImGui::EndTable();
+    }
+
+    const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.f + 14.f;
+    const float body_h = std::max(220.f, ImGui::GetContentRegionAvail().y - footer_h);
+    ImGui::BeginChild("core_cfg_body", ImVec2(0, body_h), ImGuiChildFlags_None);
+    draw_core_pad_map(p, th, p.map_keyboard, boxart);
+    ImGui::EndChild();
+
+    constexpr float kBtnW = 150.f;
+    if (ImGui::Button("Reset this seat", ImVec2(kBtnW, 0))) {
+        p.input.maps[static_cast<size_t>(seat)] = default_input_bindings();
+        p.status = "Player " + std::to_string(seat + 1) + "'s maps back to the defaults";
+    }
+    ImGui::SameLine(0, 8);
+    if (ImGui::Button("Copy to all seats", ImVec2(kBtnW, 0))) {
+        for (int i = 0; i < kInputSeats; ++i)
+            p.input.maps[static_cast<size_t>(i)] = p.input.maps[static_cast<size_t>(seat)];
+        p.status = "Copied player " + std::to_string(seat + 1) + "'s maps to every seat";
+    }
+    if (!p.status.empty()) ImGui::TextColored(th.text_muted, "%s", p.status.c_str());
+
+    // The capture prompt, over the pad.
+    if (p.cap_target >= 0 && !ImGui::IsPopupOpen("Bind###core_bind"))
+        ImGui::OpenPopup("Bind###core_bind");
+    center_modal_next();
+    if (ImGui::BeginPopupModal("Bind###core_bind", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        if (p.cap_target < 0) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            const PadTarget pt = static_cast<PadTarget>(p.cap_target);
+            const std::string label = pad_target_label(pt, p.desc);
+            if (p.cap_pad) {
+                const std::uint64_t left =
+                    kCaptureTimeoutNs -
+                    std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.cap_armed_ns);
+                ImGui::Text("Press a gamepad button, or push a stick or trigger, for %s.",
+                            label.c_str());
+                ImGui::TextColored(th.text_muted, "Cancels by itself in %d s, or with Esc.",
+                                   static_cast<int>(left / 1'000'000'000ull) + 1);
+                if (left == 0) cancel_core_capture(p);
+            } else {
+                ImGui::Text("Press a key for %s.", label.c_str());
+                ImGui::TextColored(th.text_muted, "Esc cancels.");
+            }
+            ImGui::Dummy(ImVec2(0, 6));
+            if (ImGui::Button("Unbind") && p.cap_target >= 0) {
+                InputBindings& m = p.input.maps[static_cast<size_t>(seat)];
+                if (p.cap_pad) m.pad[static_cast<size_t>(p.cap_target)] = {};
+                else m.key[static_cast<size_t>(p.cap_target)] = SDL_SCANCODE_UNKNOWN;
+                cancel_core_capture(p);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) cancel_core_capture(p);
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopID();
+    ImGui::EndPopup();
+}
+
+void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
+                            BoxartCache& boxart) {
+    using namespace retcomm::hub;
+    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "CONTROLLERS");
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped(
+        "Seats 1-4: the console's four controller ports. Each seat carries its own device and "
+        "maps \xe2\x80\x94 open it with Configure. Auto seats take the gamepads that are not "
+        "claimed, in the order they connected; with none, port 1 is the keyboard.");
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 8));
+
+    const std::vector<ConnectedPad> pads = connected_pads();
+    std::vector<std::string> guids;
+    for (const auto& c : pads) guids.push_back(c.guid);
+    const auto plan = plan_seats(p.input, guids);
+
+    const float gap = th.spacing_md;
+    const float availw = ImGui::GetContentRegionAvail().x;
+    int cols = std::clamp(static_cast<int>((availw + gap) / (280.f + gap)), 1, 4);
+    if (cols == 3) cols = 2; // four seats: a 2x2 grid reads better than 3+1
+    const float cardw = (availw - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+
+    for (int s = 0; s < kInputSeats; ++s) {
+        if (s % cols) ImGui::SameLine(0, gap);
+        else if (s) ImGui::Dummy(ImVec2(0, gap));
+        ImGui::PushID(s);
+        ImGui::BeginChild("seatcard", ImVec2(cardw, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::SetNextItemWidth(-1.f);
+        draw_core_seat_source_combo(p, s, pads);
+        ImGui::Dummy(ImVec2(0, 4));
+
+        const float cw = ImGui::GetContentRegionAvail().x;
+        const float half = (cw - th.spacing_sm) * 0.5f;
+        constexpr float btnh = 32.f;
+        if (ImGui::Button("Configure", ImVec2(half, btnh))) {
+            cancel_core_capture(p);
+            p.status.clear();
+            p.configuring = s;
+            p.map_keyboard = p.input.seats[static_cast<size_t>(s)].source == SeatAssign::Keyboard ||
+                             (plan[static_cast<size_t>(s)].keyboard);
+        }
+        ImGui::SameLine(0, th.spacing_sm);
+        {
+            const SeatPlan& sp = plan[static_cast<size_t>(s)];
+            std::string st = "no device";
+            if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
+            else if (sp.keyboard) st = "keyboard";
+            const bool on = sp.connected();
+            const float sw = 18.f + ImGui::CalcTextSize(st.c_str()).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btnh - ImGui::GetTextLineHeight()) * 0.5f);
+            const ImVec2 c = ImGui::GetCursorScreenPos();
+            constexpr float r = 4.f;
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(c.x + r, c.y + ImGui::GetTextLineHeight() * 0.5f), r,
+                ImGui::ColorConvertFloat4ToU32(on ? th.good : th.text_muted));
+            ImGui::Dummy(ImVec2(r * 2.f + 6.f, 0));
+            ImGui::SameLine(0, 0);
+            ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
+                                ImVec2(ImGui::GetWindowPos().x +
+                                           ImGui::GetWindowContentRegionMax().x,
+                                       ImGui::GetCursorScreenPos().y + btnh),
+                                true);
+            ImGui::TextColored(on ? th.good : th.text_muted, "%s", st.c_str());
+            ImGui::PopClipRect();
+        }
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    draw_core_configure_modal(p, th, boxart);
+}
+
+// The page. `standalone` is Direct mode, where nothing else carries the
+// header's Save / Cancel, so the footer is the only place they live.
+void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart) {
+    CoreSettingsPage& p = core_settings_page();
+    tick_core_settings(hub);
+
+    ImGui::BeginChild("core_settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    std::string title = p.desc.ok ? p.desc.core_id : std::string(platform_display_name(p.platform));
+    for (char& c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::Text("%s SETTINGS", title.c_str());
+    ImGui::PopStyleColor();
+
+    constexpr float kTabW = 110.f;
+    {
+        const float right = ImGui::GetWindowContentRegionMax().x;
+        const float wrap_x = right - kTabW - 12.f;
+        const float desc_y = ImGui::GetCursorPosY();
+        ImGui::PushTextWrapPos(wrap_x);
+        if (p.gamepads_tab) {
+            ImGui::TextWrapped(
+                "Controller seats for every %s title, here and in the library. Saved to "
+                "input.ini; the next game started reads them.",
+                platform_display_name(p.platform));
+        } else {
+            std::string from;
+            if (p.desc_ready && p.desc.ok)
+                from = " Declared by " + p.desc.core_id + " " + p.desc.core_version +
+                       (p.desc.cached ? " (remembered from an earlier run)." : ".");
+            ImGui::TextWrapped(
+                "What the core says it can be told when a game starts. Every %s title reads "
+                "these; a title can override them, and a --opt on the command line wins over "
+                "both.%s",
+                platform_display_name(p.platform), from.c_str());
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(desc_y);
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kTabW));
+        if (p.gamepads_tab) {
+            if (good_button("System", th, ImVec2(kTabW, 0))) {
+                p.gamepads_tab = false;
+                p.configuring = -1;
+                cancel_core_capture(p);
+            }
+        } else if (good_button("Gamepads", th, ImVec2(kTabW, 0))) {
+            p.gamepads_tab = true;
+        }
+    }
+    ImGui::Separator();
+
+    // Which layer the System tab edits, when the page was opened for a title.
+    if (!p.gamepads_tab && !p.title_key.empty()) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.text_muted, "Applies to");
+        ImGui::SameLine();
+        const std::string all = std::string("All ") + platform_display_name(p.platform) + " titles";
+        const std::string one = (p.title_name.empty() ? p.title_key : p.title_name) + " only";
+        if (p.title_scope ? ImGui::Button(all.c_str()) : accent_button(all.c_str(), th))
+            p.title_scope = false;
+        ImGui::SameLine();
+        if (p.title_scope ? accent_button(one.c_str(), th) : ImGui::Button(one.c_str()))
+            p.title_scope = true;
+        if (p.title_scope) {
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(th.text_muted, "%zu overridden", p.title_opts.size());
+        }
+    }
+
+    const float footer_h = ImGui::GetFrameHeight() + 24.f;
+    const float gap = 12.f;
+    const float avail_x = ImGui::GetContentRegionAvail().x;
+    const float col_w = std::max(300.f, (avail_x - gap) * 0.5f);
+    const float panel_h = std::max(120.f, ImGui::GetContentRegionAvail().y - footer_h);
+    if (p.gamepads_tab) draw_core_gamepads_tab(hub, p, th, panel_h, boxart);
+    else draw_core_system_tab(hub, p, th, panel_h, col_w, gap);
+
+    ImGui::Dummy(ImVec2(0, 12));
+    const float footer_y = ImGui::GetCursorPosY();
+    constexpr float kResetW = 150.f;
+    if (accent_button("Save", th, ImVec2(160, 0))) {
+        std::string err;
+        if (!save_core_settings(hub, &err)) {
+            hub.append_log(p.platform + " settings save failed: " + err);
+            p.status = "Save failed: " + err;
+        } else {
+            hub.show_toast("Saved!");
+            close_core_settings(hub);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) close_core_settings(hub);
+    if (p.dirty()) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.warn, "unsaved changes");
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    {
+        // Clipped short of Reset: a deep data dir must not run under it.
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float stop = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x -
+                           kResetW - 12.f;
+        ImGui::PushClipRect(at, ImVec2(std::max(at.x, stop), at.y + ImGui::GetFrameHeight()), true);
+        ImGui::TextColored(th.text_muted, "%s",
+                           retcomm::hub::platform_settings_dir(hub.paths.data_dir, p.platform)
+                               .string()
+                               .c_str());
+        ImGui::PopClipRect();
+    }
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowContentRegionMax().x - kResetW, footer_y));
+    if (ImGui::Button("Reset to Default", ImVec2(kResetW, 0))) {
+        cancel_core_capture(p);
+        if (p.gamepads_tab) {
+            const auto seats = p.input.seats;
+            p.input = retcomm::hub::PlatformInput{};
+            p.input.seats = seats;
+        } else if (p.title_scope) {
+            p.title_opts.clear();
+        } else {
+            p.plat_opts.clear();
+        }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(p.gamepads_tab
+                              ? "Every seat's maps and the deadzone back to the defaults.\n"
+                                "Seat assignments are left unchanged."
+                              : (p.title_scope ? "Drop this title's overrides: it reads the "
+                                                 "all-titles values again."
+                                               : "Every option back to the core's own default."));
+    }
+    ImGui::EndChild();
+}
+
+bool core_settings_dirty() { return core_settings_page().dirty(); }
+
+// The library's way in: the platform header's Configure, with the title when
+// it was pressed on a title's page.
+void open_core_settings_for_library(HubModel& hub, const std::string& platform,
+                                    const TitleRow* row) {
+    open_core_settings(hub, platform, row ? row->id : std::string(),
+                       row ? row->name : std::string(), {}, {});
+}
+
+} // namespace
+
+// ---- Direct home ------------------------------------------------------------
+
+enum class DirectPage { Home, Mods };
+
+struct DirectHome {
+    DirectPlay d;
+    fs::path title_dir;
+    std::string title_key;
+    std::string platform;
+    std::string name, cartid, region;
+
+    std::future<retcomm::hub::CoreDescription> describing;
+    retcomm::hub::CoreDescription desc;
+    bool desc_ready = false;
+
+    DirectPage page = DirectPage::Home;
+    bool focus_pending = true;
+
+    retcomm::ModScanResult mods;
+    std::string status;                     // the last thing that happened
+    bool status_bad = false;
+    std::vector<std::string> session_notes; // the last session's "mods:" lines
+};
+
+std::string platform_label(const std::string& platform) {
+    return platform.empty() ? std::string("this platform") : platform_display_name(platform);
+}
+
+void set_direct_status(DirectHome& h, const std::string& s, bool bad) {
+    h.status = s;
+    h.status_bad = bad;
+    std::fprintf(stderr, "retro-hub: %s\n", s.c_str());
+}
+
+void refresh_direct_mods(DirectHome& h) { h.mods = retcomm::scan_game_mods(h.title_dir); }
+
+// What the game said about mods during the session just ended. The core logs
+// its mod plan (applied, refused, or none) at load through rcore log(), which
+// the runner writes to core.log as `<level>\t<text>`; a line the core indents
+// continues the one before it.
+std::vector<std::string> session_mod_lines(const fs::path& core_log) {
+    std::vector<std::string> out;
+    std::ifstream in(core_log);
+    bool in_mods = false;
+    for (std::string l; std::getline(in, l);) {
+        const auto tab = l.find('\t');
+        const std::string text = tab == std::string::npos ? l : l.substr(tab + 1);
+        if (text.rfind("mods:", 0) == 0) {
+            out.push_back(text);
+            in_mods = true;
+        } else if (in_mods && !text.empty() && text[0] == ' ') {
+            out.push_back(text);
+        } else {
+            in_mods = false;
+        }
+        if (out.size() > 8) out.erase(out.begin());
+    }
+    return out;
+}
+
+void take_direct_focus(DirectHome& h) {
+    if (!h.focus_pending) return;
+    h.focus_pending = false;
+    ImGui::SetKeyboardFocusHere();
+    ImGui::SetNavCursorVisible(true);
+}
+
+void open_direct_page(DirectHome& h, HubModel& hub, DirectPage p) {
+    h.page = p;
+    h.focus_pending = true;
+    if (p == DirectPage::Mods) {
+        hub.show_mods_page = true;
+        hub.mods_focus_pending = true;
+        mods_page_state().title_id.clear(); // rescan on entry
+    }
+    if (p == DirectPage::Home) refresh_direct_mods(h);
+}
+
+enum class DirectAction { None, Play, Quit };
+
+void draw_direct_info(DirectHome& h, const HubModel& hub, const Theme& th) {
+    ImGui::BeginChild("direct_info", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::SetWindowFontScale(1.6f);
+    ImGui::TextWrapped("%s", h.name.c_str());
+    ImGui::SetWindowFontScale(1.f);
+    std::string sub = platform_label(h.platform);
+    if (!h.cartid.empty()) sub += " \xC2\xB7 " + h.cartid;
+    if (!h.region.empty()) sub += " \xC2\xB7 region " + h.region;
+    ImGui::TextColored(th.text_muted, "%s", sub.c_str());
+
+    ImGui::Dummy(ImVec2(0, 14));
+    ImGui::TextColored(th.text_muted, "Core");
+    if (!h.desc_ready) {
+        ImGui::TextDisabled("Asking the core what it declares...");
+    } else if (h.desc.ok) {
+        ImGui::Text("%s %s", h.desc.core_id.c_str(), h.desc.core_version.c_str());
+    } else {
+        ImGui::TextColored(th.warn, "Its declarations are unavailable");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("%s", h.desc.error.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Dummy(ImVec2(0, 14));
+    ImGui::TextColored(th.text_muted, "Files");
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    auto row = [](const char* k, const std::string& v) {
+        if (v.empty()) return;
+        ImGui::TextWrapped("%s  %s", k, v.c_str());
+    };
+    row("Game  ", h.d.args.package.empty() ? h.d.args.core.string() : h.d.args.package.string());
+    row("Core  ", h.d.args.core.string());
+    row("ROM   ", h.d.args.rom);
+    row("Title ", h.title_dir.string());
+    row("Saves ", (hub.paths.data_dir / "saves" / h.title_key).string());
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+}
+
+DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) {
+    DirectAction act = DirectAction::None;
+    ImGui::BeginChild("direct_actions", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float big = ImGui::GetTextLineHeight() * 2.4f;
+    take_direct_focus(h);
+    if (good_button("Play", th, ImVec2(w, big))) act = DirectAction::Play;
+    if (!h.status.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, h.status_bad ? th.warn : th.text_muted);
+        ImGui::TextWrapped("%s", h.status.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::Dummy(ImVec2(0, 10));
+
+    const std::string settings_label =
+        (h.desc.ok ? h.desc.core_id : platform_label(h.platform)) + " Settings";
+    if (ImGui::Button(settings_label.c_str(), ImVec2(w, 0))) {
+        open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core, h.d.args.package,
+                           h.desc_ready ? &h.desc : nullptr);
+    }
+    ImGui::TextColored(th.text_muted, "Controllers, video and the core's options");
+    ImGui::Dummy(ImVec2(0, 6));
+
+    if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
+    {
+        size_t on = 0;
+        for (const auto& p : h.mods.packages)
+            for (const auto& f : p.features) on += f.enabled ? 1 : 0;
+        if (h.mods.packages.empty())
+            ImGui::TextColored(th.text_muted, "None installed");
+        else
+            ImGui::TextColored(th.text_muted, "%zu package%s, %zu feature%s on",
+                               h.mods.packages.size(), h.mods.packages.size() == 1 ? "" : "s",
+                               on, on == 1 ? "" : "s");
+        if (!h.mods.errors.empty())
+            ImGui::TextColored(th.warn, "%zu package%s the game will refuse", h.mods.errors.size(),
+                               h.mods.errors.size() == 1 ? "" : "s");
+    }
+    if (!h.session_notes.empty()) {
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(th.text_muted, "Last session");
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        for (const std::string& l : h.session_notes) ImGui::TextWrapped("%s", l.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Dummy(ImVec2(0, 18));
+    if (ImGui::Button("Quit", ImVec2(w, 0))) act = DirectAction::Quit;
+    ImGui::EndChild();
+    return act;
+}
+
+// Header band of a page under Home: Back, and what the page is.
+bool draw_direct_subpage_header(const Theme& th, const char* title) {
+    const bool back = ImGui::Button("Back");
+    ImGui::SameLine();
+    ImGui::SetWindowFontScale(1.3f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(th.text_muted, "%s", title);
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Separator();
+    return back;
+}
+
+// Starts the session. False with *why set when it cannot, and the page says so.
+bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
+                          const HubModel& hub, std::string* why) {
+    const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+    std::fprintf(stderr, "retro-hub: runner: %s: %s (%s)\n",
+                 rr.source.empty() ? "none" : rr.source.c_str(),
+                 rr.path.empty() ? "-" : rr.path.string().c_str(), rr.note.c_str());
+    if (rr.path.empty()) {
+        *why = "No usable retro-core-runner was found (" + rr.note +
+               "). Place retro-core-runner beside retro-hub, or set RETRO_CORE_RUNNER.";
+        return false;
+    }
+    if (!h.d.args.package.empty() && rr.game_package == 0) {
+        *why = "The " + rr.source + " runner " + corelink_version_label(rr) + " at " +
+               rr.path.string() + " cannot load a game package (no 'game_package 1' in --version).";
+        return false;
+    }
+    retcomm::hub::PlayArgs args = h.d.args;
+    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    const fs::path session = hub.paths.data_dir / "sessions" / h.title_key;
+    const fs::path saves = hub.paths.data_dir / "saves" / h.title_key;
+    std::string err;
+    if (!play.start(args, rr.path, session, saves, &err)) {
+        *why = "Cannot start " + args.core.string() + ": " + err;
+        return false;
+    }
+    std::fprintf(stderr, "retro-hub: running %s (session %s, %zu option(s))\n",
+                 h.name.c_str(), session.string().c_str(), args.options.size());
+    return true;
+}
+
+int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const DirectPlay& d,
+                    HubModel& hub) {
+    DirectHome h;
+    h.d = d;
+    h.title_dir = direct_title_dir(d.args);
+    h.title_key = direct_title_key(d.args);
+    h.platform = rcore_manifest_platform(d.args.core);
+    const auto game = read_toml_section(h.title_dir / "game.toml", "game");
+    auto field = [&](const char* k) {
+        const auto it = game.find(k);
+        return it == game.end() ? std::string() : it->second;
+    };
+    h.name = field("name");
+    if (h.name.empty()) h.name = h.title_key;
+    h.cartid = field("cartid");
+    h.region = field("region");
+    SDL_SetWindowTitle(window, (h.name + " - Retro Launcher").c_str());
+
+    {
+        const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+        const fs::path core = d.args.core, pkg = d.args.package;
+        if (rr.path.empty()) {
+            std::promise<retcomm::hub::CoreDescription> p;
+            retcomm::hub::CoreDescription none;
+            none.error = "No usable retro-core-runner was found (" + rr.note + ").";
+            p.set_value(none);
+            h.describing = p.get_future();
+        } else {
+            h.describing = std::async(std::launch::async, [runner = rr.path, core, pkg] {
+                return retcomm::hub::describe_core(runner, core, pkg);
+            });
+        }
+    }
+    // The library's Mods page reads the selected row: this title, its mods
+    // where the core reads them (the title dir).
+    {
+        TitleRow row;
+        row.id = h.title_key;
+        row.name = h.name;
+        row.platform = h.platform;
+        row.kind = "core";
+        row.game_dir_override = h.title_dir.string();
+        std::lock_guard<std::mutex> lock(hub.mu);
+        hub.rows = {row};
+        hub.selected = 0;
+    }
+    refresh_direct_mods(h);
+
+    DirectRuntimeUpdate update;
+    update.start(hub);
+    retcomm::hub::BoxartCache boxart;
+
+    std::unique_ptr<retcomm::hub::PlaySession> play;
+    bool running = true;
+    while (running) {
+        hub_sync_open_gamepads();
+        if (!h.desc_ready && h.describing.valid() &&
+            h.describing.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            h.desc = h.describing.get();
+            h.desc_ready = true;
+            if (h.platform.empty() && h.desc.ok) h.platform = h.desc.platforms;
+            if (h.desc.ok) {
+                std::string err;
+                retcomm::hub::save_description_cache(hub.paths.data_dir, h.platform, h.desc, &err);
+            }
+            std::fprintf(stderr, "retro-hub: describe: %s\n",
+                         h.desc.ok ? (h.desc.core_id + " " + h.desc.core_version + ", " +
+                                      std::to_string(h.desc.options.size()) + " option(s), " +
+                                      std::to_string(h.desc.inputs.size()) + " input(s)").c_str()
+                                   : h.desc.error.c_str());
+        }
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            scale_mouse_event(e, ui.coords);
+            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                e.window.windowID == SDL_GetWindowID(window))
+                running = false;
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+                const bool fs_now = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                SDL_SetWindowFullscreen(window, !fs_now);
+                continue;
+            }
+            if (play) {
+                if (!play->handle_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
+                continue;
+            }
+            if (core_settings_capture_event(hub, e)) continue;
+            ImGui_ImplSDL3_ProcessEvent(&e);
+        }
+        if (play) play->tick();
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        apply_ui_scale_frame(window, ui);
+        ImGui::NewFrame();
+
+        if (play) {
+            play->draw();
+            if (play->finished()) {
+                play->shutdown();
+                play.reset();
+                h.session_notes = session_mod_lines(hub.paths.data_dir / "sessions" /
+                                                    h.title_key / "core.log");
+                set_direct_status(h, "Session ended.", false);
+                h.focus_pending = true;
+            }
+        } else {
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(vp->WorkPos);
+            ImGui::SetNextWindowSize(vp->WorkSize);
+            ImGui::Begin("##direct", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoBringToFrontOnFocus);
+            DirectAction act = DirectAction::None;
+            if (hub.show_core_settings) {
+                draw_core_settings_panel(hub, th, boxart);
+                if (!hub.show_core_settings) h.focus_pending = true;
+            } else if (h.page == DirectPage::Mods) {
+                if (draw_direct_subpage_header(th, "")) {
+                    open_direct_page(h, hub, DirectPage::Home);
+                } else {
+                    ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+                    draw_mods_page(hub, th);
+                    ImGui::EndChild();
+                }
+            } else {
+                draw_page_header(th, platform_label(h.platform).c_str(), "");
+                const float total = ImGui::GetContentRegionAvail().x;
+                const float right = std::clamp(total * 0.38f, 300.f, 440.f);
+                ImGui::BeginChild("direct_info_host",
+                                  ImVec2(total - right - ImGui::GetStyle().ItemSpacing.x, 0));
+                draw_direct_info(h, hub, th);
+                ImGui::EndChild();
+                ImGui::SameLine();
+                ImGui::BeginChild("direct_actions_host", ImVec2(right, 0),
+                                  ImGuiChildFlags_NavFlattened);
+                act = draw_direct_actions(h, hub, th);
+                ImGui::EndChild();
+            }
+            // B / Escape backs out of a page, unless something in front owns it
+            // or the settings page holds edits (Save or Cancel decides those).
+            const bool back_pressed =
+                !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+                !ImGui::IsAnyItemActive() &&
+                (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                 ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+            if (back_pressed) {
+                if (hub.show_core_settings) {
+                    if (!core_settings_page().dirty() && core_settings_page().cap_target < 0) {
+                        close_core_settings(hub);
+                        h.focus_pending = true;
+                    }
+                } else if (h.page != DirectPage::Home) {
+                    open_direct_page(h, hub, DirectPage::Home);
+                }
+            }
+            ImGui::End();
+
+            if (act == DirectAction::Quit) running = false;
+            if (act == DirectAction::Play) {
+                auto p = std::make_unique<retcomm::hub::PlaySession>();
+                std::string why;
+                if (start_direct_session(*p, h, hub, &why)) {
+                    play = std::move(p);
+                    h.session_notes.clear();
+                    set_direct_status(h, "Playing.", false);
+                } else {
+                    set_direct_status(h, why, true);
+                }
+            }
+        }
+
+        ImGui::Render();
+        int fb_w = 0, fb_h = 0;
+        SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SDL_GL_SwapWindow(window);
+    }
+    if (play) play->shutdown();
+    return 0;
+}
+
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
     retcomm::hub::PlaySession play;
     const bool packaged = !d.args.package.empty();
@@ -8981,8 +10501,11 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
+    // The same bindings and option values the home page sets up.
+    retcomm::hub::PlayArgs args = d.args;
+    apply_player_settings(args, hub.paths.data_dir, rcore_manifest_platform(d.args.core), stem);
     std::string err;
-    if (!play.start(d.args, runner, session, saves, &err)) {
+    if (!play.start(args, runner, session, saves, &err)) {
         return run_direct_error(window, ui, "Cannot start " + d.args.core.string(), {err}, nullptr);
     }
     std::fprintf(stderr, "retro-hub: running %s%s%s (session %s, saves %s)\n",
@@ -9036,7 +10559,10 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 // every earlier revision's command line unless docs/RELEASES.md says otherwise.
 //   1  --run-core --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt
 //   2  + --package (a GAME_PACKAGE core's game shim)
-constexpr int kDirectModeCliRevision = 2;
+//   3  + --boot. Without it Direct mode now opens the title's home page
+//        (Play, Controls, Core Settings, Mods) instead of playing at once;
+//        --boot is the revision-2 behaviour.
+constexpr int kDirectModeCliRevision = 3;
 #endif
 
 // `retro-hub --version`: one `key value` per line, exit 0, before SDL starts,
@@ -9055,7 +10581,7 @@ int print_hub_version() {
     std::printf("rcore_draft_revision %u\n", static_cast<unsigned>(RCORE_DRAFT_REVISION));
     std::printf("direct_mode %d\n", kDirectModeCliRevision);
     std::printf("direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom "
-                "--tpak1-save --no-gl --opt\n");
+                "--tpak1-save --no-gl --opt --boot\n");
     // resolve_runner (src/update/runtime_update.cpp): the override, else the
     // newest of the bundled runner and the ones the runtime updater installed.
     std::printf("runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner "
@@ -9184,7 +10710,8 @@ int main(int argc, char** argv) {
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
     if (direct.active) {
-        const int rc = run_direct_play(window, ui, direct, hub);
+        const int rc = direct.boot ? run_direct_play(window, ui, direct, hub)
+                                   : run_direct_home(window, ui, th, direct, hub);
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
@@ -9295,6 +10822,9 @@ int main(int argc, char** argv) {
                 continue;
             }
 #endif
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+            if (core_settings_capture_event(hub, e)) continue; // binding a seat's input
+#endif
             if (poll_snes_bind_capture(hub, e) || poll_psx_bind_capture(hub, e)) {
                 // Still feed ImGui so the modal stays responsive, but skip
                 // duplicate key handling for capture commits.
@@ -9404,6 +10934,10 @@ int main(int argc, char** argv) {
                 args.core = req->core_library;
                 args.rom = req->rom;
                 args.title_dir = req->title_dir;
+                // The platform's bindings and this title's option values: the
+                // files Direct mode's Controls and Core Settings pages write.
+                apply_player_settings(args, hub.paths.data_dir,
+                                      rcore_manifest_platform(args.core), req->title_id);
                 const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
                 const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
@@ -9565,6 +11099,12 @@ int main(int argc, char** argv) {
             ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_snes_settings_panel(hub, th, boxart);
             ImGui::EndChild();
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        } else if (hub.show_core_settings) {
+            ImGui::BeginChild("core_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            draw_core_settings_panel(hub, th, boxart);
+            ImGui::EndChild();
+#endif
         } else if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
             // One title, full window: the page splits itself into info + actions.
             ImGui::BeginChild("title_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);

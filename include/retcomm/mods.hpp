@@ -88,7 +88,19 @@ struct ModPackageInfo {
     bool has_features() const { return !features.empty(); }
 };
 
+// Which engine's layout a mods tree is in. They differ in where manifests sit,
+// what a manifest says, and which file holds the selection, so a write in the
+// wrong one is a write nothing reads.
+//
+//   Engine  psxrecomp / snesrecomp: mods/<origin>/<id>/<version>/manifest.toml,
+//           [[feature]] arrays, selection in mods/state.toml
+//   N64lle  n64lle guarded-write packages (n64lle docs/MODDING.md §5):
+//           mods/<origin>/<id>/manifest.toml with [target] rom_sha256 and
+//           [feature.<id>] tables, selection in <game>/mods.toml
+enum class ModLayout { Engine, N64lle };
+
 struct ModScanResult {
+    ModLayout layout = ModLayout::Engine;
     std::vector<ModPackageInfo> packages;
     // Manifests that exist but could not be read. Surfaced rather than
     // dropped: a mod that silently fails to appear is a support question.
@@ -132,6 +144,17 @@ bool set_mod_option(const fs::path& game_dir, const std::string& package_id,
 ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root = {});
 
 const char* mod_origin_name(ModOrigin origin);
+
+// The writes a mods page makes, in whichever layout `scan` found: one feature
+// (feature_id empty = an all-or-nothing package), or every feature of `pkg`.
+// In the n64lle layout a package's mods.toml section lists exactly the features
+// that are on, so both compute that list from what the scan saw and write it
+// whole -- the first write turns "manifest defaults" into an explicit list.
+bool set_scanned_mod_enabled(const ModScanResult& scan, const fs::path& game_dir,
+                             const ModPackageInfo& pkg, const std::string& feature_id,
+                             bool enabled, std::string* error = nullptr);
+bool set_scanned_mod_all(const ModScanResult& scan, const fs::path& game_dir,
+                         const ModPackageInfo& pkg, bool enabled, std::string* error = nullptr);
 
 
 } // namespace retcomm

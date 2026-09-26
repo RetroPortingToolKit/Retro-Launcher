@@ -205,7 +205,9 @@ cp config.example.json ~/.config/retcomm/config.json
 To run one core directly in the hub's window, without the library (what a
 port's dev build and a tool use), use Direct mode:
 `retro-hub --run-core <core> [--package <shim>] --rom <image> [--title-dir <dir>]`.
-Flags, files and runner lookup: [`docs/RELEASES.md`](docs/RELEASES.md#direct-mode).
+It opens on the title's home page (Play, n64lle Settings, Mods); add
+`--boot` to play at once. Flags, files and runner lookup:
+[`docs/RELEASES.md`](docs/RELEASES.md#direct-mode).
 
 `launch` stages disc/ROM/BIOS sidecars next to the install and prefers a companion
 `.cue` for disc titles. Installs land under

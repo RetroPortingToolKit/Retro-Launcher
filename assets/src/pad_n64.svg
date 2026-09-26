@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- pad_n64: a three-prong controller in the flat style of pad_snes.png, drawn
+     for retro-hub (not traced from any photograph or product art). Rendered to
+     assets/controllers/pad_n64.png with (from assets/):
+     rsvg-convert -w 720 -h 400 src/pad_n64.svg -o controllers/pad_n64.png
+     Button centres are the chip anchors in hub_main.cpp n64_pad_hits(). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="400" viewBox="0 0 720 400">
+  <!-- L / R shoulder tabs, behind the body -->
+  <rect x="150" y="58" width="120" height="60" rx="16" fill="#3a48a4"/>
+  <rect x="450" y="58" width="120" height="60" rx="16" fill="#3a48a4"/>
+  <!-- Z trigger, under the centre prong -->
+  <rect x="330" y="336" width="60" height="34" rx="12" fill="#3a48a4"/>
+  <!-- body: top bar and three prongs -->
+  <g fill="#4659c8">
+    <rect x="100" y="88" width="520" height="140" rx="70"/>
+    <rect x="128" y="140" width="104" height="196" rx="52"/>
+    <rect x="308" y="160" width="104" height="196" rx="52"/>
+    <rect x="488" y="140" width="104" height="196" rx="52"/>
+  </g>
+  <!-- d-pad well and cross -->
+  <circle cx="180" cy="150" r="54" fill="#3a48a4"/>
+  <rect x="163" y="112" width="34" height="76" rx="6" fill="#c8d3f5"/>
+  <rect x="142" y="133" width="76" height="34" rx="6" fill="#c8d3f5"/>
+  <!-- start -->
+  <circle cx="360" cy="150" r="13" fill="#f07070"/>
+  <!-- control stick -->
+  <circle cx="360" cy="250" r="40" fill="#3a48a4"/>
+  <circle cx="360" cy="250" r="22" fill="#c8d3f5"/>
+  <!-- C-button well -->
+  <circle cx="560" cy="131" r="43" fill="#3a48a4"/>
+  <!-- A, B -->
+  <circle cx="505" cy="195" r="19" fill="#5fa8f5"/>
+  <circle cx="465" cy="160" r="19" fill="#6ccb74"/>
+  <!-- C buttons -->
+  <circle cx="560" cy="105" r="12" fill="#f2d45c"/>
+  <circle cx="560" cy="155" r="12" fill="#f2d45c"/>
+  <circle cx="525" cy="130" r="12" fill="#f2d45c"/>
+  <circle cx="595" cy="130" r="12" fill="#f2d45c"/>
+</svg>
