@@ -86,7 +86,7 @@ states neither falls back to a fixed 60 Hz.
 
 ## Direct mode
 
-`retcomm-hub --run-core <title>_core.so --rom <image> [--title-dir D]
+`retro-hub --run-core <title>_core.so --rom <image> [--title-dir D]
 [--tpak1-rom GB --tpak1-save SAV] [--opt key=value ...] [--no-gl]` boots
 straight into the core and exits when the player closes it. This is the shape a
 standalone release takes (`HOST_LIFECYCLE.md` §3).
@@ -118,7 +118,7 @@ All on `pokemonstadium_core.so` built clean from n64lle `ffa84cfc`.
   every `state_hash.tsv` row, `shot.ppm` taken from shared memory,
   `events.tsv` and `core.log`. That includes the Transfer Pak and
   input-script scenarios.
-- **The hub runs it.** `retcomm-hub --run-core` ran on SDL's offscreen video
+- **The hub runs it.** `retro-hub --run-core` ran on SDL's offscreen video
   and dummy audio drivers for 25 s: about 1,380 frames at about 60 fps under
   audio pacing. When the hub was killed, the runner saw EOF, unloaded the core
   (`RUN_DONE fields=1383`) and exited, and no runner was left behind.

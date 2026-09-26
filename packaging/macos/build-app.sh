@@ -19,7 +19,9 @@ rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources" "${OUT_DIR}"
 
 install -m 755 "${PREFIX}/bin/retcomm" "${APP}/Contents/MacOS/retcomm"
-install -m 755 "${PREFIX}/bin/retcomm-hub" "${APP}/Contents/MacOS/retcomm-hub"
+install -m 755 "${PREFIX}/bin/retro-hub" "${APP}/Contents/MacOS/retro-hub"
+# The hub's old name: older self-updaters relaunch Contents/MacOS/retcomm-hub.
+ln -sf retro-hub "${APP}/Contents/MacOS/retcomm-hub"
 # Title catalog is fetched on-device (~/.local/share/retcomm/catalog, or
 # <root>/data/catalog when RETCOMM_HOME / a root marker is set); not bundled.
 # Hub fonts (Lato); also under share/retcomm/fonts when installed via CMake prefix.

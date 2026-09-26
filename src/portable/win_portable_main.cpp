@@ -3,7 +3,7 @@
 // Trailer layout (little-endian):
 //   [PE stub bytes][zip payload][uint64 payload_size][magic "RCM1"]
 //
-// No args  → launch retcomm-hub.exe from the extracted runtime
+// No args  → launch retro-hub.exe from the extracted runtime
 // cli …    → launch retcomm.exe with the remaining arguments
 //
 // Portable layout — everything lives beside the .exe:
@@ -382,7 +382,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         std::string have;
         if (in && std::getline(in, have) && have == want_ver) {
             std::error_code ec;
-            if (fs::is_regular_file(current / "retcomm-hub.exe", ec)) need_extract = false;
+            if (fs::is_regular_file(current / "retro-hub.exe", ec)) need_extract = false;
         }
     }
 
@@ -414,11 +414,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         ok = launch(bin, join_args(2, argc, argv), self, data_root, true, &err);
     } else {
-        const fs::path hub = current / "retcomm-hub.exe";
+        const fs::path hub = current / "retro-hub.exe";
         std::error_code ec;
         if (!fs::is_regular_file(hub, ec)) {
             LocalFree(argv);
-            fail(L"retcomm-hub.exe missing from portable runtime.");
+            fail(L"retro-hub.exe missing from portable runtime.");
             return 1;
         }
         ok = launch(hub, join_args(1, argc, argv), self, data_root, false, &err);

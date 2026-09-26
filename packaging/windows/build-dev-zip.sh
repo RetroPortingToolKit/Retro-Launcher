@@ -13,10 +13,10 @@
 # Output:
 #   dist/Retro-Launcher-windows-x64-dev.zip
 #     └── Retro-Launcher-windows-x64-dev/
-#           retcomm-hub.exe, retcomm.exe, *.dll, fonts/, platforms/,
+#           retro-hub.exe, retcomm-hub.exe (forwarder), retcomm.exe, *.dll, fonts/, platforms/,
 #           controllers/, setup/, DEV-BUILD.txt
 #
-# On Windows: unzip anywhere, run retcomm-hub.exe.
+# On Windows: unzip anywhere, run retro-hub.exe.
 #
 # This is NOT the release path. Releases are MSVC + vcpkg + Inno Setup via
 # .github/workflows/release.yml → packaging/windows/package.ps1. A cross build
@@ -136,11 +136,11 @@ cmake -G Ninja -S "${ROOT}" -B "${BUILD_DIR}" \
 cmake --build "${BUILD_DIR}" -j"${JOBS}"
 cmake --install "${BUILD_DIR}"
 
-for exe in retcomm.exe retcomm-hub.exe retcomm-portable.exe; do
+for exe in retcomm.exe retro-hub.exe retcomm-hub.exe retcomm-portable.exe; do
   if [[ ! -f "${PREFIX}/bin/${exe}" ]]; then
     echo "${exe} missing from install prefix — build did not produce the full set." >&2
-    [[ "${exe}" == "retcomm-hub.exe" ]] &&
-      echo "(retcomm-hub needs SDL3 + Dear ImGui: sibling ../recomp-ui or FetchContent.)" >&2
+    [[ "${exe}" == "retro-hub.exe" ]] &&
+      echo "(retro-hub needs SDL3 + Dear ImGui: sibling ../recomp-ui or FetchContent.)" >&2
     exit 1
   fi
 done
@@ -149,7 +149,8 @@ done
 echo "==> Stage ${STAGE}"
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}"
-cp "${PREFIX}/bin/retcomm.exe" "${PREFIX}/bin/retcomm-hub.exe" "${STAGE}/"
+# retcomm-hub.exe is the hub's old name: a forwarder to retro-hub.exe.
+cp "${PREFIX}/bin/retcomm.exe" "${PREFIX}/bin/retro-hub.exe" "${PREFIX}/bin/retcomm-hub.exe" "${STAGE}/"
 
 # DLL closure: walk each exe's import table, resolve names against the SDL3
 # prefix and the mingw sysroot, repeat for what those DLLs import. Anything not
@@ -183,7 +184,7 @@ collect_dlls() {
 }
 
 collect_dlls "${STAGE}/retcomm.exe"
-collect_dlls "${STAGE}/retcomm-hub.exe"
+collect_dlls "${STAGE}/retro-hub.exe"
 
 if ! compgen -G "${STAGE}/SDL3.dll" >/dev/null; then
   echo "SDL3.dll not bundled — the hub cannot run without it." >&2
@@ -228,7 +229,7 @@ Retro Launcher ${VERSION}
 Windows x64 dev test build — cross-compiled on Linux with ${TRIPLE}
 Built $(date -u '+%Y-%m-%d %H:%M:%S UTC') from $(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo 'unknown commit')
 
-Run retcomm-hub.exe (GUI) or retcomm.exe (CLI) from this folder — keep the
+Run retro-hub.exe (GUI) or retcomm.exe (CLI) from this folder — keep the
 DLLs and the fonts/, platforms/, controllers/, setup/ folders beside them.
 
 Not a release build:
@@ -264,4 +265,4 @@ fi
 echo
 echo "Done: ${ZIP}"
 du -h "${ZIP}" | awk '{print "      " $1}'
-echo "Copy to Windows, unzip, run ${NAME}\\retcomm-hub.exe"
+echo "Copy to Windows, unzip, run ${NAME}\\retro-hub.exe"

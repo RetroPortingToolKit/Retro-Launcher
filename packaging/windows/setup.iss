@@ -20,7 +20,7 @@
 #define MyAppName "Retro Launcher"
 #define MyAppPublisher "RetroPortingToolkit"
 #define MyAppURL "https://github.com/RetroPortingToolKit/Retro-Launcher"
-#define MyAppExeName "retcomm-hub.exe"
+#define MyAppExeName "retro-hub.exe"
 
 ; VersionInfoVersion must be purely numeric. The release workflow accepts a
 ; prerelease suffix (0.6.4-rc1), which ISCC would reject, so strip anything

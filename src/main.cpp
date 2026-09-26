@@ -753,7 +753,7 @@ int cmd_launch(const retcomm::Paths& paths, const retcomm::Catalog& cat,
         return 1;
     }
     // A title with a core plays inside the hub's window, not as its own
-    // process: hand off to `retcomm-hub --play`, which exits when the game
+    // process: hand off to `retro-hub --play`, which exits when the game
     // closes -- so a caller that waits on this command (a Steam shortcut)
     // still waits for the game.
     {
@@ -762,7 +762,7 @@ int cmd_launch(const retcomm::Paths& paths, const retcomm::Catalog& cat,
         if (!retcomm::core_manifest_for(*t, plan.install_root).empty()) {
 #if defined(__linux__)
             std::error_code ec;
-            const fs::path hub = fs::read_symlink("/proc/self/exe", ec).parent_path() / "retcomm-hub";
+            const fs::path hub = fs::read_symlink("/proc/self/exe", ec).parent_path() / "retro-hub";
             std::cout << id << " runs through a core: starting " << hub.string() << " --play " << id
                       << "\n";
             std::cout.flush();

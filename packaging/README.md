@@ -38,7 +38,7 @@ pad art for the Gamepads configure mapper lives in `assets/controllers/`
 | macOS `.app` / DMG | `Contents/Resources/fonts` | `Contents/Resources/platforms` | `Contents/Resources/controllers` |
 | Windows setup / portable | `fonts/` next to the exes | `platforms/` next to the exes | `controllers/` next to the exes |
 
-On Windows, `retcomm-hub` links `/SUBSYSTEM:WINDOWS` (no console window);
+On Windows, `retro-hub` links `/SUBSYSTEM:WINDOWS` (no console window);
 `retcomm.exe` remains a console CLI.
 
 CI fails the release job if `LatoLatin-Regular.ttf` is missing from the install
@@ -108,7 +108,7 @@ notarization to skip Gatekeeper.
 
 ## Windows
 
-Requires a Release build that includes `retcomm`, `retcomm-hub`, and
+Requires a Release build that includes `retcomm`, `retro-hub`, and
 `retcomm-portable` (the stub). Optional: [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 on `PATH` (or pass `-InnoSetup`) to build the Start Menu installer.
 
@@ -134,7 +134,7 @@ STRIP=0 ./packaging/windows/build-dev-zip.sh      # keep symbols in the zip
 ```
 
 Writes `dist/Retro-Launcher-windows-x64-dev.zip` — unzip on Windows, run
-`retcomm-hub.exe`. Layout matches the release package (exes + DLLs, with
+`retro-hub.exe`. Layout matches the release package (exes + DLLs, with
 `fonts/`, `platforms/`, `controllers/`, `setup/` beside them); the DLL set is the
 import closure of both exes walked with `objdump`, and the toolchain links
 libgcc/libstdc++ statically. `cmake/toolchain-mingw-w64-x86_64.cmake` drives it
@@ -176,9 +176,9 @@ otherwise packages unsigned with a notice:
 | `WINDOWS_SIGN_TIMESTAMP_URL` | optional RFC 3161 server (default DigiCert) |
 | `WINDOWS_SIGN_DESCRIPTION` | optional text for the file properties / UAC prompt |
 
-Signed: `retcomm.exe`, `retcomm-hub.exe`, every staged DLL, the combined
+Signed: `retcomm.exe`, `retro-hub.exe`, every staged DLL, the combined
 `Retro Launcher.exe` (after its payload is appended; the stub finds the
-RCM1 trailer before the certificate table), `retcomm-hub`'s uninstaller and
+RCM1 trailer before the certificate table), `retro-hub`'s uninstaller and
 the Inno Setup installer. The certificate is imported into the user store for
 the run and used by thumbprint, so the password never reaches a command line.
 Signing needs `signtool.exe` (Windows SDK; the CI runner has it). A configured

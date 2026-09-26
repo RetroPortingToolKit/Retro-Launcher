@@ -3,7 +3,7 @@
 #   cmake -G Ninja -S . -B build
 #   cmake --build build -j
 #   ./build/retcomm list
-#   ./build/retcomm-hub
+#   ./build/retro-hub
 
 cmake_minimum_required(VERSION 3.24)
 project(retcomm_launcher C CXX)
@@ -114,7 +114,7 @@ target_compile_definitions(retcomm_core PUBLIC
 target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz)
 if(WIN32)
     # ws2_32 for WSAPoll in src/netplay/netplay_ws.cpp. PUBLIC because the
-    # symbol is in this library, so every consumer needs it — retcomm-hub only
+    # symbol is in this library, so every consumer needs it — retro-hub only
     # linked without it by accident, SDL3 happening to drag winsock in, while
     # retcomm.exe (no SDL) failed with an unresolved __imp_WSAPoll.
     target_link_libraries(retcomm_core PUBLIC shell32 ws2_32)
@@ -165,8 +165,8 @@ retcomm_add_windows_rc(RETCOMM_RC_CLI "retcomm" "retcomm.exe"
     "RetComM Launcher command line")
 retcomm_add_windows_rc(RETCOMM_RC_PORTABLE "retcomm-portable" "RetComM Launcher.exe"
     "RetComM Launcher (portable)")
-retcomm_add_windows_rc(RETCOMM_RC_HUB "retcomm-hub" "retcomm-hub.exe"
-    "RetComM Launcher")
+retcomm_add_windows_rc(RETCOMM_RC_HUB "retro-hub" "retro-hub.exe"
+    "Retro Launcher")
 
 add_executable(retcomm src/main.cpp ${RETCOMM_RC_CLI})
 target_link_libraries(retcomm PRIVATE retcomm_core)
@@ -221,7 +221,7 @@ find_package(OpenGL REQUIRED)
 if(TARGET OpenGL::GL)
     set(RETCOMM_GL_TARGET OpenGL::GL)
 elseif(TARGET OpenGL::OpenGL)
-    message(STATUS "retcomm-hub: OpenGL::GL unavailable (GLVND host) — linking OpenGL::OpenGL")
+    message(STATUS "retro-hub: OpenGL::GL unavailable (GLVND host) — linking OpenGL::OpenGL")
     set(RETCOMM_GL_TARGET OpenGL::OpenGL)
 elseif(OPENGL_gl_LIBRARY)
     set(RETCOMM_GL_TARGET "${OPENGL_gl_LIBRARY}")
@@ -229,7 +229,7 @@ elseif(OPENGL_opengl_LIBRARY)
     set(RETCOMM_GL_TARGET "${OPENGL_opengl_LIBRARY}")
 else()
     message(FATAL_ERROR
-        "retcomm-hub: OpenGL found but no usable GL library resolved "
+        "retro-hub: OpenGL found but no usable GL library resolved "
         "(OPENGL_gl_LIBRARY='${OPENGL_gl_LIBRARY}', "
         "OPENGL_opengl_LIBRARY='${OPENGL_opengl_LIBRARY}'). "
         "Install the GL development files (libgl-dev / libglvnd-dev / libglvnd).")
@@ -258,7 +258,7 @@ if(EXISTS "${RETCOMM_IMGUI_DIR}/imgui.cpp"
     set(RETCOMM_IMGUI_READY TRUE)
 elseif(RETCOMM_HAVE_SDL3)
     include(FetchContent)
-    message(STATUS "retcomm-hub: fetching Dear ImGui (SDL3 backend)")
+    message(STATUS "retro-hub: fetching Dear ImGui (SDL3 backend)")
     FetchContent_Declare(retcomm_imgui_src
         GIT_REPOSITORY https://github.com/ocornut/imgui.git
         GIT_TAG v1.91.9-docking
@@ -326,15 +326,15 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${CMAKE_CURRENT_SOURCE_DIR}/third_party/misc/freetype)
         target_compile_definitions(retcomm_imgui PUBLIC IMGUI_ENABLE_FREETYPE)
         target_link_libraries(retcomm_imgui PUBLIC ${RETCOMM_IMGUI_FREETYPE_TARGET})
-        message(STATUS "retcomm-hub: ImGui FreeType color-emoji support enabled")
+        message(STATUS "retro-hub: ImGui FreeType color-emoji support enabled")
     else()
-        message(STATUS "retcomm-hub: ImGui FreeType not found — color emoji disabled")
+        message(STATUS "retro-hub: ImGui FreeType not found — color emoji disabled")
     endif()
 
     # WIN32 → /SUBSYSTEM:WINDOWS so the hub has no console window on Windows.
     # CLI stays console (retcomm.exe). Portable stub is already WIN32.
     if(WIN32)
-        add_executable(retcomm-hub WIN32
+        add_executable(retro-hub WIN32
             src/hub/hub_main.cpp
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
@@ -343,43 +343,60 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
         if(MSVC)
-            target_link_options(retcomm-hub PRIVATE "/ENTRY:mainCRTStartup")
+            target_link_options(retro-hub PRIVATE "/ENTRY:mainCRTStartup")
         elseif(MINGW)
             # mingw's -mwindows swaps in a startup object that calls WinMain, so
             # keep the console startup (main) and mark the image GUI at link time.
-            set_target_properties(retcomm-hub PROPERTIES WIN32_EXECUTABLE FALSE)
-            target_link_options(retcomm-hub PRIVATE "-Wl,--subsystem,windows")
+            set_target_properties(retro-hub PROPERTIES WIN32_EXECUTABLE FALSE)
+            target_link_options(retro-hub PRIVATE "-Wl,--subsystem,windows")
         endif()
     else()
-        add_executable(retcomm-hub
+        add_executable(retro-hub
             src/hub/hub_main.cpp
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
         )
     endif()
-    target_include_directories(retcomm-hub PRIVATE
+    target_include_directories(retro-hub PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
     )
     # Optional: stb also available from a sibling recomp-ui tree.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-ui/src/third_party/stb_image.h")
-        target_include_directories(retcomm-hub PRIVATE
+        target_include_directories(retro-hub PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../recomp-ui/src/third_party)
     endif()
-    target_link_libraries(retcomm-hub PRIVATE retcomm_core retcomm_imgui)
+    target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
     if(UNIX AND NOT APPLE)
-        set_target_properties(retcomm-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
+        set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
         # A core running in the hub's window (docs/CORE_LINK.md). Linux only
         # until the link has a Windows transport.
-        target_sources(retcomm-hub PRIVATE src/hub/hub_play.cpp src/corelink/link_io.cpp
+        target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/corelink/link_io.cpp
                                            src/corelink/core_link.cpp)
-        target_compile_definitions(retcomm-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
+        target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     endif()
-    install(TARGETS retcomm-hub RUNTIME DESTINATION bin)
-    message(STATUS "retcomm-hub: enabled (ImGui=${RETCOMM_IMGUI_DIR})")
+    install(TARGETS retro-hub RUNTIME DESTINATION bin)
+    # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
+    # shortcuts, Steam entries and older self-updaters relaunch it by name.
+    # Windows gets a forwarder exe (symlinks are not dependable there);
+    # everywhere else a symlink, in the build tree and in the install.
+    if(WIN32)
+        retcomm_add_windows_rc(RETCOMM_RC_HUB_COMPAT "retcomm-hub" "retcomm-hub.exe"
+            "Retro Launcher (starts retro-hub)")
+        add_executable(retcomm-hub WIN32 src/compat/retcomm_hub_forwarder_win.cpp
+                       ${RETCOMM_RC_HUB_COMPAT})
+        install(TARGETS retcomm-hub RUNTIME DESTINATION bin)
+    else()
+        add_custom_command(TARGET retro-hub POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E create_symlink retro-hub
+                    $<TARGET_FILE_DIR:retro-hub>/retcomm-hub)
+        install(CODE "execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink retro-hub
+            \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/retcomm-hub\")")
+    endif()
+    message(STATUS "retro-hub: enabled (ImGui=${RETCOMM_IMGUI_DIR})")
 else()
-    message(STATUS "retcomm-hub: skipped (need SDL3 + ImGui with imgui_impl_sdl3)")
+    message(STATUS "retro-hub: skipped (need SDL3 + ImGui with imgui_impl_sdl3)")
 endif()
 
 # --- the hub <-> runner link (docs/CORE_LINK.md) ----------------------------
@@ -444,9 +461,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/retcomm.png")
 endif()
 # Hub UI fonts (Lato Latin — same face as recomp-ui). Required when hub is built.
 set(RETCOMM_FONT_REGULAR "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LatoLatin-Regular.ttf")
-if(TARGET retcomm-hub AND NOT EXISTS "${RETCOMM_FONT_REGULAR}")
+if(TARGET retro-hub AND NOT EXISTS "${RETCOMM_FONT_REGULAR}")
     message(FATAL_ERROR
-        "retcomm-hub needs ${RETCOMM_FONT_REGULAR} (and LatoLatin-Bold.ttf). "
+        "retro-hub needs ${RETCOMM_FONT_REGULAR} (and LatoLatin-Bold.ttf). "
         "Commit assets/fonts/ so AppImage/DMG/Windows packages ship the UI face.")
 endif()
 if(EXISTS "${RETCOMM_FONT_REGULAR}")
@@ -478,7 +495,7 @@ endif()
 # Windows: ship vcpkg/shared runtime DLLs next to the installed exes.
 if(WIN32)
     install(FILES $<TARGET_RUNTIME_DLLS:retcomm> DESTINATION bin COMPONENT Runtime)
-    if(TARGET retcomm-hub)
-        install(FILES $<TARGET_RUNTIME_DLLS:retcomm-hub> DESTINATION bin COMPONENT Runtime)
+    if(TARGET retro-hub)
+        install(FILES $<TARGET_RUNTIME_DLLS:retro-hub> DESTINATION bin COMPONENT Runtime)
     endif()
 endif()

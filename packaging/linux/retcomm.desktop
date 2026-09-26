@@ -2,7 +2,7 @@
 Type=Application
 Name=Retro Launcher
 Comment=Multi-title hub for Retro recomp/decomp games
-Exec=retcomm-hub
+Exec=retro-hub
 Icon=retcomm
 Categories=Game;Emulator;
 Terminal=false

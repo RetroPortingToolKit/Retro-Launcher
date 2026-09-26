@@ -129,7 +129,7 @@ fs::path running_appimage_path() {
 fs::path macos_app_bundle_path() {
 #if defined(__APPLE__)
     const fs::path exe = current_executable_path();
-    // …/Retro Launcher.app/Contents/MacOS/retcomm-hub
+    // …/Retro Launcher.app/Contents/MacOS/retro-hub
     if (exe.empty()) return {};
     const fs::path macos = exe.parent_path();
     const fs::path contents = macos.parent_path();
@@ -856,7 +856,7 @@ bool schedule_run_setup_and_restart(const fs::path& setup_exe, const fs::path& i
     const fs::path script = setup_exe.parent_path() / "apply_setup_update.ps1";
     const fs::path log_path = setup_exe.parent_path() / "apply_setup_update.log";
     const fs::path ready_path = setup_exe.parent_path() / "apply_setup_update.ready";
-    const fs::path hub_exe = install_dir / "retcomm-hub.exe";
+    const fs::path hub_exe = install_dir / "retro-hub.exe";
     // Hub holds install-dir locks — do NOT run setup if it is still alive after timeout.
     const char* body = R"ps1(
 param(
@@ -1016,7 +1016,7 @@ bool schedule_retcomm_relaunch_impl(std::string* error) {
 #if defined(__APPLE__)
     if (launch.empty()) {
         const fs::path app = macos_app_bundle_path();
-        if (!app.empty()) launch = app / "Contents" / "MacOS" / "retcomm-hub";
+        if (!app.empty()) launch = app / "Contents" / "MacOS" / "retro-hub";
     }
 #endif
 #if defined(_WIN32)
@@ -1667,7 +1667,8 @@ if (Get-Process -Id $WaitPid -ErrorAction SilentlyContinue) {
 }
 # The hub runs the CLI and game binaries out of the trees below; anything still
 # alive would keep them locked and leave a half-deleted install.
-foreach ($procName in @('retcomm-hub', 'retcomm')) {
+# retcomm-hub is the hub's old name: a forwarder that may still be running.
+foreach ($procName in @('retro-hub', 'retcomm-hub', 'retcomm')) {
   Get-Process -Name $procName -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -ne $PID } |
     ForEach-Object {

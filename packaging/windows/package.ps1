@@ -116,6 +116,9 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $PrefixBin = Join-Path $Prefix "bin"
 Copy-Item (Join-Path $PrefixBin "retcomm.exe") $Stage
+Copy-Item (Join-Path $PrefixBin "retro-hub.exe") $Stage
+# The hub's old name: a forwarder to retro-hub.exe for shortcuts and older
+# self-updaters that start retcomm-hub.exe.
 Copy-Item (Join-Path $PrefixBin "retcomm-hub.exe") $Stage
 
 # Prefer DLLs already installed beside the exes (CMake TARGET_RUNTIME_DLLS).

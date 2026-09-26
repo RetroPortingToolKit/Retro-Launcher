@@ -149,8 +149,8 @@ cmake "${CMAKE_ARGS[@]}"
 cmake --build "${BUILD_DIR}" -j"${JOBS}"
 cmake --install "${BUILD_DIR}"
 
-if [[ ! -x "${PREFIX}/bin/retcomm-hub" ]]; then
-  echo "retcomm-hub missing from install — need SDL3 + Dear ImGui (sibling ../recomp-ui or FetchContent)." >&2
+if [[ ! -x "${PREFIX}/bin/retro-hub" ]]; then
+  echo "retro-hub missing from install — need SDL3 + Dear ImGui (sibling ../recomp-ui or FetchContent)." >&2
   exit 1
 fi
 

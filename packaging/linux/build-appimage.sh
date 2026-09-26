@@ -132,7 +132,8 @@ fi
 
 "${LD_RUN[@]}" \
   --appdir "${APPDIR}" \
-  --executable "${APPDIR}/usr/bin/retcomm-hub" \
+  --executable "${APPDIR}/usr/bin/retro-hub" \
+  --executable "${APPDIR}/usr/bin/retro-core-runner" \
   --executable "${APPDIR}/usr/bin/retcomm" \
   --desktop-file "${APPDIR}/retcomm.desktop" \
   --icon-file "${APPDIR}/retcomm.png" \

@@ -75,9 +75,9 @@ The main loop then:
 
 **Outside the hub:**
 
-- `retcomm-hub --play <title-id>` starts the hub, presses Play on that title,
+- `retro-hub --play <title-id>` starts the hub, presses Play on that title,
   and exits when it closes.
-- `retcomm launch <title-id>` on a core title `exec`s `retcomm-hub --play`. A
+- `retcomm launch <title-id>` on a core title `exec`s `retro-hub --play`. A
   caller that waits on `retcomm launch`, such as a Steam shortcut, therefore
   still waits for the game.
 
@@ -95,11 +95,11 @@ of his library index, and the Pokémon Stadium core built from n64lle
   `Pokemon Stadium (USA).z64` via SHA-256, and not the Rev 1 or Rev 2 dumps
   beside it.
 - **Launching.** `retcomm launch pokemonstadium` exec'd
-  `retcomm-hub --play pokemonstadium`. The launch worker posted the play
+  `retro-hub --play pokemonstadium`. The launch worker posted the play
   request, and the main loop ran it (offscreen, dummy audio): 1,612 fields in
   30 s including start-up. When the hub was killed, the runner unloaded the
   core cleanly (`RUN_DONE fields=1612`) with nothing left behind.
-- **Failure path.** `retcomm-hub --play no-such-title` exits 1 with "did not
+- **Failure path.** `retro-hub --play no-such-title` exits 1 with "did not
   start: unknown title: no-such-title".
 - **A normal hub start** with a core title in the catalog runs as before.
 - **Not checked:** the row, its Play button and the Add Core Title dialog on a

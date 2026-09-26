@@ -417,8 +417,8 @@ jobs:
           test -f out/share/retcomm/setup/setup_easy_rocket.png
           test -f out/share/retcomm/setup/setup_advanced_wrench.png
           # Smoke-check hub linked.
-          file out/bin/retcomm-hub
-          otool -L out/bin/retcomm-hub | head
+          file out/bin/retro-hub
+          otool -L out/bin/retro-hub | head
 
       - name: Package DMG
         run: |
@@ -430,8 +430,8 @@ jobs:
           # bundle_dylibs.sh already fails on leftover cellar paths; dump for logs.
           echo "=== Frameworks ==="
           ls -lah "dist/Retro Launcher.app/Contents/Frameworks/"
-          echo "=== retcomm-hub ==="
-          otool -L "dist/Retro Launcher.app/Contents/MacOS/retcomm-hub"
+          echo "=== retro-hub ==="
+          otool -L "dist/Retro Launcher.app/Contents/MacOS/retro-hub"
           for f in "dist/Retro Launcher.app/Contents/Frameworks/"*; do
             echo "=== $(basename "$f") ==="
             otool -L "$f"

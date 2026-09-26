@@ -443,7 +443,7 @@ enum class LibraryNav : int {
 
 struct HubModel {
     Paths paths;
-    fs::path exe_dir; // directory containing retcomm-hub (install / portable root)
+    fs::path exe_dir; // directory containing retro-hub (install / portable root)
     AppConfig cfg;
     Catalog catalog;
     LibraryIndex library;

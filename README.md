@@ -169,7 +169,7 @@ AppImage `cli` dispatch).
 cmake -G Ninja -S . -B build
 cmake --build build -j
 ./build/retcomm --help
-./build/retcomm-hub   # SDL3 + ImGui dashboard
+./build/retro-hub   # SDL3 + ImGui dashboard
 ```
 
 Requires CMake 3.24+, a C++17 compiler, and **libcurl**. Runtime archive tools:

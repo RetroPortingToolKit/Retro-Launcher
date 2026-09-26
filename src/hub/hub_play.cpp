@@ -62,7 +62,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
 
     if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         // No audio device is not fatal: pacing falls back to 60 Hz.
-        SDL_Log("retcomm-hub: no audio (%s); the game runs silent", SDL_GetError());
+        SDL_Log("retro-hub: no audio (%s); the game runs silent", SDL_GetError());
     }
     return link_.start(spec, error);
 }

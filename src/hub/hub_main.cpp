@@ -186,9 +186,9 @@ void load_hub_fonts(float density) {
         loaded = io.Fonts->AddFontFromFileTTF(regular.string().c_str(), kBody, &cfg, kRanges) !=
                  nullptr;
         if (loaded) {
-            std::fprintf(stderr, "retcomm-hub: loaded UI font %s\n", regular.string().c_str());
+            std::fprintf(stderr, "retro-hub: loaded UI font %s\n", regular.string().c_str());
         } else {
-            std::fprintf(stderr, "retcomm-hub: failed to load UI font %s\n",
+            std::fprintf(stderr, "retro-hub: failed to load UI font %s\n",
                          regular.string().c_str());
         }
     }
@@ -196,7 +196,7 @@ void load_hub_fonts(float density) {
         const char* appdir = std::getenv("APPDIR");
         const char* base = SDL_GetBasePath();
         std::fprintf(stderr,
-                     "retcomm-hub: using ImGui default font (LatoLatin-Regular.ttf not found; "
+                     "retro-hub: using ImGui default font (LatoLatin-Regular.ttf not found; "
                      "APPDIR=%s SDL_GetBasePath=%s)\n",
                      appdir ? appdir : "(null)", base ? base : "(null)");
         cfg.SizePixels = kBody;
@@ -221,7 +221,7 @@ void load_hub_fonts(float density) {
         if (color_emoji) return false;
 #endif
         if (!io.Fonts->AddFontFromFileTTF(path, kBody, &merge_cfg, ranges)) return false;
-        std::fprintf(stderr, "retcomm-hub: merged %s font %s\n",
+        std::fprintf(stderr, "retro-hub: merged %s font %s\n",
                      color_emoji ? "color-emoji" : "symbol/emoji", path);
         return true;
     };
@@ -306,17 +306,17 @@ void load_hub_fonts(float density) {
     }
     if (!merged_emoji) {
 #if defined(IMGUI_ENABLE_FREETYPE)
-        std::fprintf(stderr, "retcomm-hub: no color/outline emoji font found\n");
+        std::fprintf(stderr, "retro-hub: no color/outline emoji font found\n");
 #else
         std::fprintf(stderr,
-                     "retcomm-hub: no outline emoji font found (rebuild with FreeType for "
+                     "retro-hub: no outline emoji font found (rebuild with FreeType for "
                      "color emoji)\n");
 #endif
     }
 #endif
     if (!merged_symbols) {
         std::fprintf(stderr,
-                     "retcomm-hub: no symbol fallback font found (⚠ may not render)\n");
+                     "retro-hub: no symbol fallback font found (⚠ may not render)\n");
     }
 
     io.FontGlobalScale = 1.0f;
@@ -8837,11 +8837,11 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     std::string err;
     if (!play.start(d.args, runner, session, saves, &err)) {
-        std::fprintf(stderr, "retcomm-hub: cannot start %s: %s\n", d.args.core.string().c_str(),
+        std::fprintf(stderr, "retro-hub: cannot start %s: %s\n", d.args.core.string().c_str(),
                      err.c_str());
         return 1;
     }
-    std::fprintf(stderr, "retcomm-hub: running %s (session %s, saves %s)\n",
+    std::fprintf(stderr, "retro-hub: running %s (session %s, saves %s)\n",
                  d.args.core.string().c_str(), session.string().c_str(), saves.string().c_str());
     bool running = true;
     while (running && !play.finished()) {
@@ -8890,7 +8890,7 @@ int main(int argc, char** argv) {
 #if defined(RETCOMM_HUB_HAVE_PLAY)
     const DirectPlay direct = parse_direct_play(argc, argv);
     if (direct.active && direct.args.rom.empty()) {
-        std::fprintf(stderr, "retcomm-hub: --run-core needs --rom <image>\n");
+        std::fprintf(stderr, "retro-hub: --run-core needs --rom <image>\n");
         return 2;
     }
 #endif
@@ -8987,7 +8987,7 @@ int main(int argc, char** argv) {
         // Borderless fullscreen when the user last left it on; fit first so
         // Restore (F11 again) lands on a sane windowed size.
         if (hub.cfg.fullscreen) SDL_SetWindowFullscreen(window, true);
-        std::fprintf(stderr, "retcomm-hub: UI scale %.2f (window coords x%.2f, %s)\n",
+        std::fprintf(stderr, "retro-hub: UI scale %.2f (window coords x%.2f, %s)\n",
                      static_cast<double>(ui.px), static_cast<double>(ui.coords),
                      hub.cfg.ui_scale > 0.f ? "pinned in config" : "from display");
     }
@@ -9193,7 +9193,7 @@ int main(int argc, char** argv) {
             const float pref = hub.show_settings ? hub.settings.ui_scale : hub.cfg.ui_scale;
             const UiScale want = resolve_ui_scale(window, pref);
             if (want.px != ui.px) {
-                std::fprintf(stderr, "retcomm-hub: UI scale %.2f -> %.2f (window coords x%.2f)\n",
+                std::fprintf(stderr, "retro-hub: UI scale %.2f -> %.2f (window coords x%.2f)\n",
                              static_cast<double>(ui.px), static_cast<double>(want.px),
                              static_cast<double>(want.coords));
                 rebuild_hub_fonts(want.px);
@@ -9234,7 +9234,7 @@ int main(int argc, char** argv) {
             if (!play_requested && !setup_pending) {
                 play_requested = hub.start_job(HubJob::Launch, play_title_id);
                 if (!play_requested) {
-                    std::fprintf(stderr, "retcomm-hub: --play %s: could not start\n",
+                    std::fprintf(stderr, "retro-hub: --play %s: could not start\n",
                                  play_title_id.c_str());
                     running = false;
                 }
@@ -9260,7 +9260,7 @@ int main(int argc, char** argv) {
                         why = nl == std::string::npos ? l : l.substr(nl + 1);
                         if (why.empty()) why = hub.status;
                     }
-                    std::fprintf(stderr, "retcomm-hub: --play %s did not start: %s\n",
+                    std::fprintf(stderr, "retro-hub: --play %s did not start: %s\n",
                                  play_title_id.c_str(), why.c_str());
                     exit_code = 1;
                 }
