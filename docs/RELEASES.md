@@ -27,20 +27,56 @@ The installer names never change: Retro Studio, the self-updater and users
 depend on them. Only the bare archive carries the version in its name, as
 Retro-Runtime's archives do.
 
-## The bare hub archive
-
-For a tool that runs the hub in Direct mode, such as n64lle's new-project
-scaffolder in "release" mode:
+## Direct mode
 
 ```sh
-retro-hub --run-core <core.so> --rom <image> --title-dir <dir> \
+retro-hub --run-core <core> [--package <shim>] --rom <image> [--title-dir <dir>] \
           [--tpak1-rom <gb rom>] [--tpak1-save <sav>] [--no-gl] [--opt key=value]...
 ```
 
 Direct mode boots straight into the core in the hub's window and exits when the
-player closes it; no library pages, no setup wizard. Direct mode is built on
-every OS, but so far only the Linux job packages a bare archive; on Windows and
-macOS the hub (with Direct mode) ships inside the installers.
+player closes it; no library pages, no setup wizard. It is built on every OS.
+The session itself (menu, input, fault screen) is described in Retro-Runtime's
+[`docs/CORE_LINK.md`](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/CORE_LINK.md), "Direct mode".
+
+| Flag | Since revision | What |
+|---|---|---|
+| `--run-core <core>` | 1 | The rcore core library (`<title>_core.so`, or a generic core such as `n64lle_core.so`), its `.rcore.toml` beside it. Turns Direct mode on. |
+| `--package <shim>` | 2 | A `GAME_PACKAGE` core's game shim (`<slug>_game.so`, the title's generated code), passed to the runner as `--package`. Required for such a core and refused for any other, by the runner. |
+| `--rom <image>` | 1 | The game image. Without it, `--run-core` exits 2 before a window opens. |
+| `--title-dir <dir>` | 1 | The directory holding the title's `game.toml`. Default: the shim's directory with `--package`, else the core's. |
+| `--tpak1-rom`, `--tpak1-save` | 1 | Transfer Pak cartridge and its save, port 1. |
+| `--no-gl` | 1 | Do not lend the core GL. |
+| `--opt key=value` | 1 | A core option; repeatable. |
+
+**Files.** Session logs go to `<data dir>/sessions/<stem>/` and saves to
+`<data dir>/saves/<stem>/`, where `<stem>` is the title's: the shim's file stem
+with `--package` (`pokemonstadium_game`), the core's otherwise
+(`pokemonstadium_core`). A generic core is shared by every packaged title, so
+it never names one.
+
+**The runner.** Direct mode finds `retro-core-runner` the way the launcher does
+(`resolve_runner`, `src/update/runtime_update.cpp`), in this order:
+
+1. `RETRO_CORE_RUNNER`, when set, is used as is (the override);
+2. otherwise the newest compatible one of `<directory of retro-hub>/retro-core-runner`
+   (bundled) and `<data dir>/runtime/<version>/retro-core-runner` (installed
+   by the runtime updater).
+
+It logs which on stderr (`retro-hub: runner: bundled: <path> (bundled runner
+0.3.0)`). When none is usable, or `--package` is given and the runner's
+`--version` does not report `game_package 1` (runners from before Retro-Runtime
+added `--package`), the window says so and waits for the player to close it;
+the hub then exits 1. When `check_updates_on_startup` is on (the default), the
+runtime updater also runs once in the background: a newer runner installs
+beside the one in use and is used from the next launch, never mid-session
+(`RETRO_CORE_RUNNER` skips it).
+
+## The bare hub archive
+
+For a tool that runs the hub in Direct mode, such as n64lle's new-project
+scaffolder in "release" mode. So far only the Linux job packages one; on
+Windows and macOS the hub (with Direct mode) ships inside the installers.
 
 Everything is flat at the archive root, so it extracts straight into one
 directory:
@@ -55,16 +91,10 @@ directory:
 | `licenses/` | SDL3, and what is linked statically into `retro-hub`: Dear ImGui, miniz, stb, nlohmann/json, Retro-Runtime. |
 
 **It does not contain `retro-core-runner`.** Take it from
-[Retro-Runtime's release](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/RELEASES.md).
-Direct mode finds the runner the way the launcher does (`resolve_runner`,
-`src/update/runtime_update.cpp`), in this order:
-
-1. `RETRO_CORE_RUNNER`, when set, is used as is (the override);
-2. otherwise the newest compatible one of `<directory of retro-hub>/retro-core-runner`
-   (bundled) and `<data dir>/runtime/<version>/retro-core-runner` (installed
-   by the runtime updater).
-
-It logs which on stderr (`retro-hub: runner: bundled runner 0.3.0`, ...).
+[Retro-Runtime's release](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/RELEASES.md)
+and put it beside `retro-hub`, or name it with `RETRO_CORE_RUNNER` (see
+[the runner](#direct-mode) above). With `--package`, it must be a runner that
+reports `game_package 1`.
 
 The hub also needs from the machine: the GL driver (`libOpenGL`/`libGLX` or
 `libGL`), `libcurl.so.4`, `libstdc++` no older than `requires.glibcxx`, and a
@@ -106,8 +136,8 @@ Its shape follows Retro-Runtime's `runtime-manifest.json`:
   "link_protocol": { "major": 1, "minor": 0 },
   "rcore_abi": { "major": 0, "draft_revision": 5 },
   "direct_mode": {
-    "cli_revision": 1,
-    "flags": ["--run-core", "--rom", "--title-dir", "--tpak1-rom", "--tpak1-save", "--no-gl", "--opt"],
+    "cli_revision": 2,
+    "flags": ["--run-core", "--package", "--rom", "--title-dir", "--tpak1-rom", "--tpak1-save", "--no-gl", "--opt"],
     "runner_lookup": "RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner"
   },
   "platforms": {
@@ -140,8 +170,12 @@ the bundled SDL3.
   `link_protocol.major` is equal; the minor is negotiated per session.
 - `rcore_abi` is the core ABI the hub was built against
   (Retro-Runtime `include/rcore/rcore.h`). The runner, not the hub, loads cores.
-- `direct_mode.cli_revision` changes on any incompatible change to the Direct
-  mode flags; adding a flag appends to `flags` without changing it.
+- `direct_mode.cli_revision` goes up whenever the set of Direct mode flags
+  changes (the table under [Direct mode](#direct-mode) says which revision
+  introduced each). A tool requires at least the revision that introduced the
+  flags it passes, e.g. 2 for `--package`. Each revision still accepts every
+  earlier revision's command line; a change that breaks that will be called out
+  here.
 
 ## `retro-hub --version`
 
@@ -154,8 +188,8 @@ commit 8f538f7218855e94cdcba437a23245a4e1be22f8
 link_protocol 1.0
 rcore_abi_major 0
 rcore_draft_revision 5
-direct_mode 1
-direct_mode_flags --run-core --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt
+direct_mode 2
+direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt
 runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner
 ```
 
@@ -167,8 +201,10 @@ without the hub <-> runner link would print only the first three lines and
 
 1. Fetch the manifest. If `schema` is not one you know, stop.
 2. Take `platforms[<this platform>]`. If it has `unavailable`, report the reason.
-3. Check `direct_mode.cli_revision` and `flags` against what you will pass, and
-   `link_protocol.major` against the runner you will place beside it.
+3. Check `direct_mode.cli_revision` and `flags` against what you will pass
+   (`--package` needs revision 2), and `link_protocol.major` against the
+   runner you will place beside it (with `--package`, that runner must report
+   `game_package 1`).
 4. Check the machine against `requires.glibc` (`gnu_get_libc_version()`).
 5. Download `url`; check `size` and `sha256` **before** extracting.
 6. Extract into a fresh directory, run `<dir>/retro-hub --version`, and require

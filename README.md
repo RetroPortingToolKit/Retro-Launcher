@@ -202,6 +202,11 @@ cp config.example.json ~/.config/retcomm/config.json
 ./build/retcomm uninstall masters-of-teras-kasi-psx   # keeps saves by default
 ```
 
+To run one core directly in the hub's window, without the library (what a
+port's dev build and a tool use), use Direct mode:
+`retro-hub --run-core <core> [--package <shim>] --rom <image> [--title-dir <dir>]`.
+Flags, files and runner lookup: [`docs/RELEASES.md`](docs/RELEASES.md#direct-mode).
+
 `launch` stages disc/ROM/BIOS sidecars next to the install and prefers a companion
 `.cue` for disc titles. Installs land under
 `~/.local/share/retcomm/apps/<install_dir>/` (or your configured install roots)
