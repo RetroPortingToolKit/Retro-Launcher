@@ -208,6 +208,9 @@ struct TitleRow {
     std::string active_texture_pack;
     std::string install_root;
     std::string binary_path;
+    // Where the game reads its mods/ tree when that is not beside binary_path:
+    // Direct mode's title dir, where a game package's game.toml and mods live.
+    std::string game_dir_override;
     std::string runtime; // "native" | "wine"
     std::string author;        // GitHub owner from release.github
     std::string github_url;    // source repo URL
@@ -462,6 +465,7 @@ struct HubModel {
     bool show_romm_settings = false;
     bool show_psx_settings = false; // global PlayStation Configure page
     bool show_snes_settings = false; // global Super Nintendo Configure page
+    bool show_core_settings = false; // an rcore platform's settings (n64lle Settings)
     bool show_setup = false; // first-time library/BIOS/RomM wizard
     SetupPath setup_path = SetupPath::Chooser;
     // Advanced wizard: 0 = Retro data folder, 1 = library roots (+ optional

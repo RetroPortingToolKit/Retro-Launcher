@@ -19,12 +19,6 @@ constexpr double kTargetQueuedMs = 60.0;
 constexpr std::uint64_t kPersistEveryNs = 5 * kNsPerSec;
 constexpr std::uint32_t kSeats = 4;
 
-std::int16_t axis_of(SDL_Gamepad* g, SDL_GamepadAxis a, bool invert = false) {
-    const int v = SDL_GetGamepadAxis(g, a);
-    if (!invert) return static_cast<std::int16_t>(v);
-    return static_cast<std::int16_t>(std::clamp(-v, -32768, 32767));
-}
-
 // The last `n` lines of a text file, for the fault screen.
 std::vector<std::string> tail_lines(const fs::path& p, std::size_t n) {
     std::ifstream in(p);
@@ -92,80 +86,8 @@ void PlaySession::set_paused(bool paused) {
 }
 
 void PlaySession::fill_pads(rcore_pad pads[RCORE_MAX_SEATS]) const {
-    for (std::uint32_t i = 0; i < RCORE_MAX_SEATS; ++i) {
-        pads[i] = rcore_pad{};
-        pads[i].struct_size = sizeof(rcore_pad);
-    }
-    int count = 0;
-    SDL_JoystickID* ids = SDL_GetGamepads(&count);
-    std::uint32_t seat = 0;
-    for (int i = 0; ids && i < count && seat < kSeats; ++i) {
-        SDL_Gamepad* g = SDL_GetGamepadFromID(ids[i]);
-        if (!g) continue;
-        rcore_pad& p = pads[seat++];
-        p.connected = 1;
-        struct Map {
-            SDL_GamepadButton b;
-            std::uint32_t bit;
-        };
-        static constexpr Map kMap[] = {
-            {SDL_GAMEPAD_BUTTON_SOUTH, RCORE_PAD_SOUTH},
-            {SDL_GAMEPAD_BUTTON_EAST, RCORE_PAD_EAST},
-            {SDL_GAMEPAD_BUTTON_WEST, RCORE_PAD_WEST},
-            {SDL_GAMEPAD_BUTTON_NORTH, RCORE_PAD_NORTH},
-            {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, RCORE_PAD_L1},
-            {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, RCORE_PAD_R1},
-            {SDL_GAMEPAD_BUTTON_LEFT_STICK, RCORE_PAD_L3},
-            {SDL_GAMEPAD_BUTTON_RIGHT_STICK, RCORE_PAD_R3},
-            {SDL_GAMEPAD_BUTTON_START, RCORE_PAD_START},
-            {SDL_GAMEPAD_BUTTON_BACK, RCORE_PAD_SELECT},
-            {SDL_GAMEPAD_BUTTON_DPAD_UP, RCORE_PAD_DPAD_UP},
-            {SDL_GAMEPAD_BUTTON_DPAD_DOWN, RCORE_PAD_DPAD_DOWN},
-            {SDL_GAMEPAD_BUTTON_DPAD_LEFT, RCORE_PAD_DPAD_LEFT},
-            {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, RCORE_PAD_DPAD_RIGHT},
-        };
-        for (const Map& m : kMap) {
-            if (SDL_GetGamepadButton(g, m.b)) p.buttons |= m.bit;
-        }
-        // rcore: LY/RY positive = up; SDL: positive = down.
-        p.axes[RCORE_AXIS_LX] = axis_of(g, SDL_GAMEPAD_AXIS_LEFTX);
-        p.axes[RCORE_AXIS_LY] = axis_of(g, SDL_GAMEPAD_AXIS_LEFTY, true);
-        p.axes[RCORE_AXIS_RX] = axis_of(g, SDL_GAMEPAD_AXIS_RIGHTX);
-        p.axes[RCORE_AXIS_RY] = axis_of(g, SDL_GAMEPAD_AXIS_RIGHTY, true);
-        p.axes[RCORE_AXIS_LT] = axis_of(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-        p.axes[RCORE_AXIS_RT] = axis_of(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-        if (p.axes[RCORE_AXIS_LT] > 16384) p.buttons |= RCORE_PAD_L2;
-        if (p.axes[RCORE_AXIS_RT] > 16384) p.buttons |= RCORE_PAD_R2;
-    }
-    SDL_free(ids);
-
-    // No gamepad: the keyboard is port 1.
-    if (seat == 0) {
-        rcore_pad& p = pads[0];
-        p.connected = 1;
-        const bool* k = SDL_GetKeyboardState(nullptr);
-        struct KMap {
-            SDL_Scancode sc;
-            std::uint32_t bit;
-        };
-        static constexpr KMap kKeys[] = {
-            {SDL_SCANCODE_X, RCORE_PAD_SOUTH},       {SDL_SCANCODE_C, RCORE_PAD_EAST},
-            {SDL_SCANCODE_Z, RCORE_PAD_WEST},        {SDL_SCANCODE_S, RCORE_PAD_NORTH},
-            {SDL_SCANCODE_Q, RCORE_PAD_L1},          {SDL_SCANCODE_E, RCORE_PAD_R1},
-            {SDL_SCANCODE_LSHIFT, RCORE_PAD_L2},     {SDL_SCANCODE_RETURN, RCORE_PAD_START},
-            {SDL_SCANCODE_BACKSPACE, RCORE_PAD_SELECT}, {SDL_SCANCODE_UP, RCORE_PAD_DPAD_UP},
-            {SDL_SCANCODE_DOWN, RCORE_PAD_DPAD_DOWN}, {SDL_SCANCODE_LEFT, RCORE_PAD_DPAD_LEFT},
-            {SDL_SCANCODE_RIGHT, RCORE_PAD_DPAD_RIGHT},
-        };
-        for (const KMap& m : kKeys) {
-            if (k[m.sc]) p.buttons |= m.bit;
-        }
-        // IJKL as the left stick, full throw.
-        p.axes[RCORE_AXIS_LX] = static_cast<std::int16_t>((k[SDL_SCANCODE_L] ? 32767 : 0) -
-                                                          (k[SDL_SCANCODE_J] ? 32767 : 0));
-        p.axes[RCORE_AXIS_LY] = static_cast<std::int16_t>((k[SDL_SCANCODE_I] ? 32767 : 0) -
-                                                          (k[SDL_SCANCODE_K] ? 32767 : 0));
-    }
+    // The platform's seats: which device each port reads, and its map.
+    fill_pads_from_input(args_.input, pads, kSeats);
 }
 
 void PlaySession::grant_if_due() {

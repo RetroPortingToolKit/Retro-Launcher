@@ -31,11 +31,15 @@ Retro-Runtime's archives do.
 
 ```sh
 retro-hub --run-core <core> [--package <shim>] --rom <image> [--title-dir <dir>] \
-          [--tpak1-rom <gb rom>] [--tpak1-save <sav>] [--no-gl] [--opt key=value]...
+          [--tpak1-rom <gb rom>] [--tpak1-save <sav>] [--no-gl] [--opt key=value]... [--boot]
 ```
 
-Direct mode boots straight into the core in the hub's window and exits when the
-player closes it; no library pages, no setup wizard. It is built on every OS.
+Direct mode runs one title in the hub's window; no library pages, no setup
+wizard. It is built on every OS. Since revision 3 it opens on the title's
+**home page**: Play, the core's settings page (n64lle Settings), Mods and Quit. Closing the game
+returns to the page, and Quit leaves the app. `--boot` skips the page, plays at
+once and exits when the player closes the game (what every revision before 3
+did).
 The session itself (menu, input, fault screen) is described in Retro-Runtime's
 [`docs/CORE_LINK.md`](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/CORE_LINK.md), "Direct mode".
 
@@ -47,13 +51,33 @@ The session itself (menu, input, fault screen) is described in Retro-Runtime's
 | `--title-dir <dir>` | 1 | The directory holding the title's `game.toml`. Default: the shim's directory with `--package`, else the core's. |
 | `--tpak1-rom`, `--tpak1-save` | 1 | Transfer Pak cartridge and its save, port 1. |
 | `--no-gl` | 1 | Do not lend the core GL. |
-| `--opt key=value` | 1 | A core option; repeatable. |
+| `--opt key=value` | 1 | A core option; repeatable. Wins over a value stored by Core Settings. |
+| `--boot` | 3 | Play at once and exit with the game, skipping the home page. |
 
 **Files.** Session logs go to `<data dir>/sessions/<stem>/` and saves to
 `<data dir>/saves/<stem>/`, where `<stem>` is the title's: the shim's file stem
 with `--package` (`pokemonstadium_game`), the core's otherwise
 (`pokemonstadium_core`). A generic core is shared by every packaged title, so
 it never names one.
+
+The settings page -- the same one the library opens from an N64 platform
+header's **n64lle Config** -- writes these, and every play path reads them
+(`src/hub/hub_core_settings.hpp`):
+
+| File | Scope |
+|---|---|
+| `<data dir>/platform/<platform>/input.ini` | the four controller seats (device and maps) and the stick deadzone, every title of the platform (the core's `.rcore.toml` `platforms`) |
+| `<data dir>/platform/<platform>/options.ini` | option values for every title |
+| `<data dir>/platform/<platform>/options/<stem>.ini` | one title's overrides; `--opt` wins over both |
+| `<data dir>/platform/<platform>/core_description.txt` | the last `--describe`, so the page can label things with no core at hand |
+
+The page is built from what the core declares, asked of the runner with
+`retro-core-runner --describe` (Retro-Runtime `docs/CORE_RUNNER.md`), never
+from a list compiled into the hub. A runner without `describe 1` in its
+`--version` still plays; the page then uses the cached description, or says
+the core's settings are unavailable and labels the pad chips generically. Mods reads the title dir's `mods/` tree, in either layout
+`include/retcomm/mods.hpp` names (n64lle writes its selection to
+`<title dir>/mods.toml`).
 
 **The runner.** Direct mode finds `retro-core-runner` the way the launcher does
 (`resolve_runner`, `src/update/runtime_update.cpp`), in this order:
@@ -136,8 +160,8 @@ Its shape follows Retro-Runtime's `runtime-manifest.json`:
   "link_protocol": { "major": 1, "minor": 0 },
   "rcore_abi": { "major": 0, "draft_revision": 5 },
   "direct_mode": {
-    "cli_revision": 2,
-    "flags": ["--run-core", "--package", "--rom", "--title-dir", "--tpak1-rom", "--tpak1-save", "--no-gl", "--opt"],
+    "cli_revision": 3,
+    "flags": ["--run-core", "--package", "--rom", "--title-dir", "--tpak1-rom", "--tpak1-save", "--no-gl", "--opt", "--boot"],
     "runner_lookup": "RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner"
   },
   "platforms": {
@@ -176,6 +200,9 @@ the bundled SDL3.
   flags it passes, e.g. 2 for `--package`. Each revision still accepts every
   earlier revision's command line; a change that breaks that will be called out
   here.
+- **Revision 3 changed what an earlier command line does:** it is still
+  accepted, but it opens the home page instead of playing at once. A tool that
+  needs the old behaviour passes `--boot`, and so needs revision 3.
 
 ## `retro-hub --version`
 
@@ -188,8 +215,8 @@ commit 8f538f7218855e94cdcba437a23245a4e1be22f8
 link_protocol 1.0
 rcore_abi_major 0
 rcore_draft_revision 5
-direct_mode 2
-direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt
+direct_mode 3
+direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt --boot
 runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner
 ```
 
