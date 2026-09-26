@@ -39,6 +39,9 @@ set(RETCOMM_CORE_SOURCES
     src/paths/process_env.cpp
     src/paths/toolchain_env.cpp
     src/core/hash.cpp
+    src/core/core_titles.cpp
+    src/runner/core_manifest.cpp
+    src/runner/core_library.cpp
     src/core/config.cpp
     src/core/app_state.cpp
     src/core/texture_packs.cpp

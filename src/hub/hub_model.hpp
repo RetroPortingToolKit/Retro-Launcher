@@ -21,6 +21,7 @@
 #include <deque>
 #include <mutex>
 #include <set>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -217,8 +218,12 @@ struct TitleRow {
     bool can_prebuilt_install = false;
     // True when apps/<install>/src/*/build/ exists (cmake intermediates).
     bool has_cmake_build_data = false;
-    // install.json method: "build" | "zip" | "" (unknown / not installed).
+    // install.json method: "build" | "zip" | "core" | "" (unknown / not installed).
     std::string install_method;
+    // Runs through an rcore core in the hub's window (core_titles.hpp): the
+    // sidecar, and "<core id> <version>" for display. Empty otherwise.
+    std::string core_manifest;
+    std::string core_label;
     bool has_rom_identity = false;
     bool romm_ready = false; // base_url + api_token configured
     bool busy = false;
@@ -425,6 +430,7 @@ enum class FilePickKind : int {
     ImportBios,
     ImportTexturePack,
     ExportActivityLog,
+    AddCoreTitle,   // a core's .rcore.toml sidecar (core_titles.hpp)
 };
 
 // Body page: platform cards → title grid for a platform → one title's page.
@@ -598,6 +604,16 @@ struct HubModel {
     std::string launch_update_from;
     std::string launch_update_to;
     std::string pending_launch_title_id; // guarded by mu; main thread starts Launch
+    // Play for a title that runs through a core (core_titles.hpp): the launch
+    // worker resolves it, the main thread runs it in this window. Guarded by mu.
+    struct PlayRequest {
+        std::string title_id, name;
+        fs::path core_library, title_dir;
+        std::string rom;
+    };
+    std::optional<PlayRequest> pending_play;
+    // Drawer "Add Core Title…": the main loop opens the file dialog (it has the window).
+    bool pending_add_core_title = false;
     std::string toolchain_current_version;
     std::string toolchain_latest_tag;
     std::string toolchain_status; // short UI line
@@ -661,6 +677,9 @@ struct HubModel {
 
     // check_updates: query GitHub latest tags for installed titles.
     // force_github_tags: ignore the release-tag TTL (manual Check for Updates).
+    // Adds the registered core titles (cfg.core_titles) to `catalog`. Call after
+    // every catalog load; see retcomm/core_titles.hpp.
+    void apply_core_titles();
     void refresh_rows(bool check_updates, bool force_github_tags = false);
     // After the catalog gained titles: re-bind them from cached hashes (free),
     // then queue a scan of the affected platforms for anything still unmatched.

@@ -332,6 +332,17 @@ AppConfig load_app_config(const fs::path& config_path) {
 
         if (j.contains("default_install_root") && j.at("default_install_root").is_string())
             cfg.default_install_root = resolve(j.at("default_install_root").get<std::string>());
+        if (j.contains("core_titles") && j.at("core_titles").is_array()) {
+            cfg.core_titles.clear();
+            for (const auto& item : j.at("core_titles")) {
+                if (!item.is_object()) continue;
+                CoreTitleRef r;
+                r.manifest = resolve(item.value("manifest", std::string{}));
+                r.name = item.value("name", std::string{});
+                if (!r.manifest.empty()) cfg.core_titles.push_back(std::move(r));
+            }
+        }
+
         if (j.contains("install_roots") && j.at("install_roots").is_array()) {
             cfg.install_roots.clear();
             for (const auto& item : j.at("install_roots")) {
@@ -407,6 +418,12 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
         roots.push_back({{"label", e.label}, {"path", store(e.path)}});
     }
 
+    json core_titles = json::array();
+    for (const auto& r : cfg.core_titles) {
+        if (r.manifest.empty()) continue;
+        core_titles.push_back({{"manifest", store(r.manifest)}, {"name", r.name}});
+    }
+
     json j = {{"library_root", store(cfg.library_root)},
               {"bios_root", store(cfg.bios_root)},
               {"saves_root", store(cfg.saves_root)},
@@ -414,6 +431,7 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
               {"default_install_root", store(cfg.default_install_root)},
               {"platform_folders", folders},
               {"exclude_dirs", cfg.exclude_dirs},
+              {"core_titles", core_titles},
               {"prefer_local_boxart", cfg.prefer_local_boxart},
               {"filter_unsupported_titles", cfg.filter_unsupported_titles},
               {"check_updates_on_startup", cfg.check_updates_on_startup},

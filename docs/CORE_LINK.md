@@ -118,8 +118,8 @@ All on `pokemonstadium_core.so` built clean from n64lle `ffa84cfc`.
 
 ## Not built yet
 
-- **Library launch.** Only Direct mode exists; the catalog has no concept of a
-  core title yet.
+- **Per-title options, accessories and save choice** from the title page.
+  Library launch itself exists: see `CORE_LIBRARY.md`.
 - **Netplay through the runner** (rev 4).
 - **Savestates from the quick menu,** with the envelope.
 - **Options UI.** Options come only from `--opt`.

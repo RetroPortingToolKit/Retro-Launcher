@@ -35,6 +35,14 @@ struct InstallRootEntry {
     fs::path path;
 };
 
+// A title that runs through an rcore core, registered by pointing at the
+// core's sidecar (docs/CORE_LIBRARY.md). `name` is the display name; empty
+// shows the sidecar's title id.
+struct CoreTitleRef {
+    fs::path manifest;
+    std::string name;
+};
+
 // User config (~/.config/retcomm/config.json). RomM/ES-style library layout:
 //   <library_root>/<platform_folder>/...
 struct AppConfig {
@@ -59,6 +67,7 @@ struct AppConfig {
     // e.g. "psx" -> ["ps", "ps1"]
     std::map<std::string, std::vector<std::string>> platform_folders;
     std::vector<std::string> exclude_dirs; // basename matches, e.g. "torrents"
+    std::vector<CoreTitleRef> core_titles;  // registered core titles (core_titles.hpp)
     // When true, sibling / library-folder covers may override remote boxart.
     // Default false: always use RomM or Libretro (per romm.sync_boxart).
     bool prefer_local_boxart = false;

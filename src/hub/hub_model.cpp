@@ -1,4 +1,6 @@
 #include "hub/hub_model.hpp"
+
+#include "retcomm/core_titles.hpp"
 #include "hub/hub_boxart.hpp"
 
 #include "retcomm/build.hpp"
@@ -320,6 +322,12 @@ size_t HubModel::refresh_orphan_installs() {
     return n;
 }
 
+void HubModel::apply_core_titles() {
+    std::vector<std::string> problems;
+    merge_core_titles(catalog, cfg, &problems);
+    for (const auto& p : problems) append_log(p);
+}
+
 void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {
     // Keep last GitHub check results across refresh_rows(false) so one Update /
     // scan job does not clear UPDATE badges for every other title.
@@ -393,6 +401,32 @@ void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {
             host_supports_wine() && t.supports_wine_install() && host_os_key() != "windows";
         row.supports_local_build = t.supports_local_build();
         row.can_prebuilt_install = t.supports_prebuilt_install();
+        // A title that runs through a core (core_titles.hpp): installed when the
+        // core's library is there, played in this window, never installed,
+        // updated or built from here.
+        if (const fs::path cm = core_manifest_for(t, plan.install_root); !cm.empty()) {
+            CoreTitle ct;
+            std::string core_err;
+            row.core_manifest = cm.string();
+            if (read_core_title(cm, ct, &core_err)) {
+                std::error_code lec;
+                row.installed = fs::is_regular_file(ct.library, lec);
+                row.install_issue = row.installed ? std::string()
+                                                  : "core library missing: " + ct.library.string();
+                row.install_dir_present = true;
+                row.install_root = cm.parent_path().string();
+                row.binary_path = ct.library.string();
+                row.install_method = "core";
+                row.core_label = ct.core_id + " " + ct.core_version +
+                                 (ct.engine_dirty ? " (dev build)" : "");
+            } else {
+                row.installed = false;
+                row.install_issue = core_err;
+            }
+            row.can_wine_install = false;
+            row.supports_local_build = false;
+            row.can_prebuilt_install = false;
+        }
         row.built_with_openbios =
             row.installed && row.supports_local_build && install_built_with_openbios(plan);
         row.has_cmake_build_data = false;
@@ -1072,6 +1106,34 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     }
                 }
 
+                // A title with a core plays in this window, not as a process.
+                if (do_launch) {
+                    const fs::path cm =
+                        core_manifest_for(*t, inspect_install_any(paths, cfg, *t).install_root);
+                    if (!cm.empty()) {
+                        do_launch = false;
+                        CoreTitle ct;
+                        std::string core_err;
+                        const fs::path rom = boot_disc_rom(library, *t);
+                        if (!read_core_title(cm, ct, &core_err)) {
+                            append_log(core_err);
+                            set_status("Cannot play " + title_id);
+                        } else if (rom.empty()) {
+                            set_status("No matching ROM for " + t->name +
+                                       " — scan the library, or add it");
+                        } else {
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+                            std::lock_guard<std::mutex> lock(mu);
+                            pending_play = PlayRequest{title_id, t->name, ct.library,
+                                                       ct.title_dir, rom.string()};
+                            status = "Starting " + t->name + "…";
+#else
+                            set_status(t->name + " runs through a core, which this "
+                                       "platform's hub cannot host yet");
+#endif
+                        }
+                    }
+                }
                 if (do_launch) {
                     set_status("Launching " + title_id + "…");
                     LaunchOptions opts;
@@ -1602,6 +1664,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     if (cr.ok) {
                         try {
                             catalog = load_catalog(paths.catalog_dir);
+                            apply_core_titles();
                             catalog_downloaded = !cr.skipped;
                         } catch (const std::exception& e) {
                             append_log(std::string("catalog reload after prefetch: ") + e.what());
@@ -1881,6 +1944,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     if (cr.ok && !cr.skipped) {
                         try {
                             catalog = load_catalog(paths.catalog_dir);
+                            apply_core_titles();
                             catalog_downloaded = true;
                         } catch (const std::exception& e) {
                             append_log(std::string("catalog reload: ") + e.what());
@@ -2143,6 +2207,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 }
                 try {
                     catalog = load_catalog(paths.catalog_dir);
+                            apply_core_titles();
                     append_log("Catalog loaded: " + paths.catalog_dir.string() + " (" +
                                std::to_string(catalog.titles.size()) + " titles)");
                     set_status("Catalog refreshed (" + std::to_string(catalog.titles.size()) +
@@ -3011,6 +3076,40 @@ void HubModel::apply_pending_file_pick() {
         file_pick_busy = false;
     }
     if (picked.empty()) return;
+
+    if (kind == FilePickKind::AddCoreTitle) {
+        const fs::path manifest = fs::absolute(fs::path(picked.front()));
+        CoreTitle ct;
+        std::string err;
+        if (!read_core_title(manifest, ct, &err)) {
+            append_log("Add core title: " + err, LogLevel::Error);
+            set_status("Not a core title");
+            return;
+        }
+        cfg = load_app_config(paths.config_path);
+        bool known = false;
+        for (const auto& r : cfg.core_titles) {
+            std::error_code ec;
+            if (fs::equivalent(r.manifest, manifest, ec)) known = true;
+        }
+        if (!known) {
+            cfg.core_titles.push_back({manifest, ct.name});
+            save_app_config(paths.config_path, cfg);
+        }
+        apply_core_titles();
+        append_log("Core title " + ct.name + " (" + ct.id + ", " + ct.core_id + " " +
+                   ct.core_version + (ct.engine_dirty ? ", dev build" : "") + ") from " +
+                   manifest.string());
+        refresh_rows(false);
+        // Find its ROM: the platform may never have been scanned (no catalog
+        // title needed it before).
+        if (!ct.platform.empty()) {
+            scans_platform_filter = ct.platform;
+            start_job(HubJob::ScanRoms);
+        }
+        set_status((known ? "Refreshed " : "Added ") + ct.name);
+        return;
+    }
 
     if (kind == FilePickKind::ExportActivityLog) {
         const fs::path dest(picked.front());

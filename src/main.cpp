@@ -5,6 +5,7 @@
 #include "retcomm/catalog.hpp"
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/core_titles.hpp"
 #include "retcomm/data_root.hpp"
 #include "retcomm/data_root_migrate.hpp"
 #include "retcomm/http.hpp"
@@ -30,6 +31,7 @@
 #define RETCOMM_ISATTY_STDIN() (isatty(fileno(stdin)) != 0)
 #endif
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -53,6 +55,10 @@ void print_help(const char* argv0) {
         << "  bios scan [--full] [--bios-dir DIR]  Scan BIOS tree, match titles that need BIOS\n"
         << "  bios list                    Show indexed title → BIOS bindings\n"
         << "  library [--check-updates]    Indexed title → ROM + install + BIOS status\n"
+        << "  core add <sidecar.rcore.toml> [--name NAME]\n"
+        << "                               Register a title that runs through an rcore core\n"
+        << "                               (it then scans, lists and launches like any title)\n"
+        << "  core list                    Registered core titles, their cores and ROMs\n"
         << "  install <title-id> [opts]    Build locally when catalog has build recipe;\n"
         << "                               otherwise download prebuilt GitHub release\n"
         << "      --force                  Reinstall / rebuild even if same pin\n"
@@ -745,6 +751,32 @@ int cmd_launch(const retcomm::Paths& paths, const retcomm::Catalog& cat,
     if (!t) {
         std::cerr << "unknown title: " << id << "\n";
         return 1;
+    }
+    // A title with a core plays inside the hub's window, not as its own
+    // process: hand off to `retcomm-hub --play`, which exits when the game
+    // closes -- so a caller that waits on this command (a Steam shortcut)
+    // still waits for the game.
+    {
+        const auto cfg0 = retcomm::load_app_config(paths.config_path);
+        const auto plan = retcomm::inspect_install_any(paths, cfg0, *t);
+        if (!retcomm::core_manifest_for(*t, plan.install_root).empty()) {
+#if defined(__linux__)
+            std::error_code ec;
+            const fs::path hub = fs::read_symlink("/proc/self/exe", ec).parent_path() / "retcomm-hub";
+            std::cout << id << " runs through a core: starting " << hub.string() << " --play " << id
+                      << "\n";
+            std::cout.flush();
+            const std::string hub_s = hub.string();
+            char* argv[] = {const_cast<char*>(hub_s.c_str()), const_cast<char*>("--play"),
+                            const_cast<char*>(id.c_str()), nullptr};
+            ::execv(hub_s.c_str(), argv);
+            std::cerr << "cannot start " << hub_s << ": " << std::strerror(errno) << "\n";
+            return 1;
+#else
+            std::cerr << id << " runs through a core, which this platform cannot host yet\n";
+            return 1;
+#endif
+        }
     }
     const auto cfg = retcomm::load_app_config(paths.config_path);
     std::string rom_source;
@@ -1462,6 +1494,9 @@ int main(int argc, char** argv) {
         const fs::path cat_dir =
             retcomm::resolve_catalog_dir(exe_dir_from(argv[0]), catalog_override, &paths);
         catalog = retcomm::load_catalog(cat_dir);
+        std::vector<std::string> core_problems;
+        retcomm::merge_core_titles(catalog, cfg, &core_problems);
+        for (const auto& p : core_problems) std::cerr << p << "\n";
     } catch (const std::exception& e) {
         std::cerr << "catalog error: " << e.what() << "\n";
         return 1;
@@ -1486,6 +1521,60 @@ int main(int argc, char** argv) {
             return cmd_library(paths, cfg, catalog, check_updates);
         }
         if (cmd == "romm") return cmd_romm(paths, cfg);
+        if (cmd == "core") {
+            // Titles that run through an rcore core (core_titles.hpp).
+            if (args.size() >= 3 && args[1] == "add") {
+                retcomm::CoreTitle ct;
+                std::string err;
+                if (!retcomm::read_core_title(args[2], ct, &err)) {
+                    std::cerr << err << "\n";
+                    return 1;
+                }
+                std::string name;
+                for (size_t i = 3; i + 1 < args.size(); ++i) {
+                    if (args[i] == "--name") name = args[++i];
+                }
+                auto c = retcomm::load_app_config(paths.config_path);
+                bool known = false;
+                for (auto& r : c.core_titles) {
+                    std::error_code ec;
+                    if (fs::equivalent(r.manifest, ct.manifest, ec)) {
+                        known = true;
+                        if (!name.empty()) r.name = name;
+                    }
+                }
+                if (!known) c.core_titles.push_back({ct.manifest, name});
+                retcomm::save_app_config(paths.config_path, c);
+                std::cout << (known ? "updated " : "added ") << ct.id << " (" << ct.name << ", "
+                          << ct.platform << ", " << ct.core_id << " " << ct.core_version
+                          << (ct.engine_dirty ? ", dev build" : "") << ")\n"
+                          << "  run `retcomm scan` to find its ROM\n";
+                return 0;
+            }
+            if (args.size() < 2 || args[1] == "list") {
+                for (const auto& r : cfg.core_titles) {
+                    retcomm::CoreTitle ct;
+                    std::string err;
+                    if (!retcomm::read_core_title(r.manifest, ct, &err)) {
+                        std::cout << "  (unreadable) " << err << "\n";
+                        continue;
+                    }
+                    const auto idx = retcomm::load_library_index(paths.library_index_path);
+                    const auto* t = catalog.find(ct.id);
+                    const fs::path rom = t ? retcomm::boot_disc_rom(idx, *t) : fs::path();
+                    std::cout << ct.id << "  " << (r.name.empty() ? ct.name : r.name) << "  ["
+                              << ct.platform << ", " << ct.core_id << " " << ct.core_version
+                              << (ct.engine_dirty ? ", dev" : "") << "]\n"
+                              << "  core " << ct.library.string() << "\n"
+                              << "  rom  " << (rom.empty() ? "(none matched; retcomm scan)" : rom.string())
+                              << "\n";
+                }
+                if (cfg.core_titles.empty()) std::cout << "no core titles registered\n";
+                return 0;
+            }
+            std::cerr << "usage: retcomm core add <sidecar.rcore.toml> [--name NAME] | core list\n";
+            return 2;
+        }
         if (cmd == "bios") {
             if (args.size() < 2 || args[1] == "list") return cmd_bios_list(paths, catalog);
             if (args[1] == "scan") {

@@ -171,6 +171,10 @@ struct Title {
     std::vector<std::string> saves_memcard_glob;
     TitleNetplay netplay;
     TitleBuild build;
+    // The rcore sidecar this title runs through in the hub's window, when it
+    // has one: set for kind "core" titles and for catalog titles a registered
+    // core attaches to (core_titles.hpp). Never read from the catalog JSON.
+    std::string core_manifest;
 
     bool has_rom_identity() const;
     bool has_bios_identity() const;

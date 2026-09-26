@@ -2911,6 +2911,13 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
             close_nav_drawer(hub);
             hub.pending_open_library = true;
         }
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (ImGui::Button("Add Core Title…", item_sz)) {
+            close_nav_drawer(hub);
+            hub.pending_add_core_title = true;
+        }
+#endif
         ImGui::PopStyleVar();
 
         // Version block pinned to the bottom (was the Menu modal's footer).
@@ -8873,6 +8880,13 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 #endif
 
 int main(int argc, char** argv) {
+    // `--play <title-id>`: start normally, press Play on that title, exit when
+    // it closes. What `retcomm launch` hands a core title to, so a Steam
+    // shortcut waits for the game.
+    std::string play_title_id;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--play") play_title_id = argv[i + 1];
+    }
 #if defined(RETCOMM_HUB_HAVE_PLAY)
     const DirectPlay direct = parse_direct_play(argc, argv);
     if (direct.active && direct.args.rom.empty()) {
@@ -9015,6 +9029,7 @@ int main(int argc, char** argv) {
         const fs::path cat = retcomm::resolve_catalog_dir(fs::path(argv[0]).parent_path(), {},
                                                           &hub.paths);
         hub.catalog = retcomm::load_catalog(cat);
+        hub.apply_core_titles();
         std::string cat_log = "Catalog: " + cat.string() + " (" +
                               std::to_string(hub.catalog.titles.size()) + " titles";
         if (!hub.catalog.release_tag.empty())
@@ -9055,6 +9070,16 @@ int main(int argc, char** argv) {
     hub.pending_startup_update_check = !setup_pending && hub.cfg.check_updates_on_startup;
 
     retcomm::hub::BoxartCache boxart;
+    // --play: requested once the loop is running; `play_seen` notes that it
+    // actually started, so its end (or a failure to start) ends the hub.
+    bool play_requested = false;
+    bool play_seen = false;
+    int exit_code = 0;
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    // A core title being played in this window (HOST_LIFECYCLE.md "Running"):
+    // while set, it owns events and drawing, and the library waits behind it.
+    std::unique_ptr<retcomm::hub::PlaySession> play;
+#endif
     bool running = true;
     while (running) {
         // Keep gamepads open so SDL3 delivers GAMEPAD_BUTTON / AXIS events.
@@ -9063,6 +9088,23 @@ int main(int argc, char** argv) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             scale_mouse_event(e, ui.coords);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+            if (play) {
+                // The game has the controls: none of the library's shortcuts
+                // (Start opens the drawer) may fire underneath it.
+                if (!play->handle_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
+                if (e.type == SDL_EVENT_QUIT) running = false;
+                if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                    e.window.windowID == SDL_GetWindowID(window))
+                    running = false;
+                if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+                    hub.cfg.fullscreen = !hub.cfg.fullscreen;
+                    SDL_SetWindowFullscreen(window, hub.cfg.fullscreen);
+                    retcomm::save_app_config(hub.paths.config_path, hub.cfg);
+                }
+                continue;
+            }
+#endif
             if (poll_snes_bind_capture(hub, e) || poll_psx_bind_capture(hub, e)) {
                 // Still feed ImGui so the modal stays responsive, but skip
                 // duplicate key handling for capture commits.
@@ -9097,6 +9139,11 @@ int main(int argc, char** argv) {
 
         hub.apply_pending_folder_pick();
         hub.apply_pending_file_pick();
+        if (hub.pending_add_core_title) {
+            hub.pending_add_core_title = false;
+            begin_file_pick(hub, window, retcomm::hub::FilePickKind::AddCoreTitle, {},
+                            "rcore core sidecar", {"toml"}, /*allow_many=*/false);
+        }
 
         // First run: the catalog could not be fetched before the wizard picked a
         // data folder, so do it the moment setup finishes.
@@ -9154,11 +9201,93 @@ int main(int argc, char** argv) {
             ui = want;
         }
 
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        // Start a requested core title, once nothing else is playing.
+        if (!play) {
+            std::optional<HubModel::PlayRequest> req;
+            {
+                std::lock_guard<std::mutex> lock(hub.mu);
+                req.swap(hub.pending_play);
+            }
+            if (req) {
+                retcomm::hub::PlayArgs args;
+                args.core = req->core_library;
+                args.rom = req->rom;
+                args.title_dir = req->title_dir;
+                const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
+                const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
+                auto p = std::make_unique<retcomm::hub::PlaySession>();
+                std::string err;
+                if (p->start(args, hub.exe_dir / "retcomm-core-runner", session, saves, &err)) {
+                    play = std::move(p);
+                    hub.append_log("Playing " + req->name + " through its core (session " +
+                                   session.string() + ")");
+                } else {
+                    hub.append_log("Cannot start " + req->name + ": " + err);
+                    hub.set_status("Cannot start " + req->name);
+                }
+            }
+        }
+        if (play) play->tick();
+#endif
+        if (!play_title_id.empty()) {
+            if (!play_requested && !setup_pending) {
+                play_requested = hub.start_job(HubJob::Launch, play_title_id);
+                if (!play_requested) {
+                    std::fprintf(stderr, "retcomm-hub: --play %s: could not start\n",
+                                 play_title_id.c_str());
+                    running = false;
+                }
+            }
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+            if (play) play_seen = true;
+            bool pending = false;
+            {
+                std::lock_guard<std::mutex> lock(hub.mu);
+                pending = hub.pending_play.has_value();
+            }
+            if (play_requested && !play && !pending && !hub.launch_running.load()) {
+                // Either the game closed, or it never started: say which.
+                if (!play_seen) {
+                    // The reason is the worker's last log line ("unknown
+                    // title: …", "No matching ROM …"), not the status bar.
+                    std::string why;
+                    {
+                        std::lock_guard<std::mutex> lock(hub.mu);
+                        std::string l = hub.log;
+                        while (!l.empty() && l.back() == '\n') l.pop_back();
+                        const auto nl = l.rfind('\n');
+                        why = nl == std::string::npos ? l : l.substr(nl + 1);
+                        if (why.empty()) why = hub.status;
+                    }
+                    std::fprintf(stderr, "retcomm-hub: --play %s did not start: %s\n",
+                                 play_title_id.c_str(), why.c_str());
+                    exit_code = 1;
+                }
+                running = false;
+            }
+#endif
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         apply_ui_scale_frame(window, ui);
         ImGui::NewFrame();
 
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        const bool playing = play != nullptr;
+        if (playing) {
+            play->draw();
+            if (play->finished()) {
+                play->shutdown();
+                play.reset();
+                hub.set_status("Ready");
+                request_page_focus(hub);
+            }
+        }
+#else
+        const bool playing = false;
+#endif
+        if (!playing) {
         if (hub.pending_open_mods) {
             hub.pending_open_mods = false;
             close_settings_pages(hub);
@@ -9821,6 +9950,7 @@ int main(int argc, char** argv) {
         }
 
         ImGui::End();
+        } // !playing
 
         // Keep any spawned keyboard in step with ImGui's text-input state. The
         // hint SDL reads inside SDL_StartTextInput() is set earlier, when the
@@ -9841,6 +9971,11 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
+
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    // Before the GL context goes: the session owns a texture and a runner.
+    play.reset();
+#endif
 
     // Self-update / hard-reset apply scripts wait on this PID. Prefer a fast
     // exit over a graceful join that can hang on prefetch/launch workers and
@@ -9869,5 +10004,5 @@ int main(int argc, char** argv) {
     SDL_GL_DestroyContext(gl);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return 0;
+    return exit_code;
 }
