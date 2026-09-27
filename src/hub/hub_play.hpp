@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <array>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,7 @@ private:
     void grant(std::uint64_t now);
     void grant_if_due();
     void run_turbo();
+    void set_turbo_running(bool on);
     void note_frames(std::uint64_t now);
     void pump_audio();
     void upload_frame();
@@ -158,6 +160,8 @@ private:
     bool turbo_ = false;          // turbo in effect this frame
     bool turbo_key_ = false;      // its key held
     bool turbo_pad_ = false;      // its Function combo held
+    bool turbo_running_ = false;  // what tick() last put in force
+    std::optional<int> saved_swap_interval_; // vsync to put back when turbo ends
     std::array<bool, kHostActionCount> combo_prev_{}; // last frame's combos
     bool l3r3_prev_ = false;
     bool audio_paused_ = true;    // the SDL stream's state, as last set
