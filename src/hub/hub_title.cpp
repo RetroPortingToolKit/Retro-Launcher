@@ -1,4 +1,5 @@
 #include "hub/hub_title.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/data_root.hpp"
 #include "retcomm/hash.hpp"
@@ -39,6 +40,18 @@ bool valid_id(const std::string& id) {
     if (id.empty()) return false;
     return std::all_of(id.begin(), id.end(), [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    });
+}
+
+// owner/repo, each part GitHub's own alphabet: it goes into URLs verbatim.
+bool valid_github_slug(const std::string& s) {
+    const auto slash = s.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 == s.size() ||
+        s.find('/', slash + 1) != std::string::npos)
+        return false;
+    return std::all_of(s.begin(), s.end(), [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' ||
+               c == '/';
     });
 }
 
@@ -175,6 +188,17 @@ bool load_title(const fs::path& path, TitleInfo& out, std::string* error) {
                  out.rom.sha256.find_first_not_of("0123456789abcdef") != std::string::npos))
                 return fail("rom.sha256 must be 64 hex digits");
             out.rom.label = r.value("label", "");
+        }
+        if (j.contains("boxart") && !j["boxart"].is_null()) {
+            if (!payload_path(out.root, j.value("boxart", ""), out.boxart, &err, "boxart"))
+                return fail(err);
+        }
+        if (j.contains("update") && !j["update"].is_null()) {
+            const json& u = j["update"];
+            if (!u.is_object()) return fail("\"update\" must be an object");
+            out.update_github = u.value("github", "");
+            if (!out.update_github.empty() && !valid_github_slug(out.update_github))
+                return fail("update.github must be owner/repo (got '" + out.update_github + "')");
         }
     } catch (const std::exception& e) {
         return fail(std::string("unexpected value: ") + e.what());
@@ -409,7 +433,7 @@ bool remember_rom(const fs::path& data_dir, const fs::path& rom, std::string* er
             return false;
         }
     }
-    fs::rename(tmp, data_dir / "rom.json", ec);
+    retcomm::robust_rename(tmp, data_dir / "rom.json", ec);
     if (ec) {
         if (error) *error = corelink::path_utf8(data_dir / "rom.json") + ": " + ec.message();
         return false;

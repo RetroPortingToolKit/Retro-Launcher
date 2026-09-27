@@ -59,6 +59,26 @@ repairs the absolute-target toolchain/engine links inside it, rebases
 `install_roots` in config.json, and restarts. See `src/paths/data_root.cpp` and
 `src/paths/data_root_migrate.cpp`.
 
+**Portable setups and network shares** (issue #6, 2026-09-27). When the root
+travels with the launcher -- the Windows portable exe (`RETCOMM_PORTABLE_EXE`),
+or a `retcomm-root.json` in the root or its parent that points at it
+(`portable_launcher_dir`) -- the paths in config.json are the **launcher
+folder's**: `".\\installed"` is beside the `.exe`. `save_app_config` writes
+every path inside that folder relative to it and marks the file
+`"paths_relative_to": "launcher"` (`config_launcher_dir`, `resolve_config_path`
+in `src/core/config.cpp`); a file without the mark keeps resolving against the
+root until its first save. Library Settings accepts relative roots and install
+locations, and **Change…** / the setup wizard accept a relative Retro folder,
+both against the launcher folder; `retcomm root set` keeps a portable marker it
+finds instead of replacing it with the OS pointer. So the whole folder can move
+to another drive letter, machine or share. For shares: every rename goes
+through `robust_rename` (`include/retcomm/fs_util.hpp`), which retries a few
+seconds while an SMB client or scanner still holds a fresh file and copies when
+source and destination are on different devices, and `mklink /J` runs with a
+local working directory (cmd.exe refuses a UNC one). Still absolute, and
+rebuilt rather than moved: library/BIOS indexes, `state.json`, and the
+`current`/toolchain links (a build re-links).
+
 With a custom root Retro does not write the user's shell rc or HKCU `Path`
 (`publish_toolchain_user_env` skips it) — a portable install leaves no trace
 outside its own folder.

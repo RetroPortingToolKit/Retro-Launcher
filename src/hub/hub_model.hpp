@@ -4,6 +4,7 @@
 #include "retcomm/bios_index.hpp"
 #include "retcomm/catalog.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/core_titles.hpp"
 #include "retcomm/data_root_migrate.hpp"
 #include "retcomm/install.hpp"
 #include "retcomm/launch.hpp"
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <cstddef>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <set>
 #include <optional>
@@ -617,8 +619,16 @@ struct HubModel {
         std::string title_id, name;
         fs::path core_library, title_dir;
         std::string rom;
+        fs::path package; // a title app payload's game package
     };
     std::optional<PlayRequest> pending_play;
+    // "Add Core Title…" adopts a port project (core_titles.hpp): the picked
+    // title app's project waits here for the player to agree to move it into
+    // the apps folder; declining adds nothing. Main thread only.
+    std::optional<AdoptableProject> adopt_candidate;
+    fs::path adopt_dest;         // where it goes (== root when already there)
+    std::string adopt_blocked;   // why it cannot go there (the folder exists)
+    std::future<std::string> adopt_job; // the move; "" = done, else why not
     // Drawer "Add Core Title…": the main loop opens the file dialog (it has the window).
     bool pending_add_core_title = false;
     std::string toolchain_current_version;
@@ -687,6 +697,12 @@ struct HubModel {
     // Adds the registered core titles (cfg.core_titles) to `catalog`. Call after
     // every catalog load; see retcomm/core_titles.hpp.
     void apply_core_titles();
+    // Adoption: offer (from the picked executable), accept (move, then add),
+    // decline, and the per-frame check that finishes an accepted move.
+    void offer_adoption(const fs::path& executable);
+    void accept_adoption();
+    void decline_adoption();
+    void poll_adoption();
     void refresh_rows(bool check_updates, bool force_github_tags = false);
     // After the catalog gained titles: re-bind them from cached hashes (free),
     // then queue a scan of the affected platforms for anything still unmatched.
@@ -809,6 +825,9 @@ struct HubModel {
     // True when this install should persist its root beside the binary.
     // Directory the data-root marker is written to (portable: beside the stub).
     fs::path root_marker_dir() const;
+    // The typed Retro folder: a relative one is the launcher folder's
+    // (root_marker_dir), so ".\\RetComM-Data" means beside the launcher.
+    fs::path data_root_input_path() const;
     bool prefers_portable_root_marker() const;
     bool save_settings(std::string* error = nullptr);
     void add_platform_folder_row();

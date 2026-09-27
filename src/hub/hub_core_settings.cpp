@@ -1,4 +1,5 @@
 #include "hub/hub_core_settings.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "transport.hpp" // Retro-Runtime corelink: run_to_completion, path_utf8
 
@@ -102,6 +103,7 @@ constexpr TargetInfo kTargets[kPadTargetCount] = {
     {"ry+", "Right stick up", 0, RCORE_AXIS_RY + 1, +1},
     {"lt", "Left trigger", 0, RCORE_AXIS_LT + 1, +1},
     {"rt", "Right trigger", 0, RCORE_AXIS_RT + 1, +1},
+    {"function", "Function (host shortcuts)", 0, 0, 0},
 };
 
 const TargetInfo& info(PadTarget t) { return kTargets[static_cast<int>(t)]; }
@@ -155,7 +157,7 @@ bool write_atomically(const fs::path& path, const std::string& body, std::string
             return false;
         }
     }
-    fs::rename(tmp, path, ec);
+    retcomm::robust_rename(tmp, path, ec);
     if (ec) {
         if (error) *error = path.string() + ": " + ec.message();
         fs::remove(tmp, ec);
@@ -375,6 +377,9 @@ InputBindings default_input_bindings() {
     P(PadTarget::RyPlus) = minus(SDL_GAMEPAD_AXIS_RIGHTY);
     P(PadTarget::Lt) = plus(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
     P(PadTarget::Rt) = plus(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    // Back/Select, as the old Select + R1 chord was; a pad whose Select is odd
+    // (an N64 USB pad) gets another button on the Configure page.
+    P(PadTarget::Function) = btn(SDL_GAMEPAD_BUTTON_BACK);
 
     K(PadTarget::South) = SDL_SCANCODE_X;
     K(PadTarget::East) = SDL_SCANCODE_C;
@@ -585,6 +590,13 @@ PlatformInput load_platform_input(const fs::path& data_dir, const std::string& p
                 seat.guid = value;
             } else if (key == "name") {
                 seat.name = value;
+            } else if (key == "pak") {
+                in.paks[static_cast<size_t>(n)].kind =
+                    value == "tpak" && n < kTransferPakSeats ? SeatPak::TransferPak : SeatPak::None;
+            } else if (key == "tpak_rom") {
+                in.paks[static_cast<size_t>(n)].gb_rom = value;
+            } else if (key == "tpak_save") {
+                in.paks[static_cast<size_t>(n)].gb_save = value;
             }
         } else if (rest == ".gamepad" || rest == ".keyboard") {
             read_map_line(in.maps[static_cast<size_t>(n)], rest == ".gamepad", key, value, path,
@@ -615,10 +627,62 @@ bool save_platform_input(const fs::path& data_dir, const std::string& platform,
             }
             o << "guid = " << seat.guid << "\nname = " << seat.name << "\n";
         }
+        const SeatPak& pak = in.paks[static_cast<size_t>(n)];
+        if (pak.kind == SeatPak::TransferPak) {
+            if ((pak.gb_rom + pak.gb_save).find_first_of("\r\n") != std::string::npos) {
+                if (error) *error = "a Game Boy file path this file cannot hold";
+                return false;
+            }
+            o << "pak = tpak\n";
+            if (!pak.gb_rom.empty()) o << "tpak_rom = " << pak.gb_rom << "\n";
+            if (!pak.gb_save.empty()) o << "tpak_save = " << pak.gb_save << "\n";
+        }
         write_map(o, sec + ".", in.maps[static_cast<size_t>(n)]);
     }
     return write_atomically(platform_settings_dir(data_dir, platform) / "input.ini", o.str(),
                             error);
+}
+
+std::size_t gb_cart_ram_bytes(const fs::path& rom, std::string* error) {
+    std::ifstream in(rom, std::ios::binary);
+    unsigned char hdr[0x150] = {};
+    if (!in || !in.read(reinterpret_cast<char*>(hdr), sizeof hdr)) {
+        if (error) *error = rom.filename().string() + " is too short to be a Game Boy ROM";
+        return 0;
+    }
+    // The header checksum over 0x134-0x14C proves it is a cartridge header.
+    unsigned char sum = 0;
+    for (int i = 0x134; i <= 0x14C; ++i) sum = static_cast<unsigned char>(sum - hdr[i] - 1);
+    if (sum != hdr[0x14D]) {
+        if (error) *error = rom.filename().string() + " has no valid Game Boy header";
+        return 0;
+    }
+    const unsigned char type = hdr[0x147];
+    if (type == 0x05 || type == 0x06) return 512; // MBC2: RAM on the chip
+    switch (hdr[0x149]) {
+        case 0x02: return 8 * 1024;
+        case 0x03: return 32 * 1024;
+        case 0x04: return 128 * 1024;
+        case 0x05: return 64 * 1024;
+        default: return 0; // 0x00 none; 0x01 is unused by any released cart
+    }
+}
+
+bool create_gb_save(const fs::path& rom, const fs::path& dest, std::string* error) {
+    std::string err;
+    const std::size_t bytes = gb_cart_ram_bytes(rom, &err);
+    if (bytes == 0) {
+        if (error)
+            *error = err.empty() ? rom.filename().string() + " declares no save RAM, so it keeps no save"
+                                 : err;
+        return false;
+    }
+    std::error_code ec;
+    if (fs::exists(dest, ec)) {
+        if (error) *error = dest.filename().string() + " already exists";
+        return false;
+    }
+    return write_atomically(dest, std::string(bytes, '\xFF'), error);
 }
 
 std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,
@@ -700,8 +764,89 @@ void fill_pads_from_input(const PlatformInput& in, rcore_pad pads[RCORE_MAX_SEAT
             }
         }
         fold(p, value, pressed);
+        // Function held: a host shortcut, not the game's buttons.
+        if (g && pressed[static_cast<int>(PadTarget::Function)]) p.buttons = 0;
     }
     SDL_free(ids);
+}
+
+std::string pad_source_label(const PadSource& s) {
+    if (s.kind == PadSource::None) return "";
+    if (s.kind == PadSource::Button) {
+        switch (static_cast<SDL_GamepadButton>(s.code)) {
+            case SDL_GAMEPAD_BUTTON_SOUTH: return "South";
+            case SDL_GAMEPAD_BUTTON_EAST: return "East";
+            case SDL_GAMEPAD_BUTTON_WEST: return "West";
+            case SDL_GAMEPAD_BUTTON_NORTH: return "North";
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return "L1";
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "R1";
+            case SDL_GAMEPAD_BUTTON_LEFT_STICK: return "L3";
+            case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return "R3";
+            case SDL_GAMEPAD_BUTTON_START: return "Start";
+            case SDL_GAMEPAD_BUTTON_BACK: return "Select";
+            case SDL_GAMEPAD_BUTTON_GUIDE: return "Guide";
+            case SDL_GAMEPAD_BUTTON_DPAD_UP: return "D-Up";
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return "D-Down";
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return "D-Left";
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "D-Right";
+            default: return pad_source_display(s);
+        }
+    }
+    if (s.kind == PadSource::AxisPlus && s.code == SDL_GAMEPAD_AXIS_LEFT_TRIGGER) return "L2";
+    if (s.kind == PadSource::AxisPlus && s.code == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) return "R2";
+    return pad_source_display(s);
+}
+
+bool pad_source_down(SDL_Gamepad* g, const PadSource& s) {
+    return g && s.kind != PadSource::None && source_pressed(g, s);
+}
+
+std::array<SeatPadState, kInputSeats> seat_pad_states(const PlatformInput& in) {
+    std::array<SeatPadState, kInputSeats> out{};
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    std::vector<std::string> guids;
+    for (int i = 0; ids && i < count; ++i) guids.push_back(gamepad_guid_string(ids[i]));
+    const auto plan = plan_seats(in, guids);
+    for (int n = 0; n < kInputSeats; ++n) {
+        const SeatPlan& sp = plan[static_cast<size_t>(n)];
+        if (sp.pad < 0) continue;
+        SeatPadState& st = out[static_cast<size_t>(n)];
+        st.pad = SDL_GetGamepadFromID(ids[sp.pad]);
+        st.function = pad_source_down(
+            st.pad, in.maps[static_cast<size_t>(n)].pad[static_cast<int>(PadTarget::Function)]);
+    }
+    SDL_free(ids);
+    return out;
+}
+
+// ---- host hotkeys ------------------------------------------------------------
+
+const char* host_action_key(HostAction a) {
+    static const char* k[] = {"menu", "states", "fps", "turbo", "volume_up", "volume_down"};
+    return k[static_cast<int>(a)];
+}
+
+const char* host_action_label(HostAction a) {
+    static const char* k[] = {"Pause menu",   "Save states",  "Show FPS",
+                              "Turbo (hold)", "Volume up",    "Volume down"};
+    return k[static_cast<int>(a)];
+}
+
+HostHotkeys default_host_hotkeys() {
+    HostHotkeys h;
+    auto set = [&](HostAction a, SDL_Scancode k, PadSource c) {
+        h.key[static_cast<int>(a)] = k;
+        h.combo[static_cast<int>(a)] = c;
+    };
+    auto btn = [](SDL_GamepadButton b) { return PadSource{PadSource::Button, b}; };
+    set(HostAction::Menu, SDL_SCANCODE_ESCAPE, btn(SDL_GAMEPAD_BUTTON_START));
+    set(HostAction::SaveStates, SDL_SCANCODE_F7, btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
+    set(HostAction::ShowFps, SDL_SCANCODE_F3, btn(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
+    set(HostAction::Turbo, SDL_SCANCODE_TAB, PadSource{PadSource::AxisPlus, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER});
+    set(HostAction::VolumeUp, SDL_SCANCODE_EQUALS, btn(SDL_GAMEPAD_BUTTON_DPAD_UP));
+    set(HostAction::VolumeDown, SDL_SCANCODE_MINUS, btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN));
+    return h;
 }
 
 bool save_description_cache(const fs::path& data_dir, const std::string& platform,
@@ -793,6 +938,20 @@ PlayPrefs load_play_prefs(const fs::path& data_dir) {
     for_each_ini(read_text(data_dir / "play.ini"), [&](const std::string& section,
                                                        const std::string& key,
                                                        const std::string& value) {
+        if (section == "keys" || section == "combos") {
+            for (int a = 0; a < kHostActionCount; ++a) {
+                if (key != host_action_key(static_cast<HostAction>(a))) continue;
+                if (section == "keys") {
+                    p.hotkeys.key[static_cast<size_t>(a)] =
+                        value.empty() ? SDL_SCANCODE_UNKNOWN : SDL_GetScancodeFromName(value.c_str());
+                } else {
+                    PadSource s;
+                    if (value.empty() || pad_source_from_string(value, s))
+                        p.hotkeys.combo[static_cast<size_t>(a)] = s;
+                }
+            }
+            return;
+        }
         if (section != "overlay" && section != "audio") return;
         std::int64_t v = 0;
         if (key == "show_fps") p.show_fps = value == "1" || value == "true";
@@ -808,7 +967,19 @@ bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::stri
       << "[overlay]\n"
       << "show_fps = " << (prefs.show_fps ? 1 : 0) << "\n\n"
       << "[audio]\n"
-      << "volume = " << std::clamp(prefs.volume, 0, 100) << "\n";
+      << "volume = " << std::clamp(prefs.volume, 0, 100) << "\n\n"
+      << "# Keyboard shortcuts in game (SDL key names; F1 also opens the menu).\n"
+      << "[keys]\n";
+    for (int a = 0; a < kHostActionCount; ++a) {
+        const SDL_Scancode k = prefs.hotkeys.key[static_cast<size_t>(a)];
+        o << host_action_key(static_cast<HostAction>(a)) << " = "
+          << (k == SDL_SCANCODE_UNKNOWN ? "" : SDL_GetScancodeName(k)) << "\n";
+    }
+    o << "\n# Controller shortcuts: the seat's Function input held, plus this (SDL\n"
+      << "# names). L3 + R3 also opens the menu.\n[combos]\n";
+    for (int a = 0; a < kHostActionCount; ++a)
+        o << host_action_key(static_cast<HostAction>(a)) << " = "
+          << pad_source_to_string(prefs.hotkeys.combo[static_cast<size_t>(a)]) << "\n";
     return write_atomically(data_dir / "play.ini", o.str(), error);
 }
 

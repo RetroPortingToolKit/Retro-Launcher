@@ -23,6 +23,10 @@ endif()
 set(RETCOMM_VERSION "0.1.1" CACHE STRING "Retro Launcher semantic version")
 # Reported by `retro-hub --version`; the release workflow passes GITHUB_SHA.
 set(RETCOMM_COMMIT "" CACHE STRING "Git commit the build is from (empty: unknown)")
+# ON only in .github/workflows/release.yml: a CI release. Every other build is a
+# local one, which offers Direct mode's Developer page and developer paths
+# (`build local|release` in `retro-hub --version`).
+option(RETCOMM_RELEASE_BUILD "A CI release build (hides Direct mode's developer tools)" OFF)
 set(RETCOMM_GITHUB_SLUG "RetroPortingToolKit/Retro-Launcher" CACHE STRING
     "GitHub owner/repo used for self-update")
 set(RETCOMM_CATALOG_GITHUB_REPO "RetroPortingToolKit/Retro-Catalog" CACHE STRING
@@ -40,6 +44,7 @@ set(RETCOMM_CORE_SOURCES
     src/paths/data_root_migrate.cpp
     src/paths/process_env.cpp
     src/paths/toolchain_env.cpp
+    src/paths/fs_util.cpp
     src/core/hash.cpp
     src/core/core_titles.cpp
     src/core/config.cpp
@@ -59,6 +64,7 @@ set(RETCOMM_CORE_SOURCES
     src/build/disc_stage.cpp
     src/update/self_update.cpp
     src/update/runtime_update.cpp
+    src/update/manifest_util.cpp
     src/launch/launch.cpp
     src/core/image_compose.cpp
     src/steam/steam_shortcut.cpp
@@ -406,13 +412,16 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
     target_compile_definitions(retro-hub PRIVATE "RETCOMM_COMMIT=\"${RETCOMM_COMMIT}\"")
+    if(RETCOMM_RELEASE_BUILD)
+        target_compile_definitions(retro-hub PRIVATE RETCOMM_RELEASE_BUILD=1)
+    endif()
     if(UNIX AND NOT APPLE)
         set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
-                   src/hub/hub_title.cpp)
+                   src/hub/hub_title.cpp src/hub/hub_update.cpp)
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -436,6 +445,17 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         target_link_libraries(retro-hub-title-test PRIVATE retcomm_core retro_corelink)
         add_test(NAME hub_title COMMAND retro-hub-title-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_title_test.d)
+        # The Update page's windowless half: file:// manifests, tar.gz
+        # archives, and a real install of the hub just built.
+        if(NOT WIN32)
+            add_executable(retro-hub-update-test tests/hub_update_test.cpp
+                src/hub/hub_update.cpp src/hub/hub_title.cpp)
+            target_include_directories(retro-hub-update-test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src)
+            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
+            add_test(NAME hub_update COMMAND retro-hub-update-test
+                ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
+        endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:

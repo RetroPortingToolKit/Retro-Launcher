@@ -53,6 +53,14 @@ struct TitleInfo {
     std::vector<std::pair<std::string, std::string>> opts;
     bool has_rom = false;
     TitleRom rom;
+    // `boxart`: the title's own cover (png or jpg), shown on the home page
+    // instead of one fetched from libretro. Without the key, boxart.png /
+    // .jpg / .jpeg beside title.json is used when present.
+    fs::path boxart; // absolute, or empty
+    // `update`: {"github": "owner/repo"}, where the port publishes releases.
+    // The Update page compares the newest one to `version`; the game package
+    // is built from the player's ROM, so nothing of the game is downloaded.
+    std::string update_github;
 };
 
 // `p` is title.json or the directory holding it.

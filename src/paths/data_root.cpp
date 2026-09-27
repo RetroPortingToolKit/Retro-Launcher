@@ -1,4 +1,5 @@
 #include "retcomm/data_root.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/paths.hpp"
 
@@ -93,7 +94,7 @@ bool write_marker_file(const fs::path& marker, const fs::path& root, std::string
         }
     }
     ec.clear();
-    fs::rename(tmp, marker, ec);
+    retcomm::robust_rename(tmp, marker, ec);
     if (ec) {
         std::error_code rm_ec;
         fs::remove(tmp, rm_ec);
@@ -155,6 +156,24 @@ fs::path read_data_root_marker(const fs::path& marker_file) {
     const std::string raw = sanitize_root_string(it->get<std::string>());
     if (raw.empty()) return {};
     return resolve_against(marker_file.parent_path(), fs::path(raw));
+}
+
+fs::path portable_launcher_dir(const fs::path& root) {
+    if (const char* pexe = std::getenv(kPortableExeVar); pexe && *pexe) {
+        const fs::path exe(sanitize_root_string(pexe));
+        if (exe.has_parent_path()) return exe.parent_path();
+    }
+    if (root.empty()) return {};
+    std::error_code ec;
+    for (const fs::path& dir : {root, root.parent_path()}) {
+        if (dir.empty()) continue;
+        const fs::path marked = read_data_root_marker(dir / kExeMarkerName);
+        if (marked.empty()) continue;
+        // Lexically first: the root need not exist yet (a first start).
+        if (marked.lexically_normal() == root.lexically_normal() || fs::equivalent(marked, root, ec))
+            return dir;
+    }
+    return {};
 }
 
 DataRootInfo resolve_data_root(const fs::path& exe_dir) {

@@ -1,4 +1,5 @@
 #include "retcomm/catalog_sync.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/catalog.hpp"
 #include "retcomm/http.hpp"
@@ -397,7 +398,7 @@ CatalogSyncResult sync_remote_catalog(const Paths& paths, const AppConfig& cfg, 
     ec.clear();
 
     if (fs::exists(cache, ec)) {
-        fs::rename(cache, backup, ec);
+        retcomm::robust_rename(cache, backup, ec);
         if (ec) {
             fs::remove_all(cache, ec);
             ec.clear();
@@ -406,7 +407,7 @@ CatalogSyncResult sync_remote_catalog(const Paths& paths, const AppConfig& cfg, 
 
     ec.clear();
     fs::create_directories(cache.parent_path(), ec);
-    fs::rename(catalog_root, cache, ec);
+    retcomm::robust_rename(catalog_root, cache, ec);
     if (ec) {
         // rename across devices or partial failure — copy instead.
         ec.clear();
@@ -414,7 +415,7 @@ CatalogSyncResult sync_remote_catalog(const Paths& paths, const AppConfig& cfg, 
         fs::copy(catalog_root, cache,
                  fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
         if (ec) {
-            if (fs::exists(backup, ec)) fs::rename(backup, cache, ec);
+            if (fs::exists(backup, ec)) retcomm::robust_rename(backup, cache, ec);
             return fail(result, "cannot install catalog cache: " + ec.message());
         }
     }

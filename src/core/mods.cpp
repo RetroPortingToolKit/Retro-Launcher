@@ -1,4 +1,5 @@
 #include "retcomm/mods.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -470,12 +471,12 @@ bool set_mod_enabled(const fs::path& game_dir, const std::string& package_id,
             return false;
         }
     }
-    fs::rename(temp, path, ec);
+    retcomm::robust_rename(temp, path, ec);
     if (ec) {
         ec.clear();
         fs::remove(path, ec);
         ec.clear();
-        fs::rename(temp, path, ec);
+        retcomm::robust_rename(temp, path, ec);
     }
     if (ec) {
         if (error) *error = "cannot publish state: " + ec.message();
@@ -582,12 +583,12 @@ bool set_mod_option(const fs::path& game_dir, const std::string& package_id,
             return false;
         }
     }
-    fs::rename(temp, path, ec);
+    retcomm::robust_rename(temp, path, ec);
     if (ec) {
         ec.clear();
         fs::remove(path, ec);
         ec.clear();
-        fs::rename(temp, path, ec);
+        retcomm::robust_rename(temp, path, ec);
     }
     if (ec) {
         if (error) *error = "cannot publish state: " + ec.message();

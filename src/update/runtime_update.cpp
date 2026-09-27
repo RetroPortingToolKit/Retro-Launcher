@@ -1,4 +1,7 @@
 #include "retcomm/runtime_update.hpp"
+#include "retcomm/fs_util.hpp"
+
+#include "manifest_util.hpp"
 
 #include "retcomm/hash.hpp"
 #include "retcomm/http.hpp"
@@ -12,88 +15,23 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
 #include <vector>
-
-#if defined(__linux__)
-#  include <gnu/libc-version.h>
-#elif defined(__APPLE__)
-#  include <sys/sysctl.h>
-#endif
 
 namespace retcomm {
 namespace {
 
 using nlohmann::json;
 namespace corelink = retro::corelink;
+using update_detail::is_file_url;
+using update_detail::is_release_version;
+using update_detail::unmet_requirement;
+using update_detail::version_cmp;
 
 constexpr const char* kDefaultManifestUrl =
     "https://github.com/RetroPortingToolKit/Retro-Runtime/releases/latest/download/"
     "runtime-manifest.json";
 constexpr int kManifestSchema = 1;
-
-bool is_file_url(const std::string& url) { return url.rfind("file://", 0) == 0; }
-
-fs::path file_url_path(const std::string& url) {
-    std::string p = url.substr(7);
-#if defined(_WIN32)
-    if (p.size() > 2 && p[0] == '/' && p[2] == ':') p.erase(0, 1); // file:///C:/...
-#endif
-    return corelink::utf8_path(p);
-}
-
-// A release version orders by its numbers; anything else (a "dev" build, an
-// empty report) is older than every release.
-bool is_release_version(const std::string& v) {
-    return !v.empty() && std::isdigit(static_cast<unsigned char>(v[0]));
-}
-int version_cmp(const std::string& a, const std::string& b) {
-    const bool ra = is_release_version(a), rb = is_release_version(b);
-    if (ra != rb) return ra ? 1 : -1;
-    if (!ra) return 0;
-    return release_tag_cmp(a, b);
-}
-
-// "2.35" >= "2.31", number by number.
-bool version_at_least(const std::string& have, const std::string& need) {
-    return release_tag_cmp(have, need) >= 0;
-}
-
-std::string os_version() {
-#if defined(__linux__)
-    return gnu_get_libc_version();
-#elif defined(__APPLE__)
-    char buf[64] = {};
-    size_t len = sizeof buf;
-    if (sysctlbyname("kern.osproductversion", buf, &len, nullptr, 0) == 0) return buf;
-    return "";
-#else
-    return "";
-#endif
-}
-
-// Why this machine cannot run the entry, or empty.
-std::string unmet_requirement(const json& reqs) {
-    if (!reqs.is_object()) return "";
-#if defined(__linux__)
-    if (reqs.contains("glibc")) {
-        const std::string need = reqs["glibc"].get<std::string>();
-        const std::string have = os_version();
-        if (!version_at_least(have, need)) return "it needs glibc " + need + ", this system has " + have;
-    }
-#elif defined(__APPLE__)
-    if (reqs.contains("macos")) {
-        const std::string need = reqs["macos"].get<std::string>();
-        const std::string have = os_version();
-        if (!have.empty() && !version_at_least(have, need))
-            return "it needs macOS " + need + ", this Mac has " + have;
-    }
-#endif
-    return "";
-}
 
 struct Candidate {
     fs::path path;
@@ -142,10 +80,32 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
         if (corelink::probe_runner(out.path, v, &err)) {
             out.version = v.version;
             out.game_package = v.game_package;
+            out.transfer_pak_seats = v.transfer_pak_seats;
         }
         out.note = "RETRO_CORE_RUNNER names it" + (err.empty() ? "" : " (" + err + ")");
         return out;
     }
+
+    // A developer's runner, chosen on Direct mode's Update page (config
+    // dev_runner_path; the hub exports it). Used when it can be driven.
+    if (const char* env = std::getenv("RETRO_HUB_DEV_RUNNER"); env && *env) {
+        const fs::path dev = corelink::utf8_path(env);
+        corelink::RunnerVersion v;
+        std::string err;
+        if (corelink::probe_runner(dev, v, &err) && v.compatible()) {
+            out.path = dev;
+            out.version = v.version;
+            out.game_package = v.game_package;
+            out.transfer_pak_seats = v.transfer_pak_seats;
+            out.source = "dev";
+            out.note = "dev runner " + v.version + " (RETRO_HUB_DEV_RUNNER)";
+            return out;
+        }
+        out.note = "dev runner " + std::string(env) + " skipped: " +
+                   (err.empty() ? std::string("its link or ABI major differs") : err) + "; ";
+    }
+    const std::string dev_note = out.note;
+    out.note.clear();
 
     std::vector<Candidate> found;
     std::vector<std::string> skipped;
@@ -169,6 +129,14 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
     const fs::path bundled = exe_dir / corelink::runner_file_name();
     std::error_code ec;
     if (fs::is_regular_file(bundled, ec)) consider(bundled, "bundled");
+    // A hub that an older one handed over to (Direct mode's Update installs
+    // hubs beside the data, without a runner) still counts the runner the
+    // older hub was bundled with.
+    if (const char* env = std::getenv("RETRO_HUB_BUNDLED_RUNNER"); env && *env) {
+        const fs::path other = corelink::utf8_path(env);
+        if (fs::is_regular_file(other, ec) && !fs::equivalent(other, bundled, ec))
+            consider(other, "bundled");
+    }
     // Updated runners, newest first; the first usable one is the only one needed.
     std::vector<fs::path> dirs;
     for (fs::directory_iterator it(runtime_dir(paths), ec), end; !ec && it != end; it.increment(ec)) {
@@ -196,8 +164,9 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
     out.path = best->path;
     out.version = best->info.version;
     out.game_package = best->info.game_package;
+    out.transfer_pak_seats = best->info.transfer_pak_seats;
     out.source = best->source;
-    out.note = best->source + " runner " + best->info.version;
+    out.note = dev_note + best->source + " runner " + best->info.version;
     for (const auto& s : skipped) out.note += "; skipped " + s;
     return out;
 }
@@ -218,29 +187,17 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     }
 
     // ---- 1. the manifest ------------------------------------------------------
-    const std::string url = runtime_manifest_url();
+    // The newest release's, pre-releases included (every Retro-Runtime release
+    // so far is one, and releases/latest skips them); the old fixed URL only
+    // when the release list cannot be read.
+    std::string err;
+    std::string url = update_detail::resolve_manifest_url(
+        "RETRO_RUNTIME_MANIFEST_URL", "RetroPortingToolKit/Retro-Runtime", "runtime-manifest.json",
+        &err);
+    if (url.empty()) url = kDefaultManifestUrl;
     const bool local = is_file_url(url); // a test manifest; only then may entries be file://
-    std::string body;
-    if (local) {
-        std::ifstream in(file_url_path(url), std::ios::binary);
-        if (!in) return fail("cannot read " + url);
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        body = ss.str();
-    } else {
-        const HttpResponse resp = http_get(url, github_http_headers());
-        if (!resp.ok()) {
-            return fail("cannot fetch the manifest (" +
-                        (resp.error.empty() ? "HTTP " + std::to_string(resp.status) : resp.error) + ")");
-        }
-        body = resp.body;
-    }
     json m;
-    try {
-        m = json::parse(body);
-    } catch (const std::exception& e) {
-        return fail(std::string("the manifest is not JSON: ") + e.what());
-    }
+    if (!update_detail::fetch_manifest(url, m, &err)) return fail(err);
     if (m.value("schema", 0) != kManifestSchema) {
         return fail("manifest schema " + std::to_string(m.value("schema", 0)) +
                     ", this launcher reads " + std::to_string(kManifestSchema) + "; update Retro");
@@ -279,7 +236,8 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     }
 
     // ---- 5. newer? ------------------------------------------------------------
-    if (version_cmp(r.latest_version, current.version) <= 0) {
+    // A dev runner is always offered the release (the hub then drops it).
+    if (current.source != "dev" && version_cmp(r.latest_version, current.version) <= 0) {
         r.ok = true;
         r.message = "Runtime is up to date (" + r.current_version + ", " + current.source + ")";
         return r;
@@ -309,23 +267,8 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     const fs::path root = runtime_dir(paths);
     const fs::path download = root / ".download" / archive_name;
     std::error_code ec;
-    fs::create_directories(download.parent_path(), ec);
-    std::string err;
-    if (is_file_url(archive_url)) {
-        if (!local) return fail("a published manifest may not name a file:// archive");
-        fs::copy_file(file_url_path(archive_url), download, fs::copy_options::overwrite_existing, ec);
-        if (ec) return fail("cannot copy " + archive_url + ": " + ec.message());
-    } else if (!http_download(archive_url, download, &err, github_http_headers(), {}, want_size)) {
-        return fail("download failed: " + err);
-    }
-    const std::uint64_t got_size = fs::file_size(download, ec);
-    const std::string got_sha = to_lower_hex(file_sha256_hex(download));
-    if (ec || got_size != want_size || got_sha != to_lower_hex(want_sha)) {
-        fs::remove(download, ec);
-        return fail(archive_name + " does not match the manifest (size " + std::to_string(got_size) +
-                    " vs " + std::to_string(want_size) + ", sha256 " + got_sha + " vs " + want_sha +
-                    "); deleted");
-    }
+    if (!update_detail::download_checked(archive_url, download, want_size, want_sha, local, &err))
+        return fail(err);
 
     // ---- 7. extract, and believe only what the runner itself reports ------------
     // From here, any refusal removes both the staging copy and the download.
@@ -356,7 +299,7 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     // ---- 8. into place, beside (never over) the runner in use --------------------
     const fs::path dest = root / r.latest_version;
     fs::remove_all(dest, ec); // a half-installed copy of this same version, if any
-    fs::rename(staging, dest, ec);
+    retcomm::robust_rename(staging, dest, ec);
     if (ec) {
         return discard("cannot move the new runner into " + corelink::path_utf8(dest) + ": " +
                        ec.message());
@@ -366,15 +309,7 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     // Keep the new runner and the one before it (for rollback); drop the rest.
     // A running session holds its runner open; on Windows that removal fails
     // quietly and is retried next time.
-    std::vector<fs::path> dirs;
-    for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
-        const std::string name = it->path().filename().string();
-        if (it->is_directory() && is_release_version(name)) dirs.push_back(it->path());
-    }
-    std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b) {
-        return release_tag_cmp(a.filename().string(), b.filename().string()) > 0;
-    });
-    for (std::size_t i = 2; i < dirs.size(); ++i) fs::remove_all(dirs[i], ec);
+    update_detail::prune_versions(root, 2);
 
     r.ok = true;
     r.updated = true;

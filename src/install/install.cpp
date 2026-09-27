@@ -1,4 +1,5 @@
 #include "retcomm/install.hpp"
+#include "retcomm/fs_util.hpp"
 #include "retcomm/app_state.hpp"
 #include "retcomm/asset_arch.hpp"
 #include "retcomm/bios_index.hpp"
@@ -997,7 +998,7 @@ bool promote_staging_to_release(const fs::path& staging, const fs::path& release
     const fs::path incoming = parent / (release_dir.filename().string() + ".new");
     fs::remove_all(incoming, ec);
     ec.clear();
-    fs::rename(staging, incoming, ec);
+    retcomm::robust_rename(staging, incoming, ec);
     if (ec) {
         std::error_code copy_ec;
         fs::copy(staging, incoming,
@@ -1016,13 +1017,15 @@ bool promote_staging_to_release(const fs::path& staging, const fs::path& release
         outgoing =
             parent / (release_dir.filename().string() + ".old-" + unique_release_suffix());
         ec.clear();
-        fs::rename(release_dir, outgoing, ec);
+        retcomm::robust_rename(release_dir, outgoing, ec);
         if (ec) {
             // Refuse to delete a live tree (game may be running / binary locked).
             std::error_code rm_ec;
             fs::remove_all(incoming, rm_ec);
             if (error)
-                *error = "cannot replace live release (is the game running?): " + ec.message();
+                *error = "cannot replace live release (is the game running? on a network "
+                         "share, an antivirus or the share itself may still hold the folder; "
+                         "retried for a few seconds): " + ec.message();
             return false;
         }
         have_outgoing = true;
@@ -1032,11 +1035,11 @@ bool promote_staging_to_release(const fs::path& staging, const fs::path& release
         if (!have_outgoing) return;
         std::error_code rec_ec;
         if (!fs::exists(release_dir, rec_ec))
-            fs::rename(outgoing, release_dir, rec_ec);
+            retcomm::robust_rename(outgoing, release_dir, rec_ec);
     };
 
     ec.clear();
-    fs::rename(incoming, release_dir, ec);
+    retcomm::robust_rename(incoming, release_dir, ec);
     if (ec) {
         std::error_code copy_ec;
         fs::copy(incoming, release_dir,
@@ -1857,7 +1860,7 @@ bool discard_cached_release_zip(const fs::path& zip_path, std::string* error) {
     const fs::path aside = zip_path.string() + ".bad";
     std::error_code rec;
     fs::remove(aside, rec);
-    fs::rename(zip_path, aside, rec);
+    retcomm::robust_rename(zip_path, aside, rec);
     if (!rec) return true;
     if (error) *error = rec.message();
     return false;
@@ -2921,7 +2924,7 @@ MoveInstallResult move_title_install(const Paths& paths, const AppConfig& cfg, c
     }
 
     ec.clear();
-    fs::rename(result.from_root, result.to_root, ec);
+    retcomm::robust_rename(result.from_root, result.to_root, ec);
     if (ec) {
         // Cross-device (or other rename failure): copy then remove source.
         std::error_code copy_ec;

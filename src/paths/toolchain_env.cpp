@@ -1,4 +1,5 @@
 #include "retcomm/toolchain_env.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -88,7 +89,7 @@ void win_remove_latest_entry(const fs::path& latest) {
         const fs::path aside =
             latest.parent_path() /
             ("latest.old-" + std::to_string(GetTickCount64()));
-        fs::rename(latest, aside, ec);
+        retcomm::robust_rename(latest, aside, ec);
         if (ec) {
             // Last resort: leave it; caller can publish pack_root directly.
             ec.clear();
@@ -146,8 +147,9 @@ bool win_create_directory_junction(const fs::path& link, const fs::path& target)
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
+    const std::wstring cwd = local_cmd_working_dir(); // never a share (fs_util.hpp)
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                        CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si, &pi)) {
         return false;
     }
     WaitForSingleObject(pi.hProcess, 15000);

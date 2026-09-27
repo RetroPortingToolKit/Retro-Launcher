@@ -1,4 +1,5 @@
 #include "retcomm/config.hpp"
+#include "retcomm/data_root.hpp"
 #include "retcomm/paths.hpp"
 
 #include <nlohmann/json.hpp>
@@ -260,6 +261,23 @@ fs::path config_relative_base(const fs::path& config_path) {
     return default_os_data_dir();
 }
 
+fs::path config_launcher_dir(const fs::path& config_path) {
+    const fs::path dir = config_path.parent_path();
+    if (dir.empty() || dir.filename() != "config" || !dir.has_parent_path()) return {};
+    return portable_launcher_dir(dir.parent_path());
+}
+
+fs::path config_paths_base(const fs::path& config_path) {
+    const fs::path launcher = config_launcher_dir(config_path);
+    return launcher.empty() ? config_relative_base(config_path) : launcher;
+}
+
+fs::path resolve_config_path(const fs::path& config_path, const fs::path& p) {
+    if (p.empty() || p.is_absolute()) return p;
+    const fs::path base = config_paths_base(config_path);
+    return base.empty() ? p : (base / p).lexically_normal();
+}
+
 AppConfig load_app_config(const fs::path& config_path) {
     AppConfig cfg;
     cfg.platform_folders = default_platform_folders();
@@ -269,8 +287,9 @@ AppConfig load_app_config(const fs::path& config_path) {
     if (!in) return normalize_config(std::move(cfg));
 
     // A relative path is resolved once, here, and remembered so that saving
-    // writes back what the user wrote rather than the absolute form.
-    const fs::path base = config_relative_base(config_path);
+    // writes back what the user wrote rather than the absolute form. A file
+    // saved by a portable setup says its paths are the launcher folder's.
+    fs::path base = config_relative_base(config_path);
     auto resolve = [&](const std::string& raw) -> fs::path {
         if (raw.empty()) return {};
         const fs::path p(raw);
@@ -283,6 +302,10 @@ AppConfig load_app_config(const fs::path& config_path) {
     try {
         json j;
         in >> j;
+        if (j.value("paths_relative_to", "") == "launcher") {
+            const fs::path launcher = config_launcher_dir(config_path);
+            if (!launcher.empty()) base = launcher;
+        }
         if (j.contains("library_root") && j.at("library_root").is_string())
             cfg.library_root = resolve(j.at("library_root").get<std::string>());
         if (j.contains("bios_root") && j.at("bios_root").is_string())
@@ -308,6 +331,11 @@ AppConfig load_app_config(const fs::path& config_path) {
         if (j.contains("check_updates_on_startup"))
             cfg.check_updates_on_startup = j.value("check_updates_on_startup", true);
         if (j.contains("fullscreen")) cfg.fullscreen = j.value("fullscreen", false);
+        if (j.contains("show_developer_options"))
+            cfg.show_developer_options = j.value("show_developer_options", false);
+        cfg.dev_core_path = j.value("dev_core_path", "");
+        cfg.dev_runner_path = j.value("dev_runner_path", "");
+        cfg.dev_hub_path = j.value("dev_hub_path", "");
         if (j.contains("auto_scan_after_catalog_update"))
             cfg.auto_scan_after_catalog_update =
                 j.value("auto_scan_after_catalog_update", true);
@@ -339,6 +367,9 @@ AppConfig load_app_config(const fs::path& config_path) {
                 CoreTitleRef r;
                 r.manifest = resolve(item.value("manifest", std::string{}));
                 r.name = item.value("name", std::string{});
+                if (item.contains("app")) r.app = resolve(item.value("app", std::string{}));
+                if (item.contains("project"))
+                    r.project = resolve(item.value("project", std::string{}));
                 if (!r.manifest.empty()) cfg.core_titles.push_back(std::move(r));
             }
         }
@@ -406,8 +437,19 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
     // Write a path back the way config.json held it. A path the user has since
     // changed no longer matches anything in the table, so it falls through to
     // the absolute form — no bookkeeping needed at the places that edit paths.
+    // Portable: every path under the launcher's folder is written relative to
+    // it, whatever form it was in, and the file says so (paths_relative_to).
+    const fs::path launcher = config_launcher_dir(config_path);
     auto store = [&](const fs::path& p) -> std::string {
         if (p.empty()) return {};
+        if (!launcher.empty()) {
+            const fs::path abs = p.is_absolute() ? p.lexically_normal()
+                                                 : (launcher / p).lexically_normal();
+            const fs::path rel = abs.lexically_relative(launcher.lexically_normal());
+            if (!rel.empty() && *rel.begin() != "..")
+                return rel == "." ? std::string(".") : rel.generic_string();
+            return abs.string();
+        }
         const auto it = cfg.relative_paths.find(p.generic_string());
         return it != cfg.relative_paths.end() ? it->second : p.string();
     };
@@ -421,7 +463,10 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
     json core_titles = json::array();
     for (const auto& r : cfg.core_titles) {
         if (r.manifest.empty()) continue;
-        core_titles.push_back({{"manifest", store(r.manifest)}, {"name", r.name}});
+        json e = {{"manifest", store(r.manifest)}, {"name", r.name}};
+        if (!r.app.empty()) e["app"] = store(r.app);
+        if (!r.project.empty()) e["project"] = store(r.project);
+        core_titles.push_back(std::move(e));
     }
 
     json j = {{"library_root", store(cfg.library_root)},
@@ -436,6 +481,10 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
               {"filter_unsupported_titles", cfg.filter_unsupported_titles},
               {"check_updates_on_startup", cfg.check_updates_on_startup},
               {"fullscreen", cfg.fullscreen},
+              {"show_developer_options", cfg.show_developer_options},
+              {"dev_core_path", cfg.dev_core_path},
+              {"dev_runner_path", cfg.dev_runner_path},
+              {"dev_hub_path", cfg.dev_hub_path},
               {"auto_scan_after_catalog_update", cfg.auto_scan_after_catalog_update},
               {"check_updates_before_launch", cfg.check_updates_before_launch},
               {"auto_clean_build_dirs", cfg.auto_clean_build_dirs},
@@ -460,6 +509,7 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
                 {"display_name", cfg.netplay.display_name},
                 {"prefer_ice", cfg.netplay.prefer_ice}}},
               {"github_token", cfg.github_token}};
+    if (!launcher.empty()) j["paths_relative_to"] = "launcher";
 
     std::ofstream out(config_path);
     if (!out) {

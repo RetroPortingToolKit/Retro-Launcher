@@ -1,4 +1,5 @@
 #include "hub/hub_model.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/core_titles.hpp"
 #include "hub/hub_boxart.hpp"
@@ -321,6 +322,99 @@ size_t HubModel::refresh_orphan_installs() {
     std::lock_guard<std::mutex> lock(mu);
     pending_orphans = std::move(orphans);
     return n;
+}
+
+void HubModel::offer_adoption(const fs::path& executable) {
+    AdoptableProject proj;
+    std::string err;
+    if (!find_adoptable_project(executable, proj, &err)) {
+        append_log("Add core title: " + err, LogLevel::Error);
+        set_status("Not a port project's app");
+        return;
+    }
+    adopt_blocked.clear();
+    // Already under an install root: nothing to move.
+    std::error_code ec;
+    for (const InstallRootEntry& r : effective_install_roots(cfg, paths)) {
+        const fs::path rel = fs::relative(proj.root, r.path, ec);
+        if (!ec && !rel.empty() && *rel.begin() != "..") {
+            adopt_dest = proj.root;
+            adopt_candidate = proj;
+            return;
+        }
+    }
+    adopt_dest = resolve_default_install_root(cfg, paths) / proj.root.filename();
+    if (fs::exists(adopt_dest, ec))
+        adopt_blocked = adopt_dest.string() + " already exists; move or rename it first.";
+    adopt_candidate = proj;
+}
+
+void HubModel::decline_adoption() {
+    if (adopt_candidate)
+        append_log("Not added: " + adopt_candidate->title.name + " stays in " +
+                   adopt_candidate->root.string());
+    adopt_candidate.reset();
+    adopt_dest.clear();
+    adopt_blocked.clear();
+}
+
+void HubModel::accept_adoption() {
+    if (!adopt_candidate || adopt_job.valid() || !adopt_blocked.empty()) return;
+    const fs::path from = adopt_candidate->root, to = adopt_dest;
+    set_status("Moving " + adopt_candidate->title.name + "…");
+    adopt_job = std::async(std::launch::async, [from, to]() -> std::string {
+        std::error_code ec;
+        if (fs::equivalent(from, to, ec)) return "";
+        std::string err;
+        if (!move_folder(from, to, &err)) return err;
+        return err.empty() ? std::string() : "warn:" + err;
+    });
+}
+
+void HubModel::poll_adoption() {
+    if (!adopt_job.valid() ||
+        adopt_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    const std::string result = adopt_job.get();
+    if (!adopt_candidate) return;
+    const AdoptableProject proj = *adopt_candidate;
+    const bool ok = result.empty() || result.rfind("warn:", 0) == 0;
+    if (!ok) {
+        append_log("Add core title: " + result, LogLevel::Error);
+        set_status("Could not move " + proj.title.name);
+        adopt_blocked = result;
+        return;
+    }
+    if (!result.empty()) append_log(result.substr(5), LogLevel::Warn);
+    // The same files, under the new root.
+    auto moved = [&](const fs::path& p) {
+        std::error_code ec;
+        const fs::path rel = fs::relative(p, proj.root, ec);
+        return ec ? p : (adopt_dest / rel).lexically_normal();
+    };
+    CoreTitleRef ref{moved(proj.title_json), proj.title.name, moved(proj.app), adopt_dest};
+    cfg = load_app_config(paths.config_path);
+    auto same = std::find_if(cfg.core_titles.begin(), cfg.core_titles.end(),
+                             [&](const CoreTitleRef& r) {
+                                 std::error_code ec;
+                                 return fs::equivalent(r.manifest, ref.manifest, ec);
+                             });
+    if (same != cfg.core_titles.end()) *same = ref;
+    else cfg.core_titles.push_back(ref);
+    save_app_config(paths.config_path, cfg);
+    apply_core_titles();
+    append_log("Core title " + proj.title.name + " (" + proj.title.id + ", " +
+               proj.title.core_id + " " + proj.title.core_version +
+               (proj.title.engine_dirty ? ", dev build" : "") + "): project " +
+               adopt_dest.string() + ", app " + ref.app.string());
+    refresh_rows(false);
+    if (!proj.title.platform.empty()) {
+        scans_platform_filter = proj.title.platform;
+        start_job(HubJob::ScanRoms);
+    }
+    set_status("Added " + proj.title.name);
+    adopt_candidate.reset();
+    adopt_blocked.clear();
 }
 
 void HubModel::apply_core_titles() {
@@ -1107,6 +1201,23 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     }
                 }
 
+                // An adopted title app runs as itself, with the library's ROM
+                // when one is bound (the app checks it; without one it asks).
+                if (do_launch && !t->core_app.empty()) {
+                    do_launch = false;
+                    const fs::path rom = boot_disc_rom(library, *t);
+                    std::vector<std::string> args;
+                    if (!rom.empty()) args = {"--rom", rom.string()};
+                    std::string err;
+                    if (launch_app_detached(fs::path(t->core_app), args, &err)) {
+                        append_log("Launched " + t->name + " (" + t->core_app + ")" +
+                                   (rom.empty() ? "" : " with " + rom.string()));
+                        set_status("Launched " + t->name);
+                    } else {
+                        append_log("Cannot launch " + t->core_app + ": " + err, LogLevel::Error);
+                        set_status("Cannot launch " + t->name);
+                    }
+                }
                 // A title with a core plays in this window, not as a process.
                 if (do_launch) {
                     const fs::path cm =
@@ -1126,7 +1237,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
 #if defined(RETCOMM_HUB_HAVE_PLAY)
                             std::lock_guard<std::mutex> lock(mu);
                             pending_play = PlayRequest{title_id, t->name, ct.library,
-                                                       ct.title_dir, rom.string()};
+                                                       ct.title_dir, rom.string(), ct.package};
                             status = "Starting " + t->name + "…";
 #else
                             set_status(t->name + " runs through a core, which this "
@@ -2789,9 +2900,12 @@ bool HubModel::create_missing_setup_roots(std::string* error) {
 bool HubModel::create_setup_platform_folders(std::string* error) {
     // Persist draft into cfg first so ensure_configured_platform_dirs sees mappings.
     AppConfig next = cfg;
-    next.library_root = settings.library_root;
-    next.bios_root = settings.bios_root;
-    next.saves_root = settings.saves_root;
+    // A path typed relative is the launcher folder's in a portable setup, else
+    // the data folder's (config.hpp, resolve_config_path); saving writes it
+    // back relative where it can.
+    next.library_root = resolve_config_path(paths.config_path, settings.library_root);
+    next.bios_root = resolve_config_path(paths.config_path, settings.bios_root);
+    next.saves_root = resolve_config_path(paths.config_path, settings.saves_root);
     if (!settings.platform_folders.empty()) {
         next.platform_folders.clear();
         for (const auto& row : settings.platform_folders) {
@@ -2999,6 +3113,14 @@ fs::path HubModel::root_marker_dir() const {
     return exe_dir;
 }
 
+fs::path HubModel::data_root_input_path() const {
+    if (data_root_input[0] == '\0') return {};
+    const fs::path p = fs::path(data_root_input).lexically_normal();
+    if (p.is_absolute()) return p;
+    const fs::path base = root_marker_dir();
+    return base.empty() ? p : (base / p).lexically_normal();
+}
+
 bool HubModel::prefers_portable_root_marker() const {
     // A portable build carries its root with the binary; anything else records
     // it in the OS config dir so a reinstall of the app folder does not lose it.
@@ -3016,7 +3138,7 @@ void HubModel::refresh_data_root_plan() {
     // location" when there is nothing to do.
     // plan_root_migration walks the current tree to size it; on a large install
     // that is a few seconds, so this only runs when the text actually changed.
-    data_root_plan = plan_root_migration(paths, want.empty() ? fs::path() : fs::path(want));
+    data_root_plan = plan_root_migration(paths, data_root_input_path());
 }
 
 void HubModel::apply_pending_folder_pick() {
@@ -3088,36 +3210,7 @@ void HubModel::apply_pending_file_pick() {
     if (picked.empty()) return;
 
     if (kind == FilePickKind::AddCoreTitle) {
-        const fs::path manifest = fs::absolute(fs::path(picked.front()));
-        CoreTitle ct;
-        std::string err;
-        if (!read_core_title(manifest, ct, &err)) {
-            append_log("Add core title: " + err, LogLevel::Error);
-            set_status("Not a core title");
-            return;
-        }
-        cfg = load_app_config(paths.config_path);
-        bool known = false;
-        for (const auto& r : cfg.core_titles) {
-            std::error_code ec;
-            if (fs::equivalent(r.manifest, manifest, ec)) known = true;
-        }
-        if (!known) {
-            cfg.core_titles.push_back({manifest, ct.name});
-            save_app_config(paths.config_path, cfg);
-        }
-        apply_core_titles();
-        append_log("Core title " + ct.name + " (" + ct.id + ", " + ct.core_id + " " +
-                   ct.core_version + (ct.engine_dirty ? ", dev build" : "") + ") from " +
-                   manifest.string());
-        refresh_rows(false);
-        // Find its ROM: the platform may never have been scanned (no catalog
-        // title needed it before).
-        if (!ct.platform.empty()) {
-            scans_platform_filter = ct.platform;
-            start_job(HubJob::ScanRoms);
-        }
-        set_status((known ? "Refreshed " : "Added ") + ct.name);
+        offer_adoption(fs::path(picked.front()));
         return;
     }
 
@@ -3586,9 +3679,12 @@ void HubModel::confirm_install_root_and_continue() {
 
 bool HubModel::save_settings(std::string* error) {
     AppConfig next = cfg;
-    next.library_root = settings.library_root;
-    next.bios_root = settings.bios_root;
-    next.saves_root = settings.saves_root;
+    // A path typed relative is the launcher folder's in a portable setup, else
+    // the data folder's (config.hpp, resolve_config_path); saving writes it
+    // back relative where it can.
+    next.library_root = resolve_config_path(paths.config_path, settings.library_root);
+    next.bios_root = resolve_config_path(paths.config_path, settings.bios_root);
+    next.saves_root = resolve_config_path(paths.config_path, settings.saves_root);
     next.exclude_dirs = split_csv(settings.exclude_dirs);
     next.prefer_local_boxart = settings.prefer_local_boxart;
     next.filter_unsupported_titles = settings.filter_unsupported_titles;
@@ -3612,7 +3708,7 @@ bool HubModel::save_settings(std::string* error) {
         if (row.path[0] == '\0') continue;
         InstallRootEntry e;
         e.label = row.label;
-        e.path = row.path;
+        e.path = resolve_config_path(paths.config_path, row.path);
         if (i == settings.default_install_root_index) next.default_install_root = e.path;
         next.install_roots.push_back(std::move(e));
     }
@@ -4091,7 +4187,7 @@ bool HubModel::rename_title_save(const std::string& title_id, const std::string&
         if (error) *error = "a file named " + dest.filename().string() + " already exists";
         return false;
     }
-    fs::rename(src, dest, ec);
+    retcomm::robust_rename(src, dest, ec);
     if (ec) {
         if (error) *error = "rename failed: " + ec.message();
         return false;

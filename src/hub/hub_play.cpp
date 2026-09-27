@@ -88,7 +88,12 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     osd_.set_fps_visible(prefs_.show_fps);
     // A title's save states live with its saves: <save_dir>/states/slotNN.rstate.
     states_dir_ = save_dir / "states";
-    states_.set_hint("SELECT+R1 OR F7");
+    {
+        // The browser's header: how to open and close it, as bound.
+        std::string hint = shortcut_text(HostAction::SaveStates);
+        for (char& c : hint) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        states_.set_hint(hint);
+    }
     corelink::LaunchSpec spec;
     spec.runner = runner;
     spec.core = args.core;
@@ -102,9 +107,11 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.save_dir = save_dir;
     spec.gl = args.gl;
     spec.options = args.options;
-    spec.tpak_rom = args.tpak_rom;
+    spec.tpak_roms = args.tpak_rom;
     spec.env = args.env;
-    if (!args.tpak_save.empty()) spec.save_files["tpak1"] = args.tpak_save;
+    for (std::size_t seat = 0; seat < args.tpak_save.size(); ++seat)
+        if (!args.tpak_rom[seat].empty() && !args.tpak_save[seat].empty())
+            spec.save_files["tpak" + std::to_string(seat + 1)] = args.tpak_save[seat];
     // Port 1 holds a controller from power-on, as on the console; the other
     // seats follow the gamepads actually present at the first grant.
     spec.initial_pads[0].connected = 1;
@@ -119,44 +126,96 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
 
 bool PlaySession::handle_event(const SDL_Event& e) {
     // A KEY_UP lost to a focus change must not leave turbo stuck on.
-    if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) turbo_ = false;
+    if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) turbo_key_ = turbo_ = false;
     if (link_.state() != corelink::LinkState::Ready) return false;
     // The browser, while open, has the keyboard and the pads to itself.
     if (states_.is_open()) return handle_states_event(e);
 
-    const bool toggle =
-        (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) ||
-        (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
-         (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_F1));
+    // The keyboard shortcuts as bound (PlayPrefs::hotkeys, the settings
+    // page's Hotkeys panel); F1 and keypad +/- always work too. Controller
+    // shortcuts are read each frame in poll_host_combos().
+    const HostHotkeys& hk = prefs_.hotkeys;
+    auto is = [&](HostAction a) {
+        const SDL_Scancode k = hk.key[static_cast<size_t>(a)];
+        return k != SDL_SCANCODE_UNKNOWN && e.key.scancode == k;
+    };
+    // No Guide: Steam (and the OS) keep it for themselves on most setups; the
+    // pad's way in is L3 + R3 or the Function combo (poll_host_combos).
+    const bool toggle = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                        (is(HostAction::Menu) || e.key.key == SDLK_F1);
     if (toggle) {
         set_paused(!menu_open_);
         return true;
     }
     if (e.type != SDL_EVENT_KEY_DOWN && e.type != SDL_EVENT_KEY_UP) return false;
     const bool down = e.type == SDL_EVENT_KEY_DOWN;
-    switch (e.key.key) {
-        case SDLK_F3:
-            if (down && !e.key.repeat) set_show_fps(!prefs_.show_fps);
-            return true;
-        case SDLK_F7:
-            if (down && !e.key.repeat && !menu_open_) open_states();
-            return true;
-        case SDLK_TAB: // held
-            if (menu_open_) return false;
-            if (!e.key.repeat) turbo_ = down;
-            return true;
-        case SDLK_EQUALS:
-        case SDLK_PLUS:
-        case SDLK_KP_PLUS:
-            if (down) set_volume(prefs_.volume + kVolumeStep);
-            return true;
-        case SDLK_MINUS:
-        case SDLK_KP_MINUS:
-            if (down) set_volume(prefs_.volume - kVolumeStep);
-            return true;
-        default:
-            return false;
+    if (is(HostAction::ShowFps)) {
+        if (down && !e.key.repeat) set_show_fps(!prefs_.show_fps);
+        return true;
     }
+    if (is(HostAction::SaveStates)) {
+        if (down && !e.key.repeat && !menu_open_) open_states();
+        return true;
+    }
+    if (is(HostAction::Turbo)) { // held
+        if (menu_open_) return false;
+        if (!e.key.repeat) turbo_key_ = down;
+        return true;
+    }
+    if (is(HostAction::VolumeUp) || e.key.key == SDLK_KP_PLUS) {
+        if (down) set_volume(prefs_.volume + kVolumeStep);
+        return true;
+    }
+    if (is(HostAction::VolumeDown) || e.key.key == SDLK_KP_MINUS) {
+        if (down) set_volume(prefs_.volume - kVolumeStep);
+        return true;
+    }
+    return false;
+}
+
+std::string PlaySession::shortcut_text(HostAction a) const {
+    const SDL_Scancode k = prefs_.hotkeys.key[static_cast<size_t>(a)];
+    const std::string combo = pad_source_label(prefs_.hotkeys.combo[static_cast<size_t>(a)]);
+    std::string out = k == SDL_SCANCODE_UNKNOWN ? std::string() : SDL_GetScancodeName(k);
+    if (!combo.empty()) out += (out.empty() ? "" : " or ") + std::string("Function+") + combo;
+    return out;
+}
+
+// The controller shortcuts, on every seat's pad: its Function input held plus
+// the action's button (edges, except Turbo, which is held), and L3 + R3
+// together for the menu. A seat holding Function sends the game no buttons
+// (fill_pads_from_input), so a shortcut never presses one.
+void PlaySession::poll_host_combos() {
+    const HostHotkeys& hk = prefs_.hotkeys;
+    std::array<bool, kHostActionCount> held{};
+    bool l3r3 = false;
+    for (const SeatPadState& s : seat_pad_states(args_.input)) {
+        if (!s.pad) continue;
+        if (SDL_GetGamepadButton(s.pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) &&
+            SDL_GetGamepadButton(s.pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))
+            l3r3 = true;
+        if (!s.function) continue;
+        for (int a = 0; a < kHostActionCount; ++a)
+            if (pad_source_down(s.pad, hk.combo[static_cast<size_t>(a)])) held[static_cast<size_t>(a)] = true;
+    }
+    auto edge = [&](HostAction a) {
+        return held[static_cast<size_t>(a)] && !combo_prev_[static_cast<size_t>(a)];
+    };
+    const bool menu = (l3r3 && !l3r3_prev_) || edge(HostAction::Menu);
+    l3r3_prev_ = l3r3;
+    if (menu) {
+        if (states_.is_open()) states_.close();
+        else set_paused(!menu_open_);
+    }
+    if (edge(HostAction::SaveStates)) {
+        if (states_.is_open()) states_.close();
+        else if (!menu_open_) open_states();
+    }
+    if (edge(HostAction::ShowFps)) set_show_fps(!prefs_.show_fps);
+    if (edge(HostAction::VolumeUp)) set_volume(prefs_.volume + kVolumeStep);
+    if (edge(HostAction::VolumeDown)) set_volume(prefs_.volume - kVolumeStep);
+    turbo_pad_ = held[static_cast<size_t>(HostAction::Turbo)] && !menu_open_;
+    combo_prev_ = held;
 }
 
 bool PlaySession::handle_states_event(const SDL_Event& e) {
@@ -174,10 +233,6 @@ bool PlaySession::handle_states_event(const SDL_Event& e) {
         else if (k == SDLK_MINUS) states_.jump(10);
         else if (k == SDLK_EQUALS) states_.jump(11);
         else if (k == SDLK_F3) set_show_fps(!prefs_.show_fps);
-        return true;
-    }
-    if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
-        states_.key(Key::Back);
         return true;
     }
     // Pads are read in tick(); none of it reaches ImGui behind the browser.
@@ -245,7 +300,9 @@ void PlaySession::open_states() {
 
 void PlaySession::poll_states_pad(std::uint64_t now) {
     std::int16_t stick_y = 0;
-    const std::uint32_t buttons = physical_pads(stick_y);
+    // Select is Function's by default, and the browser's own Select + R1
+    // chord would open it behind poll_host_combos()'s back: keep it out.
+    const std::uint32_t buttons = physical_pads(stick_y) & ~std::uint32_t(RCORE_PAD_SELECT);
     if (menu_open_) return; // the quick menu has the pads
     if (states_.poll_pad(buttons, stick_y, now / 1000000ull)) {
         states_.close();
@@ -426,8 +483,11 @@ void PlaySession::upload_frame() {
 void PlaySession::tick() {
     link_.pump(0);
     const bool ready = link_.state() == corelink::LinkState::Ready;
-    // Turbo while Tab is down, and never behind a menu.
-    turbo_ = turbo_ && ready && !paused();
+    if (ready) poll_host_combos();
+    // Turbo while its key or combo is held, and never behind a menu. Worked
+    // out before the Ended check, so a game that stops mid-turbo gets its
+    // vsync back (set_turbo_running).
+    turbo_ = (turbo_key_ || turbo_pad_) && ready && !paused();
     if (turbo_ != turbo_running_) set_turbo_running(turbo_);
     osd_.set_turbo(turbo_);
     if (link_.state() == corelink::LinkState::Ended) {
@@ -569,8 +629,12 @@ void PlaySession::draw_menu() {
         link_.stop();
     }
     ImGui::Separator();
-    ImGui::TextDisabled("F3 FPS  \xC2\xB7  Tab turbo  \xC2\xB7  +/- volume");
-    ImGui::TextDisabled("F7 or Select+R1 save states");
+    ImGui::TextDisabled("%s: FPS  \xC2\xB7  %s: turbo", shortcut_text(HostAction::ShowFps).c_str(),
+                        shortcut_text(HostAction::Turbo).c_str());
+    ImGui::TextDisabled("%s / %s: volume", shortcut_text(HostAction::VolumeUp).c_str(),
+                        shortcut_text(HostAction::VolumeDown).c_str());
+    ImGui::TextDisabled("%s: save states", shortcut_text(HostAction::SaveStates).c_str());
+    ImGui::TextDisabled("%s or L3+R3: this menu", shortcut_text(HostAction::Menu).c_str());
     ImGui::End();
 }
 
@@ -610,7 +674,7 @@ void PlaySession::draw_fault() {
 }
 
 void PlaySession::shutdown() {
-    turbo_ = false;
+    turbo_ = turbo_key_ = turbo_pad_ = false;
     if (turbo_running_) set_turbo_running(false);
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
     if (audio_) {
