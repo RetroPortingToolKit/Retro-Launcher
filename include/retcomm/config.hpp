@@ -78,6 +78,14 @@ struct AppConfig {
     bool check_updates_on_startup = true;
     // Borderless fullscreen for the hub window (F11 toggles and saves it).
     bool fullscreen = false;
+    // Core Settings' "Show developer options": the core's developer-only
+    // options, and the Update page's Browse buttons (a core, runner or hub
+    // from disk). Saved as soon as it is toggled.
+    bool show_developer_options = false;
+    // Direct mode's developer paths (Update page, Browse, then Save & Restart):
+    // a core, runner and hub binary used in place of the bundled or installed
+    // ones. Empty = the default. Installing a release of one clears its path.
+    std::string dev_core_path, dev_runner_path, dev_hub_path;
     // After a catalog update introduces titles that have no ROM binding yet,
     // re-bind them from cached hashes and then scan the affected platforms, so
     // newly catalogued games appear without a manual Scan Files.

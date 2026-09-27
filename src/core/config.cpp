@@ -308,6 +308,11 @@ AppConfig load_app_config(const fs::path& config_path) {
         if (j.contains("check_updates_on_startup"))
             cfg.check_updates_on_startup = j.value("check_updates_on_startup", true);
         if (j.contains("fullscreen")) cfg.fullscreen = j.value("fullscreen", false);
+        if (j.contains("show_developer_options"))
+            cfg.show_developer_options = j.value("show_developer_options", false);
+        cfg.dev_core_path = j.value("dev_core_path", "");
+        cfg.dev_runner_path = j.value("dev_runner_path", "");
+        cfg.dev_hub_path = j.value("dev_hub_path", "");
         if (j.contains("auto_scan_after_catalog_update"))
             cfg.auto_scan_after_catalog_update =
                 j.value("auto_scan_after_catalog_update", true);
@@ -436,6 +441,10 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
               {"filter_unsupported_titles", cfg.filter_unsupported_titles},
               {"check_updates_on_startup", cfg.check_updates_on_startup},
               {"fullscreen", cfg.fullscreen},
+              {"show_developer_options", cfg.show_developer_options},
+              {"dev_core_path", cfg.dev_core_path},
+              {"dev_runner_path", cfg.dev_runner_path},
+              {"dev_hub_path", cfg.dev_hub_path},
               {"auto_scan_after_catalog_update", cfg.auto_scan_after_catalog_update},
               {"check_updates_before_launch", cfg.check_updates_before_launch},
               {"auto_clean_build_dirs", cfg.auto_clean_build_dirs},

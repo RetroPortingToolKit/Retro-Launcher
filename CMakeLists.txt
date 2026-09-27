@@ -59,6 +59,7 @@ set(RETCOMM_CORE_SOURCES
     src/build/disc_stage.cpp
     src/update/self_update.cpp
     src/update/runtime_update.cpp
+    src/update/manifest_util.cpp
     src/launch/launch.cpp
     src/core/image_compose.cpp
     src/steam/steam_shortcut.cpp
@@ -412,7 +413,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
-                   src/hub/hub_title.cpp)
+                   src/hub/hub_title.cpp src/hub/hub_update.cpp)
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -436,6 +437,17 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         target_link_libraries(retro-hub-title-test PRIVATE retcomm_core retro_corelink)
         add_test(NAME hub_title COMMAND retro-hub-title-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_title_test.d)
+        # The Update page's windowless half: file:// manifests, tar.gz
+        # archives, and a real install of the hub just built.
+        if(NOT WIN32)
+            add_executable(retro-hub-update-test tests/hub_update_test.cpp
+                src/hub/hub_update.cpp src/hub/hub_title.cpp)
+            target_include_directories(retro-hub-update-test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src)
+            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
+            add_test(NAME hub_update COMMAND retro-hub-update-test
+                ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
+        endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
