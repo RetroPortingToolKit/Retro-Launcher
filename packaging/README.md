@@ -65,8 +65,8 @@ present). On Windows the exe keeps the stub's icon; `-Icon` is not applied.
 
 1. **The allowlist.** Every file in `MANIFEST.txt` exists; nothing else is in
    the payload; no symlinks; no ROM/disc extension (`.z64 .n64 .v64 .rom .bin
-   .iso .cue .chd .sfc .smc .gba .gb .gbc .nds .md .gen .sms .nes`, so a
-   Markdown `.md` is refused too); no file beginning with an N64 ROM header
+   .iso .cue .chd .sfc .smc .gba .gb .gbc .nds .gen .sms .nes`; `.md` is deliberately
+   absent -- every mod package ships a `README.md`); no file beginning with an N64 ROM header
    (`80 37 12 40`, `37 80 40 12`, `40 12 37 80`). The magic scan runs again over
    the whole staged app, and the artifact's `title/` must be byte-identical to
    the payload (nothing rewrites the core or the package). Linux also checks

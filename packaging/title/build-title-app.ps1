@@ -105,7 +105,7 @@ $FileName = ($Name -replace '[\\/:*?"<>|]', '-')
 $Artifact = Join-Path $Out "$FileName-$Version-windows-x64.exe"
 
 # ---- gate 1: the payload allowlist ------------------------------------------------
-$RomExt = '\.(z64|n64|v64|rom|bin|iso|cue|chd|sfc|smc|gba|gb|gbc|nds|md|gen|sms|nes)$'
+$RomExt = '\.(z64|n64|v64|rom|bin|iso|cue|chd|sfc|smc|gba|gb|gbc|nds|gen|sms|nes)$'
 function Test-RomMagic([string]$Path) {
     $fs = [System.IO.File]::OpenRead($Path)
     try {

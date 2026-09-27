@@ -144,7 +144,7 @@ FILE_NAME="$(printf '%s' "${NAME}" | tr '/\\:*?"<>|' '---------')"
 BUNDLE_ID="com.retroportingtoolkit.title.${ID//_/-}"
 
 # ---- gate 1: the payload allowlist ------------------------------------------
-ROM_EXT_RE='\.(z64|n64|v64|rom|bin|iso|cue|chd|sfc|smc|gba|gb|gbc|nds|md|gen|sms|nes)$'
+ROM_EXT_RE='\.(z64|n64|v64|rom|bin|iso|cue|chd|sfc|smc|gba|gb|gbc|nds|gen|sms|nes)$'
 # N64 ROM header magic in its three byte orders (z64, v64, n64).
 rom_magic() { # <file> -> 0 when it starts with one
   local head
