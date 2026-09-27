@@ -8874,7 +8874,7 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 // standalone release is. It opens on the title's home page (run_direct_home);
 // `--boot` plays at once and exits when the player closes the game.
 struct DirectPlay {
-    bool active = false; // --run-core / --core without a title: Direct mode
+    bool active = false; // --run-core / --core and no title found: Direct mode
     // --boot: play at once and exit with the game (the pre-revision-3 Direct
     // mode). Without it Direct mode opens the title's home page first.
     bool boot = false;
@@ -11159,11 +11159,12 @@ int main(int argc, char** argv) {
     DirectPlay direct = parse_direct_play(args_utf8, launch_cwd);
     const fs::path self_exe = retcomm::hub::current_exe_path();
     const fs::path self_dir = self_exe.empty() ? fs::path() : self_exe.parent_path();
-    // Title-app mode: --title, else a title beside the hub -- unless the
-    // command line asks for Direct mode (--run-core / --core without --title).
+    // Title-app mode: --title, else a title beside the hub. --run-core /
+    // --core then override the title's core (a title app launched with a dev
+    // core is still that title's app); Direct mode is only a hub with no title.
     fs::path title_json;
     if (!direct.title_arg.empty()) title_json = direct.title_arg;
-    else if (!direct.core_given) title_json = retcomm::hub::find_bundled_title(self_dir);
+    else title_json = retcomm::hub::find_bundled_title(self_dir);
     if (!title_json.empty()) {
         direct.active = false;
         // --hub and --check-title only look; the window's launch creates the

@@ -121,8 +121,10 @@ retro-hub [--title <title.json | dir>] [--core <core>] [--package <shim>] [--run
 ```
 
 **Finding the title.** `--title`; else `<exe dir>/title/title.json`; on macOS
-also `<exe dir>/../Resources/title/title.json`. `--run-core`/`--core` without
-`--title` is Direct mode, unchanged, even with a `title/` beside the hub.
+also `<exe dir>/../Resources/title/title.json`. When a title is found,
+`--run-core`/`--core` override its core rather than leaving title-app mode, so
+a title app runs a dev core as itself. Direct mode (unchanged) is a hub with
+no title: none passed, none beside it.
 
 **`title.json`, schema 1** (`src/hub/hub_title.hpp`): `schema`, `id`
 (`[a-z0-9_-]+`), `name`, `version`, `platform`, `core`, and optionally
