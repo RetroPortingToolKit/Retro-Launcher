@@ -63,21 +63,10 @@ echo "    prefix: ${PREFIX}"
 chmod +x packaging/make-icons.sh packaging/linux/*.sh
 ./packaging/make-icons.sh
 
-have_sdl3() {
-  if [[ -n "${CMAKE_PREFIX_PATH:-}" ]] && [[ -f "${CMAKE_PREFIX_PATH}/lib/cmake/SDL3/SDL3Config.cmake" ||
-    -f "${CMAKE_PREFIX_PATH}/lib64/cmake/SDL3/SDL3Config.cmake" ]]; then
-    return 0
-  fi
-  if [[ -f "${SDL_PREFIX}/lib/cmake/SDL3/SDL3Config.cmake" ||
-    -f "${SDL_PREFIX}/lib64/cmake/SDL3/SDL3Config.cmake" ]]; then
-    export CMAKE_PREFIX_PATH="${SDL_PREFIX}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
-    return 0
-  fi
-  if pkg-config --exists sdl3 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
+# SDL3: found, or built from source into ${SDL_PREFIX} (scripts/sdl3_local.sh,
+# shared with scripts/build-local.sh).
+# shellcheck source=../../scripts/sdl3_local.sh
+source "${ROOT}/scripts/sdl3_local.sh"
 
 bundle_sdl_libs() {
   local src_lib=""
@@ -105,30 +94,14 @@ bundle_sdl_libs() {
   fi
 }
 
-if have_sdl3; then
+if sdl3_find "${SDL_PREFIX}"; then
   echo "==> Using existing SDL3 (pkg-config / CMAKE_PREFIX_PATH / ${SDL_PREFIX})"
 elif [[ "${SKIP_SDL_BUILD}" == "1" ]]; then
   echo "SDL3 not found and SKIP_SDL_BUILD=1" >&2
   exit 1
 else
-  echo "==> Building SDL3 ${SDL_TAG} → ${SDL_PREFIX}"
   need_cmd git
-  SDL_SRC="${ROOT}/.cache/SDL-src"
-  if [[ ! -d "${SDL_SRC}/.git" ]]; then
-    rm -rf "${SDL_SRC}"
-    git clone --depth 1 --branch "${SDL_TAG}" https://github.com/libsdl-org/SDL.git "${SDL_SRC}"
-  else
-    git -C "${SDL_SRC}" fetch --depth 1 origin "refs/tags/${SDL_TAG}:refs/tags/${SDL_TAG}" 2>/dev/null || true
-    git -C "${SDL_SRC}" checkout -q "${SDL_TAG}"
-  fi
-  cmake -G Ninja -S "${SDL_SRC}" -B "${ROOT}/.cache/sdl-build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="${SDL_PREFIX}" \
-    -DSDL_SHARED=ON \
-    -DSDL_STATIC=OFF
-  cmake --build "${ROOT}/.cache/sdl-build" -j"${JOBS}"
-  cmake --install "${ROOT}/.cache/sdl-build"
-  export CMAKE_PREFIX_PATH="${SDL_PREFIX}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+  sdl3_build "${SDL_PREFIX}" "${JOBS}" "${SDL_TAG}"
 fi
 
 echo "==> Configure & build Retro"
