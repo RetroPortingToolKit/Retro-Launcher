@@ -501,6 +501,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/setup/setup_easy_rocket.png")
             FILES_MATCHING PATTERN "*.png")
 endif()
 
+# The title-app packaging kit (packaging/title/, docs/RELEASES.md) and the
+# scripts it shares with the launcher's own packaging (packaging/common/).
+# A flat hub prefix carries them at <hub dir>/packaging/ (the bare hub
+# archive, scripts/build-local.*); an install prefix keeps them here, where
+# those scripts take them from.
+install(DIRECTORY packaging/title/ DESTINATION share/retcomm/packaging/title
+        USE_SOURCE_PERMISSIONS)
+install(DIRECTORY packaging/common/ DESTINATION share/retcomm/packaging/common
+        USE_SOURCE_PERMISSIONS)
+
 # Windows: ship vcpkg/shared runtime DLLs next to the installed exes.
 if(WIN32)
     install(FILES $<TARGET_RUNTIME_DLLS:retcomm> DESTINATION bin COMPONENT Runtime)

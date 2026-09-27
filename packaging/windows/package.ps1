@@ -14,93 +14,12 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
-# --- Authenticode signing (optional) ------------------------------------------
+# --- Authenticode signing (optional) and the portable exe ----------------------
 # Windows 11 Smart App Control allows an exe only when it is signed or its exact
 # hash already has reputation, so unsigned releases are blocked outright. The
-# certificate comes from the environment (a CI secret), never from the repo:
-#   WINDOWS_SIGN_PFX_BASE64    PKCS#12 certificate, base64
-#   WINDOWS_SIGN_PFX_PASSWORD  its password (may be empty)
-#   WINDOWS_SIGN_TIMESTAMP_URL optional RFC 3161 server
-#   WINDOWS_SIGN_DESCRIPTION   optional text for the file properties / UAC UI
-# Without a certificate every Sign-* call is a no-op and packaging proceeds
-# unsigned (with a notice). With one, a signing failure stops the package.
-# The certificate is imported into the user store for the run and signed by
-# thumbprint, so no password ever appears on a command line or in ISCC's log.
-$script:SignTool = $null
-$script:SignThumb = $null
-$script:SignTs = if ($env:WINDOWS_SIGN_TIMESTAMP_URL) { $env:WINDOWS_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-$script:SignDesc = if ($env:WINDOWS_SIGN_DESCRIPTION) { $env:WINDOWS_SIGN_DESCRIPTION } else { "Retro Launcher" }
-
-function Find-SignTool {
-    if ($env:SIGNTOOL -and (Test-Path $env:SIGNTOOL)) { return $env:SIGNTOOL }
-    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    foreach ($kits in @("${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin")) {
-        if (-not (Test-Path $kits)) { continue }
-        $hit = Get-ChildItem -Path $kits -Directory -Filter "10.*" -ErrorAction SilentlyContinue |
-            Sort-Object { [version]$_.Name } -Descending |
-            ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($hit) { return $hit }
-    }
-    return $null
-}
-
-function Initialize-Signing {
-    if (-not $env:WINDOWS_SIGN_PFX_BASE64) {
-        Write-Host "Code signing skipped: WINDOWS_SIGN_PFX_BASE64 not set (binaries ship unsigned)"
-        if ($env:GITHUB_ACTIONS) { Write-Host "::notice::Windows code signing skipped: no certificate secret" }
-        return
-    }
-    $script:SignTool = Find-SignTool
-    if (-not $script:SignTool) { throw "A signing certificate is configured but signtool.exe was not found (install the Windows SDK or set SIGNTOOL)" }
-    $pfx = Join-Path ([System.IO.Path]::GetTempPath()) ("retcomm-sign-" + [guid]::NewGuid().ToString("N") + ".pfx")
-    try {
-        [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX_BASE64))
-        $pass = if ($env:WINDOWS_SIGN_PFX_PASSWORD) {
-            ConvertTo-SecureString -String $env:WINDOWS_SIGN_PFX_PASSWORD -AsPlainText -Force
-        } else { New-Object System.Security.SecureString }
-        $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pass -Exportable:$false
-        $script:SignThumb = $cert.Thumbprint
-    } finally {
-        Remove-Item $pfx -Force -ErrorAction SilentlyContinue
-    }
-    Write-Host "Code signing enabled: $($cert.Subject) (timestamp $script:SignTs)"
-}
-
-function Remove-SigningCertificate {
-    if ($script:SignThumb) {
-        Remove-Item ("Cert:\CurrentUser\My\" + $script:SignThumb) -Force -ErrorAction SilentlyContinue
-        $script:SignThumb = $null
-    }
-}
-
-function Sign-Files([string[]]$Files) {
-    if (-not $script:SignThumb) { return }
-    foreach ($f in $Files) {
-        if (-not (Test-Path $f)) { continue }
-        $ok = $false
-        # Timestamp servers are the flaky part; retry a few times per file.
-        for ($attempt = 1; $attempt -le 4 -and -not $ok; $attempt++) {
-            & $script:SignTool sign /fd SHA256 /td SHA256 /tr $script:SignTs /sha1 $script:SignThumb /d $script:SignDesc $f 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                & $script:SignTool verify /pa /q $f 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) { $ok = $true }
-            }
-            if (-not $ok) { Start-Sleep -Seconds (5 * $attempt) }
-        }
-        if (-not $ok) { throw "Code signing failed: $f" }
-        Write-Host "  signed: $f"
-    }
-}
-
-# ISCC's SignTool= directive: the command Inno runs for setup.exe and the
-# uninstaller ($f = file). Empty when signing is off; setup.iss then omits it.
-function Get-InnoSignArgs {
-    if (-not $script:SignThumb) { return @() }
-    $cmd = "`$q$($script:SignTool)`$q sign /fd SHA256 /td SHA256 /tr $($script:SignTs) /sha1 $($script:SignThumb) /d `$q$($script:SignDesc)`$q `$f"
-    return @("/Srcsign=$cmd", "/DSignToolName=rcsign")
-}
+# certificate comes from the environment; see packaging/common/portable.ps1,
+# shared with the title-app kit (packaging/title/build-title-app.ps1).
+. (Join-Path $PSScriptRoot "..\common\portable.ps1")
 
 Initialize-Signing
 $OutDir = Join-Path $Root "dist"
@@ -352,30 +271,10 @@ if (-not $PortableStub) {
 if (-not $PortableStub -or -not (Test-Path $PortableStub)) {
     Write-Warning "retcomm-portable.exe not found — skipping portable zip"
 } else {
-    $PayloadZip = Join-Path $OutDir "windows-portable-payload.zip"
-    if (Test-Path $PayloadZip) { Remove-Item $PayloadZip -Force }
-    # Payload should not include the installer channel marker as authoritative;
-    # the stub writes channel.json on extract. Still fine if present.
-    Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $PayloadZip
-
     $OutPortableExe = Join-Path $OutDir $PortableExeName
-    if (Test-Path $OutPortableExe) { Remove-Item $OutPortableExe -Force }
-
-    $stubBytes = [System.IO.File]::ReadAllBytes($PortableStub)
-    $zipBytes = [System.IO.File]::ReadAllBytes($PayloadZip)
-    $fs = [System.IO.File]::Open($OutPortableExe, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-    try {
-        $fs.Write($stubBytes, 0, $stubBytes.Length)
-        $fs.Write($zipBytes, 0, $zipBytes.Length)
-        $len = [BitConverter]::GetBytes([uint64]$zipBytes.Length)
-        $fs.Write($len, 0, 8)
-        $magic = [Text.Encoding]::ASCII.GetBytes("RCM1")
-        $fs.Write($magic, 0, 4)
-    } finally {
-        $fs.Close()
-    }
-    Remove-Item $PayloadZip -Force -ErrorAction SilentlyContinue
-    Write-Host "Portable exe: $OutPortableExe (stub $($stubBytes.Length) + payload $($zipBytes.Length))"
+    # The stub writes channel.json on extract; the installer marker staged
+    # here is harmless in the payload.
+    New-PortableExe -Stub $PortableStub -StageDir $Stage -OutExe $OutPortableExe
     # Signed AFTER the payload is appended: the certificate table lands after
     # the RCM1 trailer, and the stub (portable_trailer.hpp) looks for the
     # trailer just before that table when it is not at the very end.
