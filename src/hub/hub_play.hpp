@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,7 @@ private:
     void grant(std::uint64_t now);
     void grant_if_due();
     void run_turbo();
+    void set_turbo_running(bool on);
     void note_frames(std::uint64_t now);
     void pump_audio();
     void upload_frame();
@@ -147,6 +149,8 @@ private:
 
     PlayPrefs prefs_;
     bool turbo_ = false;          // Tab held
+    bool turbo_running_ = false;  // what tick() last put in force
+    std::optional<int> saved_swap_interval_; // vsync to put back when turbo ends
     bool audio_paused_ = true;    // the SDL stream's state, as last set
     bool was_paused_ = false;
     std::uint64_t noted_frames_ = 0, noted_ns_ = 0;

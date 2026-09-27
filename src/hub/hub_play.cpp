@@ -314,6 +314,24 @@ void PlaySession::run_turbo() {
     }
 }
 
+// Vsync goes off with turbo and comes back after it. A present that waits for
+// the display leaves one grant window per refresh, so a core that takes longer
+// than kTurboBudgetNs a frame finished each frame inside the wait and got the
+// next grant only on the next refresh: 60 fps on a 60 Hz screen, whatever the
+// core could do (n64lle, about 12.5 ms a frame, ran exactly that).
+void PlaySession::set_turbo_running(bool on) {
+    turbo_running_ = on;
+    if (on) {
+        if (audio_) SDL_ClearAudioStream(audio_); // no stale sound
+        int interval = 0;
+        if (SDL_GL_GetSwapInterval(&interval) && interval != 0 && SDL_GL_SetSwapInterval(0))
+            saved_swap_interval_ = interval;
+    } else if (saved_swap_interval_) {
+        SDL_GL_SetSwapInterval(*saved_swap_interval_);
+        saved_swap_interval_.reset();
+    }
+}
+
 // Every frame the core finished since the last call, for the FPS readout,
 // spread evenly over the time since (a hub frame can collect several).
 void PlaySession::note_frames(std::uint64_t now) {
@@ -407,17 +425,16 @@ void PlaySession::upload_frame() {
 
 void PlaySession::tick() {
     link_.pump(0);
+    const bool ready = link_.state() == corelink::LinkState::Ready;
+    // Turbo while Tab is down, and never behind a menu.
+    turbo_ = turbo_ && ready && !paused();
+    if (turbo_ != turbo_running_) set_turbo_running(turbo_);
+    osd_.set_turbo(turbo_);
     if (link_.state() == corelink::LinkState::Ended) {
         if (audio_) SDL_PauseAudioStreamDevice(audio_);
         if (states_.pending()) states_.finish(false, "the game stopped");
         return;
     }
-    const bool ready = link_.state() == corelink::LinkState::Ready;
-    // Turbo while Tab is down, and never behind a menu.
-    const bool was_turbo = turbo_;
-    turbo_ = turbo_ && ready && !paused();
-    osd_.set_turbo(turbo_);
-    if (turbo_ && !was_turbo && audio_) SDL_ClearAudioStream(audio_); // no stale sound
     if (ready) {
         poll_states_pad(SDL_GetTicksNS());
         service_states();
@@ -593,6 +610,8 @@ void PlaySession::draw_fault() {
 }
 
 void PlaySession::shutdown() {
+    turbo_ = false;
+    if (turbo_running_) set_turbo_running(false);
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);
