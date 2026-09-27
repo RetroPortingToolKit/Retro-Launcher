@@ -52,6 +52,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.gl = args.gl;
     spec.options = args.options;
     spec.tpak_rom = args.tpak_rom;
+    spec.env = args.env;
     if (!args.tpak_save.empty()) spec.save_files["tpak1"] = args.tpak_save;
     // Port 1 holds a controller from power-on, as on the console; the other
     // seats follow the gamepads actually present at the first grant.

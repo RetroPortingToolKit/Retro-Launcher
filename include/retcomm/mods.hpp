@@ -113,6 +113,12 @@ struct ModScanResult {
     // empty list can say *why* it is empty instead of just being empty.
     std::vector<fs::path> unstaged_roots;
     int unstaged_manifests = 0;
+    // N64lle layout: the mods.toml this scan read the selection from, and the
+    // one a write goes to -- <game>/mods.toml, or <state_dir>/mods.toml when
+    // the scan was given one (title-app mode: the payload is read-only, the
+    // selection lives in the title's data dir; RETRO_TITLE_STATE_DIR tells
+    // the core the same).
+    fs::path selection;
 };
 
 // Turn one feature on or off in <game_dir>/mods/state.toml.
@@ -141,7 +147,10 @@ bool set_mod_option(const fs::path& game_dir, const std::string& package_id,
 // the release dir for a build install and the AppImage data dir for one of
 // those. Never throws; a missing tree yields an empty result.
 // `install_root` is optional and only used for the unstaged-tree diagnostic.
-ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root = {});
+// `state_dir`, when set, holds an n64lle tree's mods.toml instead of
+// `game_dir` (see ModScanResult::selection).
+ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root = {},
+                             const fs::path& state_dir = {});
 
 const char* mod_origin_name(ModOrigin origin);
 

@@ -211,6 +211,9 @@ struct TitleRow {
     // Where the game reads its mods/ tree when that is not beside binary_path:
     // Direct mode's title dir, where a game package's game.toml and mods live.
     std::string game_dir_override;
+    // Where an n64lle tree's mods.toml lives when not in the game dir: a
+    // title app's data dir (its payload is read-only).
+    std::string mods_state_dir;
     std::string runtime; // "native" | "wine"
     std::string author;        // GitHub owner from release.github
     std::string github_url;    // source repo URL

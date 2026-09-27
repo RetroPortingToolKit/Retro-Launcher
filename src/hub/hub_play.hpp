@@ -33,6 +33,9 @@ struct PlayArgs {
     fs::path tpak_save;
     std::map<std::string, std::string> options;
     bool gl = true;
+    // Extra NAME=value for the runner, which passes its environment on to the
+    // core: title-app mode sets RETRO_TITLE_STATE_DIR=<data dir> here.
+    std::vector<std::string> env;
     // Which device each seat reads and what its inputs drive
     // (hub_core_settings.hpp): the platform's saved seats, or the defaults.
     PlatformInput input;

@@ -3,6 +3,10 @@
 #include "hub/hub_osk.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
+#include "hub/hub_title.hpp"
+#include "runner_probe.hpp" // Retro-Runtime: probe_runner
+#include "transport.hpp"    // Retro-Runtime: utf8_args, path_utf8
+#include "retcomm/process_env.hpp"
 #include "link_protocol.hpp" // Retro-Runtime: kProtocolMajor / kProtocolMinor
 #include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
@@ -38,6 +42,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h> // execv: --hub
 #endif
 
 #include <set>
@@ -57,6 +63,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cerrno>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -3468,7 +3475,8 @@ ModsPageState& mods_page_state() {
 
 void refresh_mods_page(HubModel& hub, const TitleRow& row) {
     ModsPageState& st = mods_page_state();
-    st.scan = retcomm::scan_game_mods(title_game_dir(hub, row), fs::path(row.install_root));
+    st.scan = retcomm::scan_game_mods(title_game_dir(hub, row), fs::path(row.install_root),
+                                      fs::path(row.mods_state_dir));
     st.title_id = row.id;
 }
 
@@ -8866,26 +8874,68 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 // standalone release is. It opens on the title's home page (run_direct_home);
 // `--boot` plays at once and exits when the player closes the game.
 struct DirectPlay {
-    bool active = false;
+    bool active = false; // --run-core / --core without a title: Direct mode
     // --boot: play at once and exit with the game (the pre-revision-3 Direct
     // mode). Without it Direct mode opens the title's home page first.
     bool boot = false;
     retcomm::hub::PlayArgs args;
+
+    // Title-app mode (src/hub/hub_title.hpp, docs/RELEASES.md): this hub is
+    // one title's app. Every path below is absolute.
+    bool title_mode = false;
+    fs::path title_arg;       // --title (title.json or its directory)
+    fs::path runner;          // --runner
+    fs::path hub;             // --hub
+    bool check_title = false; // --check-title
+    std::string cli_rom;      // --rom as given (absolute); args.rom is the resolved one
+    bool core_given = false, package_given = false, title_dir_given = false;
+    retcomm::hub::TitleInfo title;
+    std::string title_error;  // title.json could not be used
+    retcomm::hub::AppAnchor anchor;
+    retcomm::hub::TitleDataDir data;
+    retcomm::hub::RomChoice rom;
+    // Sessions, saves and option values: the title's id in title-app mode;
+    // empty = the package's stem, else the core's (Direct mode).
+    std::string title_key;
 };
 
-DirectPlay parse_direct_play(int argc, char** argv) {
+// Every flag that takes a path: absolutized against the launch directory
+// before anything else (SHIPPING.md §5), and again when --hub hands the
+// command line on.
+bool is_path_flag(const std::string& a) {
+    return a == "--run-core" || a == "--core" || a == "--package" || a == "--rom" ||
+           a == "--title-dir" || a == "--tpak1-rom" || a == "--tpak1-save" || a == "--title" ||
+           a == "--runner" || a == "--hub";
+}
+
+DirectPlay parse_direct_play(const std::vector<std::string>& argv, const fs::path& cwd) {
     DirectPlay d;
-    for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
-        const bool has_val = i + 1 < argc;
-        if (a == "--run-core" && has_val) {
-            d.active = true;
-            d.args.core = argv[++i];
-        } else if (a == "--package" && has_val) d.args.package = argv[++i];
-        else if (a == "--rom" && has_val) d.args.rom = argv[++i];
-        else if (a == "--title-dir" && has_val) d.args.title_dir = argv[++i];
-        else if (a == "--tpak1-rom" && has_val) d.args.tpak_rom = argv[++i];
-        else if (a == "--tpak1-save" && has_val) d.args.tpak_save = argv[++i];
+    auto abs = [&](const std::string& v) {
+        return retcomm::hub::absolute_from(retro::corelink::utf8_path(v), cwd);
+    };
+    auto abs_s = [&](const std::string& v) { return retro::corelink::path_utf8(abs(v)); };
+    for (size_t i = 1; i < argv.size(); ++i) {
+        const std::string& a = argv[i];
+        const bool has_val = i + 1 < argv.size();
+        if ((a == "--run-core" || a == "--core") && has_val) {
+            d.core_given = true;
+            d.args.core = abs(argv[++i]);
+        } else if (a == "--package" && has_val) {
+            d.package_given = true;
+            d.args.package = abs(argv[++i]);
+        } else if (a == "--rom" && has_val) {
+            d.args.rom = abs_s(argv[++i]);
+            d.cli_rom = d.args.rom;
+        }
+        else if (a == "--title-dir" && has_val) {
+            d.title_dir_given = true;
+            d.args.title_dir = abs(argv[++i]);
+        } else if (a == "--tpak1-rom" && has_val) d.args.tpak_rom = abs_s(argv[++i]);
+        else if (a == "--tpak1-save" && has_val) d.args.tpak_save = abs(argv[++i]);
+        else if (a == "--title" && has_val) d.title_arg = abs(argv[++i]);
+        else if (a == "--runner" && has_val) d.runner = abs(argv[++i]);
+        else if (a == "--hub" && has_val) d.hub = abs(argv[++i]);
+        else if (a == "--check-title") d.check_title = true;
         else if (a == "--no-gl") d.args.gl = false;
         else if (a == "--boot") d.boot = true;
         else if (a == "--opt" && has_val) {
@@ -8895,6 +8945,339 @@ DirectPlay parse_direct_play(int argc, char** argv) {
         }
     }
     return d;
+}
+
+// Title-app mode: the title, what the command line overrides in it, the app
+// and its data dir, and the ROM. `create` makes the data dir (the window's
+// launch); --check-title only reports where it would be.
+void setup_title_app(DirectPlay& d, const fs::path& title_json, bool create) {
+    using namespace retcomm::hub;
+    d.title_mode = true;
+    if (!load_title(title_json, d.title, &d.title_error)) return;
+    const TitleInfo& t = d.title;
+    if (!d.core_given) d.args.core = t.core;
+    if (!d.package_given) d.args.package = t.package;
+    if (!d.title_dir_given) d.args.title_dir = t.title_dir;
+    // The title's opts under the command line's --opt.
+    std::map<std::string, std::string> opts;
+    for (const auto& [k, v] : t.opts) opts[k] = v;
+    for (const auto& [k, v] : d.args.options) opts[k] = v;
+    d.args.options = opts;
+    d.title_key = t.id;
+
+    d.anchor = locate_app(current_exe_path());
+    d.data = resolve_title_data_dir(d.anchor, t.id);
+    if (create) {
+        std::string err;
+        if (!ensure_title_data_dir(d.data, t.id, &err))
+            std::fprintf(stderr, "retro-hub: %s\n", err.c_str());
+    }
+    if (!d.data.beside_app)
+        std::fprintf(stderr, "retro-hub: data dir %s (%s)\n", d.data.dir.string().c_str(),
+                     d.data.note.c_str());
+    d.args.env = {"RETRO_TITLE_STATE_DIR=" + retro::corelink::path_utf8(d.data.dir)};
+
+    d.rom = resolve_rom(t, retro::corelink::utf8_path(d.cli_rom), d.anchor.dir, d.data.dir);
+    for (const std::string& n : d.rom.notes) std::fprintf(stderr, "retro-hub: rom: skipped %s\n", n.c_str());
+    d.args.rom = d.rom.path.empty() ? std::string() : retro::corelink::path_utf8(d.rom.path);
+    if (create && d.rom.source == "--rom") {
+        std::string err;
+        if (!remember_rom(d.data.dir, d.rom.path, &err))
+            std::fprintf(stderr, "retro-hub: cannot remember the ROM: %s\n", err.c_str());
+    }
+}
+
+void set_process_env(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+// The runner this hub starts cores with: --runner, else resolve_runner
+// (RETRO_CORE_RUNNER, then the bundled and updated ones).
+retcomm::ResolvedRunner resolve_title_runner(const DirectPlay& d, const retcomm::Paths& paths,
+                                             const fs::path& exe_dir) {
+    if (d.runner.empty()) return retcomm::resolve_runner(paths, exe_dir);
+    retcomm::ResolvedRunner rr;
+    rr.path = d.runner;
+    rr.source = "--runner";
+    retro::corelink::RunnerVersion v;
+    std::string err;
+    if (retro::corelink::probe_runner(d.runner, v, &err)) {
+        rr.version = v.version;
+        rr.game_package = v.game_package;
+        rr.note = "--runner names it";
+    } else {
+        rr.note = "--runner names it (" + err + ")";
+    }
+    return rr;
+}
+
+// `retro-hub --check-title`: resolve everything a launch would and print it,
+// `key value` per line, no window. Exit 0 when title, core, package and runner
+// resolve; a ROM that is merely absent prints `rom none` and is not a failure,
+// an explicit --rom that does not match is.
+int run_check_title(const DirectPlay& d, const fs::path& exe_dir) {
+    using retro::corelink::path_utf8;
+    auto line = [](const char* k, const std::string& v) { std::printf("%s %s\n", k, v.c_str()); };
+    auto bad = [](const std::string& m) { std::fprintf(stderr, "retro-hub: check-title: %s\n", m.c_str()); };
+    bool ok = true;
+    if (!d.title_error.empty()) {
+        line("title", path_utf8(d.title.json.empty() ? d.title_arg : d.title.json));
+        bad(d.title_error);
+        return 1;
+    }
+    std::error_code ec;
+    line("title", path_utf8(d.title.json));
+    line("id", d.title.id);
+    line("core", path_utf8(d.args.core));
+    if (!fs::is_regular_file(d.args.core, ec)) {
+        bad("core " + path_utf8(d.args.core) + " does not exist");
+        ok = false;
+    }
+    line("package", d.args.package.empty() ? std::string("none") : path_utf8(d.args.package));
+    if (!d.args.package.empty() && !fs::is_regular_file(d.args.package, ec)) {
+        bad("package " + path_utf8(d.args.package) + " does not exist");
+        ok = false;
+    }
+    line("title_dir", path_utf8(d.args.title_dir));
+    if (!fs::is_directory(d.args.title_dir, ec)) {
+        bad("title_dir " + path_utf8(d.args.title_dir) + " is not a directory");
+        ok = false;
+    }
+    const retcomm::ResolvedRunner rr =
+        resolve_title_runner(d, retcomm::hub::title_paths(d.data.dir), exe_dir);
+    line("runner", rr.path.empty() ? std::string("none") : path_utf8(rr.path));
+    line("runner_version", rr.version.empty() ? std::string("none") : rr.version);
+    if (rr.path.empty() || rr.version.empty()) {
+        bad("no usable retro-core-runner (" + rr.note + ")");
+        ok = false;
+    } else if (!d.args.package.empty() && rr.game_package == 0) {
+        bad("the runner " + path_utf8(rr.path) + " cannot load a game package (no 'game_package 1')");
+        ok = false;
+    }
+    if (d.rom.refused) {
+        line("rom", "refused");
+        bad("--rom refused: " + d.rom.error);
+        ok = false;
+    } else {
+        line("rom", d.rom.path.empty() ? std::string("none") : path_utf8(d.rom.path));
+        if (!d.rom.path.empty()) std::fprintf(stderr, "retro-hub: check-title: rom from %s\n", d.rom.source.c_str());
+    }
+    line("data_dir", path_utf8(d.data.dir));
+    if (!d.data.beside_app) std::fprintf(stderr, "retro-hub: check-title: %s\n", d.data.note.c_str());
+    return ok ? 0 : 1;
+}
+
+// ---- --hub: hand the title to another hub ------------------------------------
+//
+// `--hub <p>` runs THAT hub with this command line (minus --hub), plus
+// `--title <this title.json>` and `--runner <the runner this hub would use>`
+// unless --runner was given: a dev hub then runs the bundled title with the
+// bundled runner, and its state stays beside the app (RETRO_HUB_APP).
+//
+// Loops: nothing happens when <p> is this executable, and a hub started by
+// another's --hub (RETRO_HUB_REEXEC set) never re-executes again.
+//
+// A hub from before title-app mode (no `title_app` in its --version) ignores
+// --title and would open its library. When it has Direct mode with --package
+// (direct_mode >= 2) it is given the title as a Direct-mode command line
+// instead -- --run-core, --package, --title-dir, --rom, with the runner in
+// RETRO_CORE_RUNNER -- which needs a ROM that already resolves (it cannot show
+// the picker). Anything older is refused.
+#if defined(_WIN32)
+std::wstring quote_windows_arg(const std::wstring& a) {
+    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) return a;
+    std::wstring out = L"\"";
+    for (size_t i = 0;; ++i) {
+        size_t backslashes = 0;
+        while (i < a.size() && a[i] == L'\\') {
+            ++i;
+            ++backslashes;
+        }
+        if (i == a.size()) {
+            out.append(backslashes * 2, L'\\');
+            break;
+        }
+        if (a[i] == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+        } else {
+            out.append(backslashes, L'\\');
+            out.push_back(a[i]);
+        }
+    }
+    out.push_back(L'"');
+    return out;
+}
+#endif
+
+int exec_hub(const fs::path& target, const std::vector<std::string>& args) {
+    std::fprintf(stderr, "retro-hub: --hub: running %s", target.string().c_str());
+    for (size_t i = 1; i < args.size(); ++i) std::fprintf(stderr, " %s", args[i].c_str());
+    std::fprintf(stderr, "\n");
+    std::fflush(stderr);
+    std::fflush(stdout);
+#if defined(_WIN32)
+    std::wstring cmd = quote_windows_arg(target.wstring());
+    for (size_t i = 1; i < args.size(); ++i)
+        cmd += L" " + quote_windows_arg(retro::corelink::utf8_path(args[i]).wstring());
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> line(cmd.begin(), cmd.end());
+    line.push_back(L'\0');
+    if (!CreateProcessW(target.wstring().c_str(), line.data(), nullptr, nullptr, TRUE, 0, nullptr,
+                        nullptr, &si, &pi)) {
+        std::fprintf(stderr, "retro-hub: --hub: cannot start %s (error %lu)\n",
+                     target.string().c_str(), static_cast<unsigned long>(GetLastError()));
+        return 127;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+#else
+    std::vector<std::string> owned = args;
+    owned[0] = target.string();
+    std::vector<char*> cargv;
+    for (auto& a : owned) cargv.push_back(a.data());
+    cargv.push_back(nullptr);
+    ::execv(target.c_str(), cargv.data());
+    std::fprintf(stderr, "retro-hub: --hub: cannot run %s: %s\n", target.string().c_str(),
+                 std::strerror(errno));
+    return 127;
+#endif
+}
+
+// -1: carry on in this process. Otherwise the exit status to return.
+int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
+                     const fs::path& self, const fs::path& exe_dir) {
+    if (d.hub.empty()) return -1;
+    std::error_code ec;
+    if (const char* from = std::getenv("RETRO_HUB_REEXEC"); from && *from) {
+        std::fprintf(stderr,
+                     "retro-hub: --hub %s ignored: this hub was itself started by --hub from %s\n",
+                     d.hub.string().c_str(), from);
+        return -1;
+    }
+    if (!fs::is_regular_file(d.hub, ec)) {
+        std::fprintf(stderr, "retro-hub: --hub %s: no such file\n", d.hub.string().c_str());
+        return 2;
+    }
+    if (!self.empty() && fs::equivalent(d.hub, self, ec)) {
+        std::fprintf(stderr, "retro-hub: --hub %s is this hub; carrying on\n", d.hub.string().c_str());
+        return -1;
+    }
+    const std::string tag = retro::corelink::path_utf8(self.empty() ? exe_dir : self);
+
+    // The runner this hub would have used (--runner wins).
+    fs::path runner = d.runner;
+    if (runner.empty() && d.title_mode && d.title_error.empty()) {
+        runner = resolve_title_runner(d, retcomm::hub::title_paths(d.data.dir), exe_dir).path;
+    }
+
+    std::string perr;
+    const auto ver = retcomm::hub::probe_version(d.hub, &perr);
+    auto num = [&](const char* k) {
+        const auto it = ver.find(k);
+        if (it == ver.end()) return 0;
+        try {
+            return std::stoi(it->second);
+        } catch (...) {
+            return 0;
+        }
+    };
+    if (ver.empty()) {
+        std::fprintf(stderr, "retro-hub: --hub %s: cannot read its --version (%s)\n",
+                     d.hub.string().c_str(), perr.c_str());
+        return 2;
+    }
+
+    set_process_env("RETRO_HUB_REEXEC", tag);
+    if (d.title_mode && d.title_error.empty()) {
+        // State stays with the app this hub was started as; the other hub is
+        // not inside an AppImage mount, so its environment is cleaned of it.
+        set_process_env("RETRO_HUB_APP", retro::corelink::path_utf8(d.anchor.app));
+    }
+    retcomm::sanitize_env_for_external_child();
+
+    std::vector<std::string> out = {argv.empty() ? std::string() : argv[0]};
+    if (num("title_app") >= 1 || !d.title_mode) {
+        // The same arguments minus --hub, paths absolute, plus --title/--runner.
+        for (size_t i = 1; i < argv.size(); ++i) {
+            const std::string& a = argv[i];
+            const bool has_val = i + 1 < argv.size();
+            if (a == "--hub" && has_val) {
+                ++i;
+                continue;
+            }
+            if (a == "--title" && has_val && d.title_mode) {
+                ++i;
+                continue; // re-added below, as the resolved title.json
+            }
+            if (is_path_flag(a) && has_val) {
+                out.push_back(a);
+                out.push_back(retro::corelink::path_utf8(retcomm::hub::absolute_from(
+                    retro::corelink::utf8_path(argv[++i]), fs::current_path(ec))));
+                continue;
+            }
+            out.push_back(a);
+        }
+        if (d.title_mode) {
+            out.push_back("--title");
+            out.push_back(retro::corelink::path_utf8(
+                d.title_error.empty() ? d.title.json : d.title_arg));
+        }
+        if (d.title_mode && d.runner.empty() && !runner.empty()) {
+            out.push_back("--runner");
+            out.push_back(retro::corelink::path_utf8(runner));
+        }
+        return exec_hub(d.hub, out);
+    }
+
+    // An older hub: title-app mode as a Direct-mode command line, or refuse.
+    const int direct = num("direct_mode");
+    const std::string why = "--hub " + d.hub.string() + " predates title-app mode (no 'title_app' "
+                            "in its --version";
+    if (direct < 2 || !d.title_error.empty() || d.check_title) {
+        std::fprintf(stderr, "retro-hub: %s, direct_mode %d); it cannot run this title\n",
+                     why.c_str(), direct);
+        return 2;
+    }
+    if (d.rom.refused) {
+        std::fprintf(stderr, "retro-hub: --rom refused: %s\n", d.rom.error.c_str());
+        return 2;
+    }
+    if (d.args.rom.empty()) {
+        std::fprintf(stderr,
+                     "retro-hub: %s), and no ROM resolves: it cannot show the ROM picker. Pass "
+                     "--rom <image>.\n",
+                     why.c_str());
+        return 2;
+    }
+    std::fprintf(stderr, "retro-hub: %s); giving it the title as Direct mode (direct_mode %d)\n",
+                 why.c_str(), direct);
+    auto add = [&](const char* k, const std::string& v) {
+        out.push_back(k);
+        out.push_back(v);
+    };
+    add("--run-core", retro::corelink::path_utf8(d.args.core));
+    if (!d.args.package.empty()) add("--package", retro::corelink::path_utf8(d.args.package));
+    add("--title-dir", retro::corelink::path_utf8(d.args.title_dir));
+    add("--rom", d.args.rom);
+    if (!d.args.tpak_rom.empty()) add("--tpak1-rom", d.args.tpak_rom);
+    if (!d.args.tpak_save.empty()) add("--tpak1-save", retro::corelink::path_utf8(d.args.tpak_save));
+    for (const auto& [k, v] : d.args.options) add("--opt", k + "=" + v);
+    if (!d.args.gl) out.push_back("--no-gl");
+    if (d.boot && direct >= 3) out.push_back("--boot");
+    if (!runner.empty()) set_process_env("RETRO_CORE_RUNNER", retro::corelink::path_utf8(runner));
+    set_process_env("RETRO_TITLE_STATE_DIR", retro::corelink::path_utf8(d.data.dir));
+    return exec_hub(d.hub, out);
 }
 
 // The runtime updater, run once in the background while Direct mode plays:
@@ -10068,6 +10451,8 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
 
 enum class DirectPage { Home, Mods };
 
+struct TitleRomPick;
+
 struct DirectHome {
     DirectPlay d;
     fs::path title_dir;
@@ -10086,7 +10471,110 @@ struct DirectHome {
     std::string status;                     // the last thing that happened
     bool status_bad = false;
     std::vector<std::string> session_notes; // the last session's "mods:" lines
+
+    // Title-app mode: mods.toml lives in the data dir, and the ROM may still
+    // have to be chosen (Play stays disabled until one checks out).
+    fs::path mods_state_dir;
+    SDL_Window* window = nullptr;
+    std::shared_ptr<TitleRomPick> pick;
+    std::string rom_note; // the last pick's result, or why none resolved
+    bool rom_note_bad = false;
 };
+
+// SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
+// uses; the callback only stores the answer and the frame loop takes it.
+struct TitleRomPick {
+    std::mutex mu;
+    bool busy = false;
+    bool answered = false;
+    std::string path;  // empty: cancelled or failed
+    std::string error; // the dialog failed
+    // SDL keeps pointers to these until the callback runs.
+    std::string filter_name, filter_pattern;
+    SDL_DialogFileFilter filters[2]{};
+};
+
+void SDLCALL on_title_rom_dialog(void* userdata, const char* const* filelist, int /*filter*/) {
+    // The callback owns one reference, so the state outlives a home page that
+    // closes while the dialog is still up.
+    auto* ref = static_cast<std::shared_ptr<TitleRomPick>*>(userdata);
+    {
+        TitleRomPick& p = **ref;
+        std::lock_guard<std::mutex> lock(p.mu);
+        p.busy = false;
+        p.answered = true;
+        p.path.clear();
+        p.error.clear();
+        if (!filelist) p.error = SDL_GetError();
+        else if (filelist[0]) p.path = filelist[0];
+    }
+    delete ref;
+}
+
+void begin_title_rom_pick(DirectHome& h) {
+    if (!h.pick) h.pick = std::make_shared<TitleRomPick>();
+    TitleRomPick& p = *h.pick;
+    {
+        std::lock_guard<std::mutex> lock(p.mu);
+        if (p.busy) return;
+        p.busy = true;
+        p.answered = false;
+    }
+    // The extensions the title names its ROM with, else the platform's.
+    std::set<std::string> exts;
+    for (const std::string& n : h.d.title.rom.file_names) {
+        const auto dot = n.find_last_of('.');
+        if (dot != std::string::npos && dot + 1 < n.size()) exts.insert(strip_dot_ext(n.substr(dot)));
+    }
+    if (exts.empty() && h.platform == "n64") exts = {"z64", "n64", "v64"};
+    p.filter_name = h.d.title.rom.label.empty() ? std::string("ROM image") : h.d.title.rom.label;
+    p.filter_pattern = exts.empty() ? std::string("*") : join_ext_pattern(exts);
+    p.filters[0].name = p.filter_name.c_str();
+    p.filters[0].pattern = p.filter_pattern.c_str();
+    p.filters[1].name = "All files";
+    p.filters[1].pattern = "*";
+    const std::string start = h.d.anchor.dir.string();
+    SDL_ShowOpenFileDialog(on_title_rom_dialog, new std::shared_ptr<TitleRomPick>(h.pick), h.window,
+                           p.filters, 2, start.empty() ? nullptr : start.c_str(), false);
+}
+
+// The frame loop's half: a chosen file is checked against title.json and,
+// when it is the image the title was built from, used and remembered.
+void take_title_rom_pick(DirectHome& h) {
+    if (!h.pick) return;
+    std::string path, error;
+    {
+        std::lock_guard<std::mutex> lock(h.pick->mu);
+        if (!h.pick->answered) return;
+        h.pick->answered = false;
+        path = h.pick->path;
+        error = h.pick->error;
+    }
+    if (!error.empty()) {
+        h.rom_note = "The file dialog failed: " + error +
+                     ". Place the ROM beside the app, or start it with --rom <image>.";
+        h.rom_note_bad = true;
+        return;
+    }
+    if (path.empty()) return; // cancelled
+    const fs::path chosen = retro::corelink::utf8_path(path);
+    const retcomm::hub::RomCheck c = retcomm::hub::check_rom(chosen, h.d.title.rom);
+    if (!c.ok) {
+        // A static recompilation of one image does not run another.
+        h.rom_note = "Refused " + chosen.filename().string() + ": " + c.error;
+        h.rom_note_bad = true;
+        std::fprintf(stderr, "retro-hub: rom refused: %s: %s\n", path.c_str(), c.error.c_str());
+        return;
+    }
+    h.d.args.rom = retro::corelink::path_utf8(chosen);
+    std::string err;
+    if (!retcomm::hub::remember_rom(h.d.data.dir, chosen, &err))
+        std::fprintf(stderr, "retro-hub: cannot remember the ROM: %s\n", err.c_str());
+    h.rom_note = "ROM checked" + std::string(h.d.title.rom.sha256.empty() ? "" : " (sha256 matches)") +
+                 " and remembered.";
+    h.rom_note_bad = false;
+    std::fprintf(stderr, "retro-hub: rom: %s (chosen, remembered)\n", path.c_str());
+}
 
 std::string platform_label(const std::string& platform) {
     return platform.empty() ? std::string("this platform") : platform_display_name(platform);
@@ -10098,7 +10586,9 @@ void set_direct_status(DirectHome& h, const std::string& s, bool bad) {
     std::fprintf(stderr, "retro-hub: %s\n", s.c_str());
 }
 
-void refresh_direct_mods(DirectHome& h) { h.mods = retcomm::scan_game_mods(h.title_dir); }
+void refresh_direct_mods(DirectHome& h) {
+    h.mods = retcomm::scan_game_mods(h.title_dir, {}, h.mods_state_dir);
+}
 
 // What the game said about mods during the session just ended. The core logs
 // its mod plan (applied, refused, or none) at load through rcore log(), which
@@ -10179,6 +10669,7 @@ void draw_direct_info(DirectHome& h, const HubModel& hub, const Theme& th) {
     row("ROM   ", h.d.args.rom);
     row("Title ", h.title_dir.string());
     row("Saves ", (hub.paths.data_dir / "saves" / h.title_key).string());
+    if (h.d.title_mode) row("Data  ", h.d.data.dir.string());
     ImGui::PopStyleColor();
     ImGui::EndChild();
 }
@@ -10189,8 +10680,37 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
                       ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     const float w = ImGui::GetContentRegionAvail().x;
     const float big = ImGui::GetTextLineHeight() * 2.4f;
-    take_direct_focus(h);
+    const bool have_rom = !h.d.args.rom.empty();
+    if (h.d.title_mode && !have_rom) {
+        // No ROM yet: choosing one is the only thing to do first.
+        bool picking = false;
+        if (h.pick) {
+            std::lock_guard<std::mutex> lock(h.pick->mu);
+            picking = h.pick->busy;
+        }
+        take_direct_focus(h);
+        ImGui::BeginDisabled(picking);
+        if (good_button(picking ? "Choosing..." : "Choose ROM\xE2\x80\xA6", th, ImVec2(w, big)))
+            begin_title_rom_pick(h);
+        ImGui::EndDisabled();
+        const std::string& label = h.d.title.rom.label;
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("%s needs %s. It is checked, then remembered.", h.name.c_str(),
+                           label.empty() ? "its ROM image" : label.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!h.rom_note.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, h.rom_note_bad ? th.warn : th.text_muted);
+        ImGui::TextWrapped("%s", h.rom_note.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::BeginDisabled(!have_rom);
+    if (have_rom) take_direct_focus(h);
     if (good_button("Play", th, ImVec2(w, big))) act = DirectAction::Play;
+    ImGui::EndDisabled();
+    if (h.d.title_mode && have_rom) {
+        if (ImGui::Button("Choose another ROM\xE2\x80\xA6", ImVec2(w, 0))) begin_title_rom_pick(h);
+    }
     if (!h.status.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, h.status_bad ? th.warn : th.text_muted);
         ImGui::TextWrapped("%s", h.status.c_str());
@@ -10283,19 +10803,36 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     HubModel& hub) {
     DirectHome h;
     h.d = d;
+    h.window = window;
     h.title_dir = direct_title_dir(d.args);
-    h.title_key = direct_title_key(d.args);
+    h.title_key = d.title_key.empty() ? direct_title_key(d.args) : d.title_key;
     h.platform = rcore_manifest_platform(d.args.core);
+    if (h.platform.empty() && d.title_mode) h.platform = d.title.platform;
     const auto game = read_toml_section(h.title_dir / "game.toml", "game");
     auto field = [&](const char* k) {
         const auto it = game.find(k);
         return it == game.end() ? std::string() : it->second;
     };
-    h.name = field("name");
+    h.name = d.title_mode ? d.title.name : field("name");
     if (h.name.empty()) h.name = h.title_key;
     h.cartid = field("cartid");
     h.region = field("region");
-    SDL_SetWindowTitle(window, (h.name + " - Retro Launcher").c_str());
+    if (d.title_mode) {
+        // A title app is the game's own window, not the launcher's.
+        SDL_SetWindowTitle(window, h.name.c_str());
+        h.mods_state_dir = d.data.dir;
+        if (d.rom.refused) {
+            h.rom_note = "Refused --rom " + d.rom.error;
+            h.rom_note_bad = true;
+        } else if (!d.rom.path.empty()) {
+            h.rom_note = "ROM: " + d.rom.source + ".";
+        } else if (!d.rom.notes.empty()) {
+            h.rom_note = "Skipped " + d.rom.notes.front();
+            h.rom_note_bad = true;
+        }
+    } else {
+        SDL_SetWindowTitle(window, (h.name + " - Retro Launcher").c_str());
+    }
 
     {
         const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
@@ -10321,6 +10858,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         row.platform = h.platform;
         row.kind = "core";
         row.game_dir_override = h.title_dir.string();
+        row.mods_state_dir = h.mods_state_dir.string();
         std::lock_guard<std::mutex> lock(hub.mu);
         hub.rows = {row};
         hub.selected = 0;
@@ -10335,6 +10873,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     bool running = true;
     while (running) {
         hub_sync_open_gamepads();
+        take_title_rom_pick(h);
         if (!h.desc_ready && h.describing.valid() &&
             h.describing.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             h.desc = h.describing.get();
@@ -10472,7 +11011,9 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const bool packaged = !d.args.package.empty();
     // Sessions and saves belong to the title. With a package that is the shim
     // (<slug>_game): the core is the generic one every packaged title shares.
-    const std::string stem = (packaged ? d.args.package : d.args.core).stem().string();
+    const std::string stem = !d.title_key.empty()
+                                 ? d.title_key
+                                 : (packaged ? d.args.package : d.args.core).stem().string();
     // resolve_runner: RETRO_CORE_RUNNER (override), else the newest of the
     // bundled runner and the ones the runtime updater installed.
     const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
@@ -10562,7 +11103,12 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 //   3  + --boot. Without it Direct mode now opens the title's home page
 //        (Play, Controls, Core Settings, Mods) instead of playing at once;
 //        --boot is the revision-2 behaviour.
-constexpr int kDirectModeCliRevision = 3;
+//   4  + --title --core --runner --hub --check-title: title-app mode
+//        (`title_app 1`), a title.json found by --title or beside the hub.
+//        Every path flag is now made absolute against the launch directory.
+constexpr int kDirectModeCliRevision = 4;
+// title.json schema this hub reads (hub_title.hpp); `title_app` in --version.
+constexpr int kTitleAppRevision = 1;
 #endif
 
 // `retro-hub --version`: one `key value` per line, exit 0, before SDL starts,
@@ -10581,7 +11127,8 @@ int print_hub_version() {
     std::printf("rcore_draft_revision %u\n", static_cast<unsigned>(RCORE_DRAFT_REVISION));
     std::printf("direct_mode %d\n", kDirectModeCliRevision);
     std::printf("direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom "
-                "--tpak1-save --no-gl --opt --boot\n");
+                "--tpak1-save --no-gl --opt --boot --title --core --runner --hub --check-title\n");
+    std::printf("title_app %d\n", kTitleAppRevision);
     // resolve_runner (src/update/runtime_update.cpp): the override, else the
     // newest of the bundled runner and the ones the runtime updater installed.
     std::printf("runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner "
@@ -10604,7 +11151,46 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--play") play_title_id = argv[i + 1];
     }
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-    const DirectPlay direct = parse_direct_play(argc, argv);
+    // Before anything else: every path on the command line, absolute against
+    // the directory the hub was launched from (SHIPPING.md §5).
+    std::error_code cwd_ec;
+    const fs::path launch_cwd = fs::current_path(cwd_ec);
+    const std::vector<std::string> args_utf8 = retro::corelink::utf8_args(argc, argv);
+    DirectPlay direct = parse_direct_play(args_utf8, launch_cwd);
+    const fs::path self_exe = retcomm::hub::current_exe_path();
+    const fs::path self_dir = self_exe.empty() ? fs::path() : self_exe.parent_path();
+    // Title-app mode: --title, else a title beside the hub -- unless the
+    // command line asks for Direct mode (--run-core / --core without --title).
+    fs::path title_json;
+    if (!direct.title_arg.empty()) title_json = direct.title_arg;
+    else if (!direct.core_given) title_json = retcomm::hub::find_bundled_title(self_dir);
+    if (!title_json.empty()) {
+        direct.active = false;
+        // --hub and --check-title only look; the window's launch creates the
+        // data dir and remembers a --rom.
+        setup_title_app(direct, title_json, !direct.check_title && direct.hub.empty());
+    } else {
+        direct.active = direct.core_given;
+    }
+    if (const int rc = maybe_reexec_hub(direct, args_utf8, self_exe, self_dir); rc >= 0) return rc;
+    if (!direct.runner.empty()) {
+        // --runner beats RETRO_CORE_RUNNER and the lookup: every
+        // resolve_runner() in this process now sees it as the override.
+        set_process_env("RETRO_CORE_RUNNER", retro::corelink::path_utf8(direct.runner));
+    }
+    if (direct.check_title) {
+        if (!direct.title_mode) {
+            std::fprintf(stderr, "retro-hub: --check-title: no title (pass --title <title.json>, "
+                                 "or place title/title.json beside retro-hub)\n");
+            return 1;
+        }
+        return run_check_title(direct, self_dir);
+    }
+    if (direct.title_mode && !direct.hub.empty() && direct.title_error.empty()) {
+        // --hub named this hub (or was ignored): now create what a launch does.
+        direct.args.rom = direct.cli_rom;
+        setup_title_app(direct, title_json, true);
+    }
     if (direct.active && direct.args.rom.empty()) {
         std::fprintf(stderr, "retro-hub: --run-core needs --rom <image>\n");
         return 2;
@@ -10688,8 +11274,26 @@ int main(int argc, char** argv) {
         hub.exe_dir = fs::weakly_canonical(fs::path(argv[0]).parent_path(), ec);
         if (ec || hub.exe_dir.empty()) hub.exe_dir = fs::path(argv[0]).parent_path();
     }
-    hub.paths = retcomm::default_paths(hub.exe_dir);
-    hub.cfg = retcomm::load_app_config(hub.paths.config_path);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    // argv[0] is a bare name when the hub was found on PATH; the executable's
+    // own path never is.
+    if (!self_dir.empty()) hub.exe_dir = self_dir;
+    if (direct.title_mode && direct.title_error.empty()) {
+        // A title app keeps everything in its own data dir: config.json,
+        // sessions, saves, settings, mods.toml, the remembered ROM. The
+        // runtime updater stays off: the app runs the runner it was built with.
+        hub.paths = retcomm::hub::title_paths(direct.data.dir);
+        hub.cfg = retcomm::load_app_config(hub.paths.config_path);
+        hub.cfg.check_updates_on_startup = false;
+        std::fprintf(stderr, "retro-hub: title %s (%s), data %s%s\n", direct.title.id.c_str(),
+                     direct.title.json.string().c_str(), direct.data.dir.string().c_str(),
+                     direct.data.beside_app ? "" : " (user data fallback)");
+    } else
+#endif
+    {
+        hub.paths = retcomm::default_paths(hub.exe_dir);
+        hub.cfg = retcomm::load_app_config(hub.paths.config_path);
+    }
     retcomm::set_github_token(hub.cfg.github_token);
 
     // Now that config.json is in, honour a pinned ui_scale and give the window
@@ -10709,9 +11313,17 @@ int main(int argc, char** argv) {
     }
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-    if (direct.active) {
-        const int rc = direct.boot ? run_direct_play(window, ui, direct, hub)
-                                   : run_direct_home(window, ui, th, direct, hub);
+    if (direct.active || direct.title_mode) {
+        int rc = 0;
+        if (!direct.title_error.empty()) {
+            rc = run_direct_error(window, ui, "This app's title could not be read.",
+                                  {direct.title_error}, nullptr);
+        } else {
+            // --boot plays at once only when a ROM resolved; else the page asks.
+            rc = direct.boot && !direct.args.rom.empty()
+                     ? run_direct_play(window, ui, direct, hub)
+                     : run_direct_home(window, ui, th, direct, hub);
+        }
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
