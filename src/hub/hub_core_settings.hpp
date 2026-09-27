@@ -10,6 +10,8 @@
 //   <data_dir>/platform/<platform>/options.ini           option values (every title)
 //   <data_dir>/platform/<platform>/options/<key>.ini     option values (one title)
 //   <data_dir>/platform/<platform>/core_description.txt  the last --describe
+//   <data_dir>/play.ini                                  the overlay's settings
+//                                                        (every core, every title)
 //
 // The declarations come from the core itself, through
 // `retro-core-runner --describe` (Retro-Runtime docs/CORE_RUNNER.md): the hub
@@ -221,5 +223,22 @@ std::map<std::string, std::string> layer_core_options(
     const std::map<std::string, std::string>& platform,
     const std::map<std::string, std::string>& title,
     const std::map<std::string, std::string>& command_line);
+
+// ---- play preferences -------------------------------------------------------
+
+// What the play overlay (Retro-Runtime retro_overlay) shows and how loud the
+// game is: the same for every core, so one file for every platform. The
+// settings page edits it, and so do the in-game hotkeys (F3, +/-).
+struct PlayPrefs {
+    bool show_fps = false;
+    int volume = 100; // percent, 0..100
+    bool operator==(const PlayPrefs& o) const {
+        return show_fps == o.show_fps && volume == o.volume;
+    }
+    bool operator!=(const PlayPrefs& o) const { return !(*this == o); }
+};
+
+PlayPrefs load_play_prefs(const fs::path& data_dir);
+bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::string* error);
 
 } // namespace retcomm::hub
