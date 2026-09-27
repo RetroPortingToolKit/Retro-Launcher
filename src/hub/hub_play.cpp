@@ -5,8 +5,10 @@
 #include <SDL3/SDL_opengl.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <deque>
 #include <fstream>
+#include <optional>
 
 namespace retcomm::hub {
 
@@ -18,6 +20,50 @@ constexpr std::uint64_t kFallbackFrameNs = kNsPerSec / 60;
 constexpr double kTargetQueuedMs = 60.0;
 constexpr std::uint64_t kPersistEveryNs = 5 * kNsPerSec;
 constexpr std::uint32_t kSeats = 4;
+// Turbo grants back to back for this long per hub frame, then draws.
+constexpr std::uint64_t kTurboBudgetNs = 10 * 1000000ull;
+constexpr int kVolumeStep = 10;
+
+// Every connected gamepad, read by position (SOUTH is the bottom face button
+// whatever it is labelled), OR-ed together, for the save-state browser --
+// never through the player's bindings, so a remap cannot strand the menu.
+// `stick_y` is the left stick furthest from centre, rcore sign (up = +).
+std::uint32_t physical_pads(std::int16_t& stick_y) {
+    struct Map {
+        SDL_GamepadButton b;
+        std::uint32_t bit;
+    };
+    static constexpr Map kMap[] = {
+        {SDL_GAMEPAD_BUTTON_SOUTH, RCORE_PAD_SOUTH},
+        {SDL_GAMEPAD_BUTTON_EAST, RCORE_PAD_EAST},
+        {SDL_GAMEPAD_BUTTON_WEST, RCORE_PAD_WEST},
+        {SDL_GAMEPAD_BUTTON_NORTH, RCORE_PAD_NORTH},
+        {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, RCORE_PAD_L1},
+        {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, RCORE_PAD_R1},
+        {SDL_GAMEPAD_BUTTON_START, RCORE_PAD_START},
+        {SDL_GAMEPAD_BUTTON_BACK, RCORE_PAD_SELECT},
+        {SDL_GAMEPAD_BUTTON_DPAD_UP, RCORE_PAD_DPAD_UP},
+        {SDL_GAMEPAD_BUTTON_DPAD_DOWN, RCORE_PAD_DPAD_DOWN},
+        {SDL_GAMEPAD_BUTTON_DPAD_LEFT, RCORE_PAD_DPAD_LEFT},
+        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, RCORE_PAD_DPAD_RIGHT},
+    };
+    std::uint32_t buttons = 0;
+    int best = 0;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        SDL_Gamepad* g = SDL_GetGamepadFromID(ids[i]);
+        if (!g) continue;
+        for (const Map& m : kMap) {
+            if (SDL_GetGamepadButton(g, m.b)) buttons |= m.bit;
+        }
+        const int y = -int(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY));
+        if (std::abs(y) > std::abs(best)) best = y;
+    }
+    SDL_free(ids);
+    stick_y = static_cast<std::int16_t>(std::clamp(best, -32768, 32767));
+    return buttons;
+}
 
 // The last `n` lines of a text file, for the fault screen.
 std::vector<std::string> tail_lines(const fs::path& p, std::size_t n) {
@@ -38,6 +84,11 @@ PlaySession::~PlaySession() { shutdown(); }
 bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::path& session_dir,
                         const fs::path& save_dir, std::string* error) {
     args_ = args;
+    prefs_ = args.prefs;
+    osd_.set_fps_visible(prefs_.show_fps);
+    // A title's save states live with its saves: <save_dir>/states/slotNN.rstate.
+    states_dir_ = save_dir / "states";
+    states_.set_hint("SELECT+R1 OR F7");
     corelink::LaunchSpec spec;
     spec.runner = runner;
     spec.core = args.core;
@@ -67,32 +118,218 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
 }
 
 bool PlaySession::handle_event(const SDL_Event& e) {
+    // A KEY_UP lost to a focus change must not leave turbo stuck on.
+    if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) turbo_ = false;
+    if (link_.state() != corelink::LinkState::Ready) return false;
+    // The browser, while open, has the keyboard and the pads to itself.
+    if (states_.is_open()) return handle_states_event(e);
+
     const bool toggle =
         (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) ||
         (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
          (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_F1));
-    if (!toggle || link_.state() != corelink::LinkState::Ready) return false;
-    set_paused(!menu_open_);
-    return true;
+    if (toggle) {
+        set_paused(!menu_open_);
+        return true;
+    }
+    if (e.type != SDL_EVENT_KEY_DOWN && e.type != SDL_EVENT_KEY_UP) return false;
+    const bool down = e.type == SDL_EVENT_KEY_DOWN;
+    switch (e.key.key) {
+        case SDLK_F3:
+            if (down && !e.key.repeat) set_show_fps(!prefs_.show_fps);
+            return true;
+        case SDLK_F7:
+            if (down && !e.key.repeat && !menu_open_) open_states();
+            return true;
+        case SDLK_TAB: // held
+            if (menu_open_) return false;
+            if (!e.key.repeat) turbo_ = down;
+            return true;
+        case SDLK_EQUALS:
+        case SDLK_PLUS:
+        case SDLK_KP_PLUS:
+            if (down) set_volume(prefs_.volume + kVolumeStep);
+            return true;
+        case SDLK_MINUS:
+        case SDLK_KP_MINUS:
+            if (down) set_volume(prefs_.volume - kVolumeStep);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool PlaySession::handle_states_event(const SDL_Event& e) {
+    using Key = retro::overlay::SavestateMenu::Key;
+    if (e.type == SDL_EVENT_KEY_DOWN) {
+        const SDL_Keycode k = e.key.key;
+        if (k == SDLK_UP || k == SDLK_LEFT) states_.key(Key::Up);
+        else if (k == SDLK_DOWN || k == SDLK_RIGHT) states_.key(Key::Down);
+        else if (e.key.repeat) {
+        } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) states_.key(Key::Load);
+        else if (k == SDLK_S) states_.key(Key::Save);
+        else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE || k == SDLK_F7) states_.key(Key::Back);
+        else if (k >= SDLK_1 && k <= SDLK_9) states_.jump(int(k - SDLK_1));
+        else if (k == SDLK_0) states_.jump(9);
+        else if (k == SDLK_MINUS) states_.jump(10);
+        else if (k == SDLK_EQUALS) states_.jump(11);
+        else if (k == SDLK_F3) set_show_fps(!prefs_.show_fps);
+        return true;
+    }
+    if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+        states_.key(Key::Back);
+        return true;
+    }
+    // Pads are read in tick(); none of it reaches ImGui behind the browser.
+    return e.type == SDL_EVENT_KEY_UP || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+           e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
 }
 
 void PlaySession::set_paused(bool paused) {
     menu_open_ = paused;
-    // Offline the quick menu pauses (HOST_LIFECYCLE.md): no grants, no sound.
-    if (audio_) {
-        if (paused) SDL_PauseAudioStreamDevice(audio_);
-        else SDL_ResumeAudioStreamDevice(audio_);
-    }
-    next_grant_ns_ = 0;
+    sync_pause();
 }
 
-void PlaySession::fill_pads(rcore_pad pads[RCORE_MAX_SEATS]) const {
+// Offline the quick menu and the save-state browser pause (HOST_LIFECYCLE.md):
+// no grants, no sound.
+void PlaySession::sync_pause() {
+    const bool want = paused();
+    if (want) next_grant_ns_ = 0;
+    if (was_paused_ && !want) osd_.restart_fps(); // the pause is not a slow frame
+    was_paused_ = want;
+    if (!audio_ || want == audio_paused_) return;
+    if (want) SDL_PauseAudioStreamDevice(audio_);
+    else SDL_ResumeAudioStreamDevice(audio_);
+    audio_paused_ = want;
+}
+
+void PlaySession::set_volume(int percent) {
+    prefs_.volume = std::clamp(percent, 0, 100);
+    if (audio_) SDL_SetAudioStreamGain(audio_, float(prefs_.volume) / 100.0f);
+    osd_.show_volume(prefs_.volume, SDL_GetTicksNS());
+    save_prefs();
+}
+
+void PlaySession::set_show_fps(bool on) {
+    prefs_.show_fps = on;
+    osd_.set_fps_visible(on);
+    save_prefs();
+}
+
+void PlaySession::save_prefs() {
+    if (args_.data_dir.empty()) return;
+    std::string err;
+    if (!save_play_prefs(args_.data_dir, prefs_, &err)) {
+        SDL_Log("retro-hub: play settings not saved: %s", err.c_str());
+    }
+}
+
+// The hotkey's way in; the pad chord opens it in poll_states_pad(). A core
+// without savestates, or a runner from before link 1.1, gets a toast instead.
+void PlaySession::open_states() {
+    const corelink::CoreIdentity& id = link_.identity();
+    if (!link_.states_supported()) {
+        const std::string why =
+            id.protocol_minor < 1 ? "Save states need a newer retro-core-runner"
+                                  : id.core_id + " has no save states";
+        osd_.toast(why, SDL_GetTicksNS(), 3000);
+        states_.close();
+        return;
+    }
+    if (!states_configured_) {
+        states_.configure(states_dir_, id.core_id, id.sha256);
+        states_configured_ = true;
+    }
+    states_.open();
+}
+
+void PlaySession::poll_states_pad(std::uint64_t now) {
+    std::int16_t stick_y = 0;
+    const std::uint32_t buttons = physical_pads(stick_y);
+    if (menu_open_) return; // the quick menu has the pads
+    if (states_.poll_pad(buttons, stick_y, now / 1000000ull)) {
+        states_.close();
+        open_states();
+    }
+}
+
+void PlaySession::service_states() {
+    const std::uint64_t now = SDL_GetTicksNS();
+    // Closing: whatever is held now stays out of the game until released.
+    const bool open = states_.is_open();
+    if (states_were_open_ && !open) {
+        rcore_pad pads[RCORE_MAX_SEATS];
+        fill_pads(pads);
+        guard_.arm(pads, kSeats);
+    }
+    states_were_open_ = open;
+    if (std::string t = states_.take_toast(); !t.empty()) osd_.toast(t, now);
+
+    using Req = retro::overlay::SavestateMenu::Request;
+    if (state_request_.kind == Req::None) state_request_ = states_.take_request();
+    if (state_request_.kind != Req::None && !link_.state_pending()) {
+        // The frame in flight finishes first: a state is taken between frames.
+        if (link_.state() != corelink::LinkState::Ready) {
+            states_.finish(false, "the game stopped");
+            state_request_ = Req{};
+        } else if (link_.can_request_state()) {
+            const bool sent = state_request_.kind == Req::Save
+                                  ? link_.request_save_state(state_request_.path)
+                                  : link_.request_load_state(state_request_.path);
+            if (!sent) states_.finish(false, "the link could not send the request");
+            state_request_ = Req{};
+        }
+    }
+    if (std::optional<corelink::StateResult> r = link_.take_state_result()) {
+        SDL_Log("retro-hub: state %s %s: %s", r->save ? "save" : "load",
+                r->path.string().c_str(), r->ok ? "ok" : r->detail.c_str());
+        states_.finish(r->ok, r->detail);
+        if (r->ok && !r->save) next_grant_ns_ = 0;
+    }
+}
+
+void PlaySession::fill_pads(rcore_pad pads[RCORE_MAX_SEATS]) {
     // The platform's seats: which device each port reads, and its map.
     fill_pads_from_input(args_.input, pads, kSeats);
 }
 
+void PlaySession::grant(std::uint64_t) {
+    rcore_pad pads[RCORE_MAX_SEATS];
+    fill_pads(pads);
+    guard_.apply(pads, kSeats);
+    link_.grant(pads);
+}
+
+// Turbo: grant again as soon as a frame is done, for most of a hub frame, and
+// throw the sound away (pump_audio). The machine runs exactly the frames it
+// always would; only the host stops holding it back.
+void PlaySession::run_turbo() {
+    const std::uint64_t until = SDL_GetTicksNS() + kTurboBudgetNs;
+    while (link_.state() == corelink::LinkState::Ready && !paused() && !link_.state_pending()) {
+        if (link_.can_grant()) grant(SDL_GetTicksNS());
+        link_.pump(1);
+        note_frames(SDL_GetTicksNS());
+        pump_audio();
+        if (SDL_GetTicksNS() >= until) break;
+    }
+}
+
+// Every frame the core finished since the last call, for the FPS readout,
+// spread evenly over the time since (a hub frame can collect several).
+void PlaySession::note_frames(std::uint64_t now) {
+    const std::uint64_t done = link_.frames_done();
+    if (done <= noted_frames_) return;
+    const std::uint64_t n = done - noted_frames_;
+    if (noted_ns_ && now > noted_ns_) {
+        for (std::uint64_t i = 1; i < n; ++i) osd_.note_frame(noted_ns_ + (now - noted_ns_) * i / n);
+    }
+    osd_.note_frame(now);
+    noted_frames_ = done;
+    noted_ns_ = now;
+}
+
 void PlaySession::grant_if_due() {
-    if (menu_open_ || !link_.can_grant()) return;
+    if (paused() || !link_.can_grant()) return;
     const std::uint64_t now = SDL_GetTicksNS();
     bool due;
     if (audio_ && audio_hz_) {
@@ -110,9 +347,7 @@ void PlaySession::grant_if_due() {
         if (due) next_grant_ns_ += period;
     }
     if (!due) return;
-    rcore_pad pads[RCORE_MAX_SEATS];
-    fill_pads(pads);
-    link_.grant(pads);
+    grant(now);
 }
 
 void PlaySession::pump_audio() {
@@ -122,7 +357,11 @@ void PlaySession::pump_audio() {
         if (!audio_) {
             audio_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr,
                                                nullptr);
-            if (audio_ && !menu_open_) SDL_ResumeAudioStreamDevice(audio_);
+            if (audio_) {
+                SDL_SetAudioStreamGain(audio_, float(prefs_.volume) / 100.0f);
+                audio_paused_ = true; // opened paused
+                sync_pause();
+            }
         } else {
             // A guest may change its DAC rate mid-run; SDL resamples.
             SDL_SetAudioStreamFormat(audio_, &spec, nullptr);
@@ -133,7 +372,7 @@ void PlaySession::pump_audio() {
     for (;;) {
         const std::size_t n = link_.drain_audio(audio_buf_.data(), 4096);
         if (!n) break;
-        if (audio_) {
+        if (audio_ && !turbo_) {
             SDL_PutAudioStreamData(audio_, audio_buf_.data(), static_cast<int>(n * 4));
         }
     }
@@ -170,11 +409,25 @@ void PlaySession::tick() {
     link_.pump(0);
     if (link_.state() == corelink::LinkState::Ended) {
         if (audio_) SDL_PauseAudioStreamDevice(audio_);
+        if (states_.pending()) states_.finish(false, "the game stopped");
         return;
     }
+    const bool ready = link_.state() == corelink::LinkState::Ready;
+    // Turbo while Tab is down, and never behind a menu.
+    const bool was_turbo = turbo_;
+    turbo_ = turbo_ && ready && !paused();
+    osd_.set_turbo(turbo_);
+    if (turbo_ && !was_turbo && audio_) SDL_ClearAudioStream(audio_); // no stale sound
+    if (ready) {
+        poll_states_pad(SDL_GetTicksNS());
+        service_states();
+    }
+    sync_pause();
     pump_audio();
+    note_frames(SDL_GetTicksNS());
     upload_frame();
-    grant_if_due();
+    if (turbo_) run_turbo();
+    else grant_if_due();
     const std::uint64_t now = SDL_GetTicksNS();
     if (now - last_persist_ns_ > kPersistEveryNs) {
         link_.persist_saves();
@@ -197,7 +450,7 @@ void PlaySession::draw() {
             w = disp.y * aspect;
         }
         const ImVec2 p0((disp.x - w) * 0.5f, (disp.y - h) * 0.5f);
-        const ImU32 tint = menu_open_ ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE;
+        const ImU32 tint = paused() ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE;
         bg->AddImage((ImTextureID)(intptr_t)tex_, p0, ImVec2(p0.x + w, p0.y + h), ImVec2(0, 0),
                      ImVec2(1, 1), tint);
     }
@@ -211,8 +464,44 @@ void PlaySession::draw() {
             else draw_fault();
             break;
         case corelink::LinkState::Ready:
+            draw_overlay();
             if (menu_open_) draw_menu();
             break;
+    }
+}
+
+// Retro-Runtime's overlay, as it hands it over: one texture per layer,
+// re-uploaded when the layer's pixels change, drawn where place() says, over
+// the picture and under the hub's own windows.
+void PlaySession::draw_overlay() {
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
+    if (const retro::overlay::Layer* panel = states_.layer()) layers.push_back(*panel);
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    for (const retro::overlay::Layer& l : layers) {
+        const retro::overlay::Image& img = *l.image;
+        LayerTex& t = layer_tex_[l.id];
+        if (!t.tex) {
+            glGenTextures(1, &t.tex);
+            glBindTexture(GL_TEXTURE_2D, t.tex);
+            // Nearest: the overlay is pixel type, drawn at whole multiples.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            t.rev = ~l.revision;
+        }
+        if (t.rev != l.revision || t.w != img.width || t.h != img.height) {
+            glBindTexture(GL_TEXTURE_2D, t.tex);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLsizei(img.width), GLsizei(img.height), 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, img.rgba.data());
+            t.rev = l.revision;
+            t.w = img.width;
+            t.h = img.height;
+        }
+        const retro::overlay::Rect r = retro::overlay::place(l, disp.x, disp.y);
+        dl->AddImage((ImTextureID)(intptr_t)t.tex, ImVec2(r.x, r.y), ImVec2(r.x + r.w, r.y + r.h));
     }
 }
 
@@ -243,10 +532,28 @@ void PlaySession::draw_menu() {
     ImGui::Separator();
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     if (ImGui::Button("Resume", ImVec2(220, 0))) set_paused(false);
+    ImGui::BeginDisabled(!link_.states_supported());
+    if (ImGui::Button("Save states", ImVec2(220, 0))) {
+        set_paused(false);
+        open_states();
+    }
+    ImGui::EndDisabled();
+    bool fps = prefs_.show_fps;
+    if (ImGui::Checkbox("Show FPS", &fps)) set_show_fps(fps);
+    int vol = prefs_.volume;
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::SliderInt("##volume", &vol, 0, 100, "Volume %d%%")) {
+        prefs_.volume = vol;
+        if (audio_) SDL_SetAudioStreamGain(audio_, float(vol) / 100.0f);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) save_prefs();
     if (ImGui::Button("Close game", ImVec2(220, 0))) {
         user_quit_ = true;
         link_.stop();
     }
+    ImGui::Separator();
+    ImGui::TextDisabled("F3 FPS  \xC2\xB7  Tab turbo  \xC2\xB7  +/- volume");
+    ImGui::TextDisabled("F7 or Select+R1 save states");
     ImGui::End();
 }
 
@@ -295,6 +602,10 @@ void PlaySession::shutdown() {
         glDeleteTextures(1, &tex_);
         tex_ = 0;
     }
+    for (auto& [id, t] : layer_tex_) {
+        if (t.tex) glDeleteTextures(1, &t.tex);
+    }
+    layer_tex_.clear();
 }
 
 } // namespace retcomm::hub

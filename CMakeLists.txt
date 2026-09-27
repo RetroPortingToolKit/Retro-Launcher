@@ -413,7 +413,9 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
                    src/hub/hub_title.cpp)
-    target_link_libraries(retro-hub PRIVATE retro_corelink)
+    # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
+    # gets (Retro-Runtime docs/OVERLAY.md).
+    target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
     target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     # The pieces of it that need no window: --describe parsing, bindings and
     # option files, and the pad table they produce.

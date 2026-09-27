@@ -4,9 +4,21 @@
 // the picture drawn behind everything, the quick menu as an overlay, input
 // from the hub's own gamepads, audio through SDL. The core itself runs in
 // retro-core-runner, reached through corelink::CoreLink.
+//
+// The play overlay -- FPS, TURBO, the volume meter, toasts, the save-state
+// browser -- is Retro-Runtime's retro_overlay (docs/OVERLAY.md), so it looks
+// the same whichever core is running. This class feeds it events and draws
+// its images; it draws none of its own.
+//
+// Hotkeys while playing:
+//   F3            show / hide FPS (also on the settings page)
+//   Tab (held)    turbo: run the core as fast as it goes
+//   + / -         volume (the = and - keys, or the keypad's)
+//   F7            save states (also SELECT + R1 on a pad)
 
 #include "core_link.hpp" // Retro-Runtime: retro_corelink
 #include "hub/hub_core_settings.hpp"
+#include "overlay.hpp"   // Retro-Runtime: retro_overlay
 
 #include <SDL3/SDL.h>
 
@@ -39,6 +51,10 @@ struct PlayArgs {
     // Which device each seat reads and what its inputs drive
     // (hub_core_settings.hpp): the platform's saved seats, or the defaults.
     PlatformInput input;
+    // The overlay's settings, and where the hotkeys write them back (empty =
+    // not persisted).
+    PlayPrefs prefs;
+    fs::path data_dir;
 };
 
 class PlaySession {
@@ -67,11 +83,24 @@ public:
     void shutdown();
 
 private:
-    void fill_pads(rcore_pad pads[RCORE_MAX_SEATS]) const;
+    void fill_pads(rcore_pad pads[RCORE_MAX_SEATS]);
+    void grant(std::uint64_t now);
     void grant_if_due();
+    void run_turbo();
+    void note_frames(std::uint64_t now);
     void pump_audio();
     void upload_frame();
     void set_paused(bool paused);
+    bool paused() const { return menu_open_ || states_.is_open(); }
+    void sync_pause();
+    void set_volume(int percent);
+    void set_show_fps(bool on);
+    void save_prefs();
+    void open_states();
+    bool handle_states_event(const SDL_Event& e);
+    void poll_states_pad(std::uint64_t now);
+    void service_states();
+    void draw_overlay();
     void draw_menu();
     void draw_fault();
     void draw_loading();
@@ -100,6 +129,27 @@ private:
     fs::path runner_log_;
     std::vector<std::string> fault_log_; // runner.log's tail, read once
     bool fault_log_loaded_ = false;
+
+    // The overlay (Retro-Runtime retro_overlay) and one texture per layer.
+    retro::overlay::Osd osd_;
+    retro::overlay::SavestateMenu states_;
+    retro::overlay::InputGuard guard_;
+    struct LayerTex {
+        unsigned int tex = 0;
+        std::uint64_t rev = 0;
+        std::uint32_t w = 0, h = 0;
+    };
+    std::map<std::uint32_t, LayerTex> layer_tex_;
+    fs::path states_dir_;
+    bool states_configured_ = false;
+    bool states_were_open_ = false;
+    retro::overlay::SavestateMenu::Request state_request_; // waiting for a gap between frames
+
+    PlayPrefs prefs_;
+    bool turbo_ = false;          // Tab held
+    bool audio_paused_ = true;    // the SDL stream's state, as last set
+    bool was_paused_ = false;
+    std::uint64_t noted_frames_ = 0, noted_ns_ = 0;
 };
 
 } // namespace retcomm::hub
