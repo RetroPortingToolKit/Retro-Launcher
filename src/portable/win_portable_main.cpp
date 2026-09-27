@@ -22,6 +22,17 @@
 // the runtime and leave RETCOMM_HOME unset, so config+data stay at the historical
 // %LOCALAPPDATA%\retcomm and an existing portable user's library still resolves.
 // The appended zip is unpacked in-process (miniz); no helper process is run.
+//
+// Title apps (packaging/title/build-title-app.ps1) use this same stub. Their
+// payload carries title/title.json, and then (docs/RELEASES.md, title-app mode):
+//   <exe_dir>\<id>-data\app\          the extracted hub, runner and title
+//   <exe_dir>\<id>-data\app.version    which payload that is (a fingerprint)
+//   <exe_dir>\<id>-data\...            the hub's own state (it finds this dir
+//                                       from RETCOMM_PORTABLE_EXE)
+// falling back to %LOCALAPPDATA%\<id>\ when the exe folder is not writable.
+// RETCOMM_HOME is not set and nothing is written into the extracted payload.
+// The hub starts in the caller's working directory, so a relative --rom on
+// the command line means what the player typed.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -173,6 +184,96 @@ fs::path local_app_data() {
     return {};
 }
 
+// A title app's payload: its title.json id, and a fingerprint of the whole
+// payload (every entry's name, CRC and size, from the central directory), so a
+// rebuilt app with the same launcher version still unpacks its new files.
+struct TitlePayload {
+    bool present = false;
+    std::string id;
+    std::string fingerprint;
+};
+
+std::string json_string_field(const std::string& text, const std::string& field) {
+    const std::string key = "\"" + field + "\"";
+    const size_t k = text.find(key);
+    if (k == std::string::npos) return {};
+    size_t p = text.find(':', k + key.size());
+    if (p == std::string::npos) return {};
+    ++p;
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == '\r' ||
+                               text[p] == '\n'))
+        ++p;
+    if (p >= text.size() || text[p] != '"') return {};
+    std::string out;
+    for (++p; p < text.size() && text[p] != '"'; ++p) out.push_back(text[p]);
+    return out;
+}
+
+bool valid_title_id(const std::string& id) {
+    if (id.empty()) return false;
+    for (char c : id) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+TitlePayload read_title_payload(const fs::path& self, uint64_t offset, uint64_t size) {
+    TitlePayload t;
+    std::ifstream in(self, std::ios::binary);
+    if (!in) return t;
+    retcomm::zip::detail::StreamSource src;
+    src.in = &in;
+    src.base = offset;
+    mz_zip_archive za;
+    memset(&za, 0, sizeof(za));
+    za.m_pRead = retcomm::zip::detail::stream_read;
+    za.m_pIO_opaque = &src;
+    if (!mz_zip_reader_init(&za, size, 0)) return t;
+    uint64_t h = 1469598103934665603ull; // FNV-1a 64
+    auto mix = [&](const void* p, size_t n) {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; ++i) {
+            h ^= b[i];
+            h *= 1099511628211ull;
+        }
+    };
+    int title_index = -1;
+    const mz_uint count = mz_zip_reader_get_num_files(&za);
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&za, i, &st)) continue;
+        std::string name = st.m_filename;
+        for (char& c : name)
+            if (c == '\\') c = '/';
+        if (name == "title/title.json") title_index = static_cast<int>(i);
+        mix(name.data(), name.size());
+        mix(&st.m_crc32, sizeof(st.m_crc32));
+        mix(&st.m_uncomp_size, sizeof(st.m_uncomp_size));
+    }
+    if (title_index >= 0) {
+        mz_zip_archive_file_stat st;
+        if (mz_zip_reader_file_stat(&za, static_cast<mz_uint>(title_index), &st) &&
+            st.m_uncomp_size > 0 && st.m_uncomp_size < (1u << 20)) {
+            std::string text(static_cast<size_t>(st.m_uncomp_size), '\0');
+            if (mz_zip_reader_extract_to_mem(&za, static_cast<mz_uint>(title_index), text.data(),
+                                             text.size(), 0)) {
+                t.id = json_string_field(text, "id");
+                t.present = valid_title_id(t.id);
+            }
+        }
+    }
+    mz_zip_reader_end(&za);
+    char hex[17];
+    for (int i = 15; i >= 0; --i) {
+        hex[i] = "0123456789abcdef"[h & 0xF];
+        h >>= 4;
+    }
+    hex[16] = '\0';
+    t.fingerprint = hex;
+    return t;
+}
+
 bool read_trailer(const fs::path& self, uint64_t* payload_size, uint64_t* payload_offset) {
     std::ifstream in(self, std::ios::binary);
     if (!in) return false;
@@ -253,7 +354,8 @@ void write_channel(const fs::path& dir, const fs::path& portable_exe,
 }
 
 bool launch(const fs::path& binary, const std::wstring& args, const fs::path& portable_exe,
-            const fs::path& data_root, bool attach_console, std::wstring* err) {
+            const fs::path& data_root, bool attach_console, std::wstring* err,
+            bool keep_cwd = false) {
     std::wstring cmd = L"\"" + binary.wstring() + L"\"";
     if (!args.empty()) cmd += L" " + args;
 
@@ -277,7 +379,8 @@ bool launch(const fs::path& binary, const std::wstring& args, const fs::path& po
     const DWORD flags = attach_console ? 0 : (CREATE_NO_WINDOW | DETACHED_PROCESS);
     const BOOL ok =
         CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, attach_console ? TRUE : FALSE,
-                       flags, nullptr, binary.parent_path().wstring().c_str(), &si, &pi);
+                       flags, nullptr,
+                       keep_cwd ? nullptr : binary.parent_path().wstring().c_str(), &si, &pi);
     if (!ok) {
         *err = L"Failed to launch " + binary.filename().wstring();
         return false;
@@ -295,15 +398,92 @@ bool launch(const fs::path& binary, const std::wstring& args, const fs::path& po
     return true;
 }
 
+// One argument as CommandLineToArgvW will read it back: quoted when it has
+// blanks or quotes, with backslashes doubled only where they precede a quote.
+std::wstring quote_arg(const std::wstring& a) {
+    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) return a;
+    std::wstring out = L"\"";
+    for (size_t i = 0;; ++i) {
+        size_t slashes = 0;
+        while (i < a.size() && a[i] == L'\\') {
+            ++i;
+            ++slashes;
+        }
+        if (i == a.size()) {
+            out.append(slashes * 2, L'\\');
+            break;
+        }
+        if (a[i] == L'"') {
+            out.append(slashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+        } else {
+            out.append(slashes, L'\\');
+            out.push_back(a[i]);
+        }
+    }
+    out.push_back(L'"');
+    return out;
+}
+
 std::wstring join_args(int start, int argc, wchar_t** argv) {
     std::wstring out;
     for (int i = start; i < argc; ++i) {
         if (i > start) out += L' ';
-        const std::wstring a = argv[i];
-        if (a.find(L' ') != std::wstring::npos) out += L'"' + a + L'"';
-        else out += a;
+        out += quote_arg(argv[i]);
     }
     return out;
+}
+
+// A title app: unpack into <base>\app when the payload changed, start the hub
+// in the caller's directory. See the header comment.
+int run_title_app(const fs::path& self, const TitlePayload& t, uint64_t payload_offset,
+                  uint64_t payload_size, int argc, wchar_t** argv) {
+    const std::wstring id(t.id.begin(), t.id.end());
+    fs::path base = self.parent_path() / (id + L"-data");
+    std::error_code ec;
+    // The exe folder, not <id>-data: that may not exist yet, and the probe
+    // must not create it (it would be created on an unwritable medium's
+    // fallback path otherwise).
+    if (!dir_is_writable(self.parent_path())) {
+        const fs::path lad = local_app_data();
+        if (lad.empty()) {
+            fail(L"Cannot write beside the executable, and %LOCALAPPDATA% is unset.");
+            return 1;
+        }
+        base = lad / id;
+    }
+    const fs::path app = base / L"app";
+    const fs::path version_file = base / L"app.version";
+    const std::string want = std::string(RETCOMM_VERSION) + " " + t.fingerprint;
+    bool need_extract = true;
+    {
+        std::ifstream in(version_file);
+        std::string have;
+        if (in && std::getline(in, have) && have == want &&
+            fs::is_regular_file(app / "retro-hub.exe", ec))
+            need_extract = false;
+    }
+    if (need_extract) {
+        std::wstring err;
+        fs::create_directories(base, ec);
+        if (!extract_payload(self, payload_offset, payload_size, app, &err)) {
+            fail(err.empty() ? L"Payload extract failed." : err);
+            return 1;
+        }
+        std::ofstream out(version_file, std::ios::trunc);
+        out << want << "\n";
+    }
+    const fs::path hub = app / "retro-hub.exe";
+    if (!fs::is_regular_file(hub, ec)) {
+        fail(L"retro-hub.exe missing from the app's payload.");
+        return 1;
+    }
+    std::wstring err;
+    if (!launch(hub, join_args(1, argc, argv), self, fs::path(), false, &err, true)) {
+        fail(err.empty() ? L"Launch failed." : err);
+        return 1;
+    }
+    return 0;
 }
 
 } // namespace
@@ -328,6 +508,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         LocalFree(argv);
         fail(L"This file is not a valid Retro portable package (missing payload).");
         return 1;
+    }
+
+    const TitlePayload title = read_title_payload(self, payload_offset, payload_size);
+    if (title.present) {
+        const int rc = run_title_app(self, title, payload_offset, payload_size, argc, argv);
+        LocalFree(argv);
+        return rc;
     }
 
     // Prefer a self-contained folder beside the .exe; fall back to the historical

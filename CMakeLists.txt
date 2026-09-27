@@ -411,7 +411,8 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp)
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
+                   src/hub/hub_title.cpp)
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -428,6 +429,13 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${RETCOMM_HUB_SDL_TARGET})
         add_test(NAME hub_core_settings COMMAND retro-hub-settings-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
+        # Title-app mode's windowless half: title.json, the data dir beside
+        # the app, the ROM checks, mods.toml in the state dir.
+        add_executable(retro-hub-title-test tests/hub_title_test.cpp src/hub/hub_title.cpp)
+        target_include_directories(retro-hub-title-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(retro-hub-title-test PRIVATE retcomm_core retro_corelink)
+        add_test(NAME hub_title COMMAND retro-hub-title-test
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_title_test.d)
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
@@ -494,6 +502,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/setup/setup_easy_rocket.png")
             DESTINATION share/retcomm/setup
             FILES_MATCHING PATTERN "*.png")
 endif()
+
+# The title-app packaging kit (packaging/title/, docs/RELEASES.md) and the
+# scripts it shares with the launcher's own packaging (packaging/common/).
+# A flat hub prefix carries them at <hub dir>/packaging/ (the bare hub
+# archive, scripts/build-local.*); an install prefix keeps them here, where
+# those scripts take them from.
+install(DIRECTORY packaging/title/ DESTINATION share/retcomm/packaging/title
+        USE_SOURCE_PERMISSIONS)
+install(DIRECTORY packaging/common/ DESTINATION share/retcomm/packaging/common
+        USE_SOURCE_PERMISSIONS)
 
 # Windows: ship vcpkg/shared runtime DLLs next to the installed exes.
 if(WIN32)

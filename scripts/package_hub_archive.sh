@@ -22,7 +22,9 @@
 #   - every other library the hub imports must be on the system allowlist;
 #   - the hub INSIDE the archive, extracted to a clean directory, must report
 #     this release's version and commit (`--version`), resolve SDL3 from the
-#     archive, and accept the Direct-mode command line.
+#     archive, and accept the Direct-mode command line;
+#   - the title-app kit (packaging/title/, packaging/common/) is in it, and
+#     answers --help from the extracted archive.
 #
 # Output in --out:
 #   retro-hub-<version>-<platform>.tar.gz
@@ -72,7 +74,6 @@ NAME="retro-hub-${VERSION}-${PLATFORM}"
 ARCHIVE_NAME="${NAME}.tar.gz"
 ARCHIVE="${OUT}/${ARCHIVE_NAME}"
 HUB="${PREFIX}/bin/retro-hub"
-ASSETS="${PREFIX}/share/retcomm"
 [[ -f "${HUB}" && ! -L "${HUB}" ]] || die "${HUB}: not installed"
 
 # ---- stage: the hub, SDL3, the data it loads beside itself, licences -----
@@ -88,29 +89,26 @@ add() { # <source> <path in archive> [mode]
   files+=("$2")
 }
 
-add "${HUB}" retro-hub 0755
+# The hub, the assets it loads beside itself, and the title-app kit
+# (packaging/title/, packaging/common/): scripts/flat_hub_layout.sh, the one
+# list this archive and scripts/build-local.sh share. Only fonts matter to
+# Direct mode (without them ImGui's default face is used); the art is for the
+# library UI, which the same binary also runs; the kit packages a title app
+# from this directory (docs/RELEASES.md, "Title-app mode").
+# shellcheck source=flat_hub_layout.sh
+source "${ROOT}/scripts/flat_hub_layout.sh"
+entries="$(flat_hub_entries "${PREFIX}")" || die "the install prefix is incomplete"
+while IFS=$'\t' read -r src dst mode; do
+  add "${src}" "${dst}" "${mode}"
+done <<<"${entries}"
 # The soname the hub imports, as a real file (no symlinks in the archive).
 SDL_SONAME="$(readelf -d "${HUB}" | sed -n 's/.*(NEEDED).*\[\(libSDL3\.so[^]]*\)\]/\1/p')"
 [[ -n "${SDL_SONAME}" ]] || die "retro-hub does not import libSDL3 (built without the hub UI?)"
 add "${PREFIX}/lib/${SDL_SONAME}" "${SDL_SONAME}" 0755
 
-# What the hub finds beside its executable (src/hub/hub_main.cpp,
-# find_hub_asset_file: SDL_GetBasePath()/<kind>/, and <base>/retcomm.png) --
-# the same set build-appimage.sh places beside usr/bin. Only fonts matter to
-# Direct mode (without them ImGui's default face is used); the art is for the
-# library UI, which the same binary also runs.
-add "${ASSETS}/retcomm.png" retcomm.png
-for f in LatoLatin-Regular.ttf LatoLatin-Bold.ttf NOTICE.md; do
-  add "${ASSETS}/fonts/${f}" "fonts/${f}"
-done
-for kind in platforms controllers setup; do
-  [[ -d "${ASSETS}/${kind}" ]] || die "${ASSETS}/${kind}: not installed"
-  while IFS= read -r f; do
-    add "${ASSETS}/${kind}/${f}" "${kind}/${f}"
-  done < <(cd "${ASSETS}/${kind}" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
-done
 [[ -f "${STAGE}/platforms/psx.png" ]] || die "platform art missing"
 [[ -f "${STAGE}/setup/setup_easy_rocket.png" ]] || die "setup card art missing"
+[[ -x "${STAGE}/packaging/title/build-title-app.sh" ]] || die "the title-app kit is missing"
 
 # Licences: this project, SDL3 (shipped beside it), and what is linked
 # statically into retro-hub (Dear ImGui with imgui_freetype, miniz, stb,
@@ -191,6 +189,11 @@ direct_rc=$?
 set -e
 [[ ${direct_rc} -eq 2 && "${direct_err}" == *"--run-core needs --rom"* ]] ||
   die "the archived hub did not refuse --run-core without --rom (exit ${direct_rc}: ${direct_err})"
+
+# The title-app kit runs from the extracted archive (it finds the hub at ../..).
+env -u LD_LIBRARY_PATH bash "${CLEAN}/packaging/title/build-title-app.sh" --help >/dev/null ||
+  die "the archived title-app kit does not run"
+[[ "$(field title_app)" =~ ^[1-9][0-9]*$ ]] || die "the archived hub has no title-app mode"
 
 # ---- record what shipped --------------------------------------------------
 SHA256="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"

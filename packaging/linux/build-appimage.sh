@@ -14,6 +14,9 @@ PREFIX="${1:?install prefix}"
 VERSION="${2:?version}"
 ARCH="${3:-$(uname -m)}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# linuxdeploy fetch/run and AppImage extraction, shared with packaging/title/.
+# shellcheck source=../common/appimage.sh
+source "${ROOT}/packaging/common/appimage.sh"
 OUT_DIR="${ROOT}/dist"
 APPDIR="${OUT_DIR}/Retro.AppDir"
 TOOL_DIR="${OUT_DIR}/tools"
@@ -103,16 +106,12 @@ if [[ -f "${ROOT}/assets/retcomm.svg" ]]; then
     "${APPDIR}/usr/share/icons/hicolor/scalable/apps/retcomm.svg"
 fi
 
-sed "s|@VERSION@|${VERSION}|g" "${ROOT}/packaging/linux/AppRun.in" > "${APPDIR}/AppRun"
+sed "s|@VERSION@|${VERSION}|g" "${ROOT}/packaging/common/AppRun.in" > "${APPDIR}/AppRun"
 chmod 755 "${APPDIR}/AppRun"
 
-# Bundle runtime deps (SDL3, libcurl, …) with linuxdeploy when available.
-LINUXDEPLOY="${TOOL_DIR}/linuxdeploy-${ARCH}.AppImage"
-if [[ ! -x "${LINUXDEPLOY}" ]]; then
-  curl -fsSL -o "${LINUXDEPLOY}" \
-    "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage"
-  chmod +x "${LINUXDEPLOY}"
-fi
+# Bundle runtime deps (SDL3, libcurl, …) with linuxdeploy (cached in
+# dist/tools/, or $RETRO_HUB_LINUXDEPLOY).
+LINUXDEPLOY="$(rh_linuxdeploy "${ARCH}" "${TOOL_DIR}")"
 
 # Plugin optional — linuxdeploy still copies DT_NEEDED libs without it.
 # Stable filename (no version): self-update replaces the AppImage in place and
@@ -120,17 +119,9 @@ fi
 export LDAI_OUTPUT="${OUT_DIR}/Retro-Launcher-linux-${ARCH}.AppImage"
 export LINUXDEPLOY_OUTPUT_VERSION="${VERSION}"
 
-# linuxdeploy ships an old binutils strip that rejects modern ELF (RELR / .relr.dyn)
-# from current glibc toolchains (e.g. CachyOS / Arch). Skip strip; size cost is fine.
-export NO_STRIP="${NO_STRIP:-1}"
-
-# AppImage runtime extraction needs FUSE; --appimage-extract-and-run avoids that in CI.
-LD_RUN=("${LINUXDEPLOY}" --appimage-extract-and-run)
-if ! "${LINUXDEPLOY}" --appimage-extract-and-run --version >/dev/null 2>&1; then
-  LD_RUN=("${LINUXDEPLOY}")
-fi
-
-"${LD_RUN[@]}" \
+# rh_run_linuxdeploy: --appimage-extract-and-run when FUSE is missing (CI), and
+# NO_STRIP=1 (linuxdeploy's old strip rejects modern RELR ELF).
+rh_run_linuxdeploy "${LINUXDEPLOY}" \
   --appdir "${APPDIR}" \
   --executable "${APPDIR}/usr/bin/retro-hub" \
   --executable "${APPDIR}/usr/bin/retro-core-runner" \
@@ -159,49 +150,14 @@ fi
 # (no FUSE / display auth), unsquash at the type-2 squashfs offset. Hard-fail
 # when fonts are missing or the image cannot be inspected.
 VERIFY_DIR="${OUT_DIR}/.appimage-font-check"
-rm -rf "${VERIFY_DIR}"
-mkdir -p "${VERIFY_DIR}"
+rh_extract_appimage "${APPIMAGE_OUT}" "${VERIFY_DIR}" || {
+  echo "error: could not extract AppImage to verify hub fonts" >&2
+  echo "  need working --appimage-extract or unsquashfs" >&2
+  exit 1
+}
 (
   cd "${VERIFY_DIR}"
-  ROOT_DIR=""
-  if "${APPIMAGE_OUT}" --appimage-extract >/dev/null 2>&1 && [[ -d squashfs-root ]]; then
-    ROOT_DIR=squashfs-root
-  elif command -v unsquashfs >/dev/null 2>&1; then
-    # Type-2 AppImage: ELF runtime + squashfs. Find the last little-endian
-    # "hsqs" magic (false positives can appear earlier in the ELF).
-    OFFSET="$(python3 - "${APPIMAGE_OUT}" <<'PY'
-import struct, sys
-path = sys.argv[1]
-data = open(path, "rb").read()
-if data[:4] != b"\x7fELF":
-    sys.exit("not ELF")
-end = 0
-if data[4] == 2:  # ELFCLASS64
-    e_phoff = struct.unpack_from("<Q", data, 32)[0]
-    e_phentsize = struct.unpack_from("<H", data, 54)[0]
-    e_phnum = struct.unpack_from("<H", data, 56)[0]
-    for i in range(e_phnum):
-        off = e_phoff + i * e_phentsize
-        # Elf64_Phdr: type, flags, offset, vaddr, paddr, filesz, ...
-        p_offset, _vaddr, _paddr, p_filesz = struct.unpack_from("<QQQQ", data, off + 8)
-        end = max(end, p_offset + p_filesz)
-cands = [i for i in range(len(data) - 3) if data[i : i + 4] == b"hsqs"]
-if not cands:
-    sys.exit("no hsqs magic")
-after = [i for i in cands if i + 64 >= end]
-print(after[-1] if after else cands[-1])
-PY
-)"
-    echo "unsquashfs offset=${OFFSET}"
-    unsquashfs -o "${OFFSET}" -d squashfs-root "${APPIMAGE_OUT}" >/dev/null
-    ROOT_DIR=squashfs-root
-  fi
-
-  if [[ -z "${ROOT_DIR}" || ! -d "${ROOT_DIR}" ]]; then
-    echo "error: could not extract AppImage to verify hub fonts" >&2
-    echo "  need working --appimage-extract or unsquashfs" >&2
-    exit 1
-  fi
+  ROOT_DIR=squashfs-root
   if [[ ! -f "${ROOT_DIR}/usr/share/retcomm/fonts/LatoLatin-Regular.ttf" &&
         ! -f "${ROOT_DIR}/usr/bin/fonts/LatoLatin-Regular.ttf" ]]; then
     echo "error: AppImage is missing hub fonts (LatoLatin-Regular.ttf)" >&2

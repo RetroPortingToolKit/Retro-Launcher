@@ -11,6 +11,9 @@ PREFIX="${1:?install prefix}"
 VERSION="${2:?version}"
 ARCH="${3:?arch (arm64|x86_64)}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Info.plist, the icon and the DMG, shared with packaging/title/.
+# shellcheck source=../common/macos.sh
+source "${ROOT}/packaging/common/macos.sh"
 OUT_DIR="${ROOT}/dist"
 APP_NAME="Retro Launcher.app"
 APP="${OUT_DIR}/${APP_NAME}"
@@ -85,148 +88,25 @@ for n in setup_easy_rocket.png setup_advanced_wrench.png; do
   fi
 done
 
-sed "s|@VERSION@|${VERSION}|g" "${ROOT}/packaging/macos/Info.plist.in" \
-  > "${APP}/Contents/Info.plist"
+rh_render_plist "${ROOT}/packaging/common/Info.plist.in" "${APP}/Contents/Info.plist" \
+  "Retro Launcher" "com.technicallycomputers.retcomm-launcher" "${VERSION}"
 
 # Icon: prefer prebuilt .icns; else build from PNG via iconutil.
 if [[ -f "${ROOT}/assets/retcomm.icns" ]]; then
   install -m 644 "${ROOT}/assets/retcomm.icns" "${APP}/Contents/Resources/AppIcon.icns"
 elif [[ -f "${ROOT}/assets/retcomm.png" ]]; then
-  ICONSET="${OUT_DIR}/retcomm.iconset"
-  rm -rf "${ICONSET}"
-  mkdir -p "${ICONSET}"
-  # Generate standard iconset sizes from the 512 master PNG.
-  sips -z 16 16     "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_16x16.png" >/dev/null
-  sips -z 32 32     "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_16x16@2x.png" >/dev/null
-  sips -z 32 32     "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_32x32.png" >/dev/null
-  sips -z 64 64     "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_32x32@2x.png" >/dev/null
-  sips -z 128 128   "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_128x128.png" >/dev/null
-  sips -z 256 256   "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_128x128@2x.png" >/dev/null
-  sips -z 256 256   "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_256x256.png" >/dev/null
-  sips -z 512 512   "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_256x256@2x.png" >/dev/null
-  sips -z 512 512   "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_512x512.png" >/dev/null
-  sips -z 1024 1024 "${ROOT}/assets/retcomm.png" --out "${ICONSET}/icon_512x512@2x.png" >/dev/null
-  rm -f "${ICONSET}/diana@2x_32.png"
-  iconutil -c icns "${ICONSET}" -o "${APP}/Contents/Resources/AppIcon.icns"
-  rm -rf "${ICONSET}"
+  # Standard iconset sizes from the 512 master PNG.
+  rh_make_icns "${ROOT}/assets/retcomm.png" "${APP}/Contents/Resources/AppIcon.icns" "${OUT_DIR}"
 fi
 
 # Recursively bundle Homebrew/SDL/FreeType dylibs and rewrite nested install
 # names (freetype → libpng, curl → openssl, …). Fails if any cellar path remains.
-"${ROOT}/packaging/macos/bundle_dylibs.sh" "${APP}"
+"${ROOT}/packaging/common/bundle_dylibs.sh" "${APP}"
 
 # Drag-to-Applications DMG (.app + /Applications symlink).
 # Stable filename (no version): version is in Info.plist / release tag only.
 DMG="${OUT_DIR}/Retro-Launcher-macos-${ARCH}.dmg"
-VOLUME_NAME="Retro Launcher"
-STAGE="${OUT_DIR}/dmg-staging"
-RW_DMG="${OUT_DIR}/.retcomm-dmg-rw.dmg"
-MOUNT_DIR="${OUT_DIR}/dmg-mount"
-rm -rf "${STAGE}" "${MOUNT_DIR}"
-rm -f "${DMG}" "${RW_DMG}"
-mkdir -p "${STAGE}"
-# ditto preserves resource forks / signatures better than cp -R.
-ditto "${APP}" "${STAGE}/${APP_NAME}"
-ln -s /Applications "${STAGE}/Applications"
-
-create_compressed_dmg() {
-  # Direct UDZO — no attach/Finder. Reliable on headless CI runners.
-  hdiutil create \
-    -srcfolder "${STAGE}" \
-    -volname "${VOLUME_NAME}" \
-    -fs HFS+ \
-    -fsargs "-c c=64,a=16,e=16" \
-    -format UDZO \
-    -imagekey zlib-level=9 \
-    -ov \
-    "${DMG}" >/dev/null
-}
-
-detach_dmg_mount() {
-  local mount="$1"
-  local attempt
-  sync || true
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if hdiutil detach "${mount}" -quiet 2>/dev/null; then
-      return 0
-    fi
-    if hdiutil detach "${mount}" -force -quiet 2>/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-  # Last resort: detach by image path if mountpoint is already gone/confused.
-  hdiutil detach "${RW_DMG}" -force -quiet 2>/dev/null || true
-  if mount | grep -F " on ${mount} " >/dev/null 2>&1; then
-    return 1
-  fi
-  return 0
-}
-
-# CI / headless: skip Finder icon layout (osascript "tell disk …" flakes and
-# leaves the RW image busy so convert fails). Local interactive builds can opt
-# into the classic drag-install sheet with RETCOMM_DMG_FINDER_LAYOUT=1.
-USE_FINDER_LAYOUT=0
-if [[ "${RETCOMM_DMG_FINDER_LAYOUT:-}" == "1" && -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]]; then
-  USE_FINDER_LAYOUT=1
-fi
-
-if [[ "${USE_FINDER_LAYOUT}" -eq 1 ]]; then
-  hdiutil create \
-    -srcfolder "${STAGE}" \
-    -volname "${VOLUME_NAME}" \
-    -fs HFS+ \
-    -fsargs "-c c=64,a=16,e=16" \
-    -format UDRW \
-    -ov \
-    "${RW_DMG}" >/dev/null
-
-  mkdir -p "${MOUNT_DIR}"
-  if hdiutil attach -readwrite -noverify -noautoopen \
-      -mountpoint "${MOUNT_DIR}" "${RW_DMG}" >/dev/null \
-      && [[ -d "${MOUNT_DIR}" ]]; then
-    # Address the mount by POSIX path — volume-name lookup fails when attached
-    # at a custom mountpoint (and on runners without a working Finder).
-    set +e
-    osascript <<EOF
-tell application "Finder"
-  set volAlias to (POSIX file "${MOUNT_DIR}") as alias
-  open volAlias
-  set win to container window of volAlias
-  set current view of win to icon view
-  set toolbar visible of win to false
-  set statusbar visible of win to false
-  set the bounds of win to {200, 120, 780, 480}
-  set theViewOptions to the icon view options of win
-  set arrangement of theViewOptions to not arranged
-  set icon size of theViewOptions to 128
-  set position of item "${APP_NAME}" of win to {160, 180}
-  set position of item "Applications" of win to {480, 180}
-  update without registering applications
-  delay 1
-  close win
-end tell
-EOF
-    set -e
-    if ! detach_dmg_mount "${MOUNT_DIR}"; then
-      echo "warning: could not detach temporary DMG; falling back to plain UDZO" >&2
-      rm -f "${RW_DMG}"
-      create_compressed_dmg
-    else
-      hdiutil convert "${RW_DMG}" -format UDZO -imagekey zlib-level=9 -o "${DMG}" >/dev/null
-      rm -f "${RW_DMG}"
-    fi
-  else
-    echo "warning: failed to mount temporary DMG; falling back to plain UDZO" >&2
-    rm -f "${RW_DMG}"
-    create_compressed_dmg
-  fi
-else
-  create_compressed_dmg
-fi
-
-rm -rf "${STAGE}" "${MOUNT_DIR}"
-rm -f "${RW_DMG}"
+rh_create_dmg "${APP}" "Retro Launcher" "${DMG}" "${OUT_DIR}"
 
 echo "App: ${APP}"
 echo "DMG: ${DMG}"

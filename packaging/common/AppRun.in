@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# AppImage entry — launch the hub UI (CLI is still on PATH as retcomm).
-# Title catalog is maintained under ~/.local/share/retcomm/catalog (fetched on use).
-# Set RETCOMM_HOME=/some/dir (or drop a retcomm-root.json beside the AppImage) to
-# keep config+data under that folder instead — useful when / is short on space.
+# AppImage entry: the hub UI. Shared by the launcher's AppImage
+# (packaging/linux/build-appimage.sh) and title apps (packaging/title/), whose
+# hub finds its title in usr/bin/title/ and runs as that title's app.
+# Launcher: the CLI is `<AppImage> cli ...`; the title catalog is maintained
+# under ~/.local/share/retcomm/catalog (fetched on use). Set RETCOMM_HOME=/some/dir
+# (or drop a retcomm-root.json beside the AppImage) to keep config+data there.
+# Title app: its state is <dir of the AppImage>/<id>-data/, never in the mount.
 set -euo pipefail
 HERE="$(dirname "$(readlink -f "$0")")"
 # Hub font lookup and other relocatable paths use APPDIR. The type-2 runtime
@@ -14,7 +17,7 @@ export PATH="${HERE}/usr/bin:${PATH}"
 if [[ -d "${HERE}/usr/lib" ]]; then
   export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
-if [[ "${1:-}" == "cli" ]]; then
+if [[ "${1:-}" == "cli" && -x "${HERE}/usr/bin/retcomm" ]]; then
   shift
   exec "${HERE}/usr/bin/retcomm" "$@"
 fi
