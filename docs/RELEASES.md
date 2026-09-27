@@ -52,7 +52,15 @@ The session itself (menu, input, fault screen) is described in Retro-Runtime's
 | `--tpak1-rom`, `--tpak1-save` | 1 | Transfer Pak cartridge and its save, port 1. |
 | `--no-gl` | 1 | Do not lend the core GL. |
 | `--opt key=value` | 1 | A core option; repeatable. Wins over a value stored by Core Settings. |
-| `--boot` | 3 | Play at once and exit with the game, skipping the home page. |
+| `--boot` | 3 | Play at once and exit with the game, skipping the home page. In title-app mode, only when a ROM resolves. |
+| `--core <core>` | 4 | Alias of `--run-core`; in title-app mode it overrides the title's core. |
+| `--title <title.json or its dir>` | 4 | Title-app mode (below) with this title. |
+| `--runner <runner>` | 4 | This `retro-core-runner`; beats `RETRO_CORE_RUNNER` and the lookup. |
+| `--hub <retro-hub>` | 4 | Run that hub instead, with this title and runner (below). |
+| `--check-title` | 4 | Resolve the title and print it; no window (below). |
+
+Since revision 4 every path on the command line is made absolute against the
+directory the hub was launched from, before anything else.
 
 **Files.** Session logs go to `<data dir>/sessions/<stem>/` and saves to
 `<data dir>/saves/<stem>/`, where `<stem>` is the title's: the shim's file stem
@@ -82,8 +90,10 @@ the core's settings are unavailable and labels the pad chips generically. Mods r
 **The runner.** Direct mode finds `retro-core-runner` the way the launcher does
 (`resolve_runner`, `src/update/runtime_update.cpp`), in this order:
 
-1. `RETRO_CORE_RUNNER`, when set, is used as is (the override);
-2. otherwise the newest compatible one of `<directory of retro-hub>/retro-core-runner`
+1. `--runner`, when given (revision 4; the hub exports it as `RETRO_CORE_RUNNER`
+   for the rest of the process);
+2. `RETRO_CORE_RUNNER`, when set, is used as is (the override);
+3. otherwise the newest compatible one of `<directory of retro-hub>/retro-core-runner`
    (bundled) and `<data dir>/runtime/<version>/retro-core-runner` (installed
    by the runtime updater).
 
@@ -95,6 +105,76 @@ the hub then exits 1. When `check_updates_on_startup` is on (the default), the
 runtime updater also runs once in the background: a newer runner installs
 beside the one in use and is used from the next launch, never mid-session
 (`RETRO_CORE_RUNNER` skips it).
+
+## Title-app mode
+
+One title as its own app, a contract shared with n64lle's `n64lle_add_game_app()`. A
+port's framework stages a **title payload** and the kit in
+[`packaging/title/`](../packaging/README.md#title-apps) wraps it, this hub and
+a runner into an AppImage, a `.app` in a `.dmg`, or a single portable `.exe`.
+The app is a local build: its game package is ROM-derived generated code, so
+it is never published, and the ROM is never in it.
+
+```sh
+retro-hub [--title <title.json | dir>] [--core <core>] [--package <shim>] [--runner <runner>]
+          [--rom <image>] [--boot] [--opt key=value]... [--hub <retro-hub>] [--check-title]
+```
+
+**Finding the title.** `--title`; else `<exe dir>/title/title.json`; on macOS
+also `<exe dir>/../Resources/title/title.json`. `--run-core`/`--core` without
+`--title` is Direct mode, unchanged, even with a `title/` beside the hub.
+
+**`title.json`, schema 1** (`src/hub/hub_title.hpp`): `schema`, `id`
+(`[a-z0-9_-]+`), `name`, `version`, `platform`, `core`, and optionally
+`package`, `title_dir` (default: the package's directory), `opts`
+(`["key=value", ...]`, under `--opt`) and `rom` (`file_names`, `size`,
+`sha256`, `label`). Paths are relative to `title.json` and may not leave its
+directory. Unknown keys are ignored; a greater `schema` is refused.
+
+**The ROM**, in order: `--rom` (checked, and remembered); the remembered one, if
+it still exists and still matches; each `rom.file_names` entry beside the app,
+then in `<data dir>/roms/`. Otherwise the home page shows **Choose ROM…** (SDL3
+`SDL_ShowOpenFileDialog`) with Play disabled until a ROM checks out. A ROM is
+checked against `rom.size` and `rom.sha256`; a mismatch is **refused** and the
+page (or `--check-title`, on stderr) shows expected against got. A static
+recompilation of one image does not run another.
+
+**The data directory** is `<dir of the app>/<id>-data/`, where the app is
+`$APPIMAGE`, the portable `.exe` (`RETCOMM_PORTABLE_EXE`, exported by the
+stub), the `.app` bundle, or else `retro-hub` itself. It is probed by writing a
+file; when that fails (a mounted dmg, a read-only share) it is
+`<user data>/<id>/` (`~/.local/share/<id>`, `%LOCALAPPDATA%\<id>`), and the log
+says so. It holds everything the hub writes for the title: `config.json`,
+`sessions/<id>/`, `saves/<id>/`, `platform/` (settings), `mods.toml`, and the
+remembered ROM (`rom.json`). Nothing is written inside the AppImage mount, the
+extracted portable payload or the bundle. The runtime updater is off: the app
+runs the runner it was built with.
+
+**`RETRO_TITLE_STATE_DIR`.** The runner child gets
+`RETRO_TITLE_STATE_DIR=<data dir>` in its environment (the runner passes its
+environment to the core). The Mods page writes an n64lle selection to
+`<data dir>/mods.toml` instead of `<title dir>/mods.toml`, and a core that
+honours the variable reads it from there (n64lle's generic core does). Direct
+mode does not set it.
+
+**`--check-title`** resolves what a launch would and prints `key value` lines,
+with no window: `title`, `id`, `core`, `package` (or `none`), `title_dir`,
+`runner` (or `none`), `runner_version` (or `none`), `rom` (a path, `none`, or
+`refused`) and `data_dir`. It exits 0 when title, core, package and runner
+resolve; a missing ROM is not a failure, a `--rom` that does not match is. It
+creates nothing and remembers nothing (the data dir is where it would be).
+
+**`--hub <p>`** re-executes that hub with the same arguments minus `--hub`
+(paths absolute), plus `--title <this title.json>` and `--runner <the runner
+this hub would use>` unless `--runner` was given, and `RETRO_HUB_APP` so its
+state stays beside this app. Nothing happens when `<p>` is this hub, and a hub
+started that way (`RETRO_HUB_REEXEC` set) never re-executes again. A hub from
+before title-app mode (no `title_app` in `--version`) would ignore `--title`
+and open its library, so it is given the title as a Direct-mode command line
+instead (`--run-core --package --title-dir --rom`, the runner in
+`RETRO_CORE_RUNNER`) when its `direct_mode` is 2 or more and a ROM already
+resolves; otherwise the hub refuses (exit 2). `--check-title` is never handed
+to such a hub.
 
 ## The bare hub archive
 
@@ -113,6 +193,7 @@ directory:
 | `retcomm.png`, `platforms/`, `controllers/`, `setup/` | Window icon and library-UI art, found beside the executable, as in the AppImage. Direct mode does not use them. |
 | `LICENSE` | Retro Launcher's licence. |
 | `licenses/` | SDL3, and what is linked statically into `retro-hub`: Dear ImGui, miniz, stb, nlohmann/json, Retro-Runtime. |
+| `packaging/title/`, `packaging/common/` | The title-app kit ([`packaging/README.md`](../packaging/README.md#title-apps)); it finds the hub at `../..`. |
 
 **It does not contain `retro-core-runner`.** Take it from
 [Retro-Runtime's release](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/RELEASES.md)
@@ -136,7 +217,9 @@ warning, when:
 - the hub **inside the archive**, extracted to a clean directory, reports a
   different version or commit (`--version`), was built without Direct mode,
   resolves SDL3 from anywhere but the archive, or does not refuse
-  `--run-core` without `--rom` (exit 2).
+  `--run-core` without `--rom` (exit 2);
+- the title-app kit is missing, or its `build-title-app.sh --help` does not run
+  from the extracted archive, or the hub reports no `title_app`.
 
 ## The manifest
 
@@ -203,6 +286,10 @@ the bundled SDL3.
 - **Revision 3 changed what an earlier command line does:** it is still
   accepted, but it opens the home page instead of playing at once. A tool that
   needs the old behaviour passes `--boot`, and so needs revision 3.
+- **Revision 4** adds title-app mode (`--title --core --runner --hub
+  --check-title`, and `title_app 1` in `--version`). An earlier command line
+  does what it did, with one difference: a hub with `title/title.json` beside
+  it and no `--run-core` now opens that title instead of the library.
 
 ## `retro-hub --version`
 
@@ -215,12 +302,15 @@ commit 8f538f7218855e94cdcba437a23245a4e1be22f8
 link_protocol 1.0
 rcore_abi_major 0
 rcore_draft_revision 5
-direct_mode 3
-direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt --boot
+direct_mode 4
+direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt --boot --title --core --runner --hub --check-title
+title_app 1
 runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner
 ```
 
-A build that was not given `RETCOMM_COMMIT` says `commit unknown`. A build
+`title_app` is the title-app mode revision (and the `title.json` schema it
+reads); a hub without the line predates it. A build that was not given
+`RETCOMM_COMMIT` says `commit unknown`. A build
 without the hub <-> runner link would print only the first three lines and
 `direct_mode 0`; every current build has it.
 

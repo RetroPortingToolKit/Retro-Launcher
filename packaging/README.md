@@ -19,6 +19,77 @@ Releases also carry a bare Linux hub for tools that run it in Direct mode:
 `retro-hub-<version>-linux-x86_64.tar.gz`, its `.sha256`, `SHA256SUMS` and
 `hub-manifest.json`. Contract: [`docs/RELEASES.md`](../docs/RELEASES.md).
 
+`packaging/common/` holds what the launcher's packaging and the title-app kit
+(below) share: `appimage.sh` (linuxdeploy fetch/run, AppImage extraction),
+`AppRun.in`, `macos.sh` (Info.plist, icon, DMG), `Info.plist.in`,
+`bundle_dylibs.sh` (`packaging/macos/bundle_dylibs.sh` forwards to it) and
+`portable.ps1` (signing, the portable exe's stub + zip + `RCM1` trailer).
+
+## Title apps
+
+`packaging/title/` is the **title-app kit**: it packages one title as a local,
+double-clickable app that runs `retro-hub` in title-app mode
+([`docs/RELEASES.md`](../docs/RELEASES.md#title-app-mode)). It is installed
+into every flat hub prefix at `<hub dir>/packaging/title/` (the bare hub
+archive, `scripts/build-local.*`) and runs from there, without this source
+tree. A framework (n64lle's `n64lle_add_game_app()`) stages the payload and
+calls it.
+
+```sh
+<hub dir>/packaging/title/build-title-app.sh --title <payload dir> --runner <retro-core-runner> \
+    --out <dir> [--hub-dir <flat hub prefix>] [--icon <png>] [--format appimage|dmg] [--version <v>]
+```
+```powershell
+<hub dir>\packaging\title\build-title-app.ps1 -Title <payload dir> -Runner <retro-core-runner.exe> `
+    -Out <dir> [-HubDir <flat hub prefix>] [-Icon <png>] [-Version <v>] [-Stub <retcomm-portable.exe>]
+```
+
+`--hub-dir` defaults to the kit's `../..`. The payload is a directory holding
+`title.json`, `MANIFEST.txt` -- **every other file of the payload, one relative
+path per line; it lists neither itself nor `title.json`** -- and the files it
+lists (the core and its `.rcore.toml`, the game package, `game.toml`, bundled
+mods, an optional `icon.png`). Name, id and version come from `title.json`
+(`--version` overrides the version).
+
+| OS | Output (last stdout line: `app <absolute path>`) | Layout |
+|---|---|---|
+| Linux | `<Name>-<version>-linux-<arch>.AppImage` | `usr/bin/retro-hub`, `usr/bin/retro-core-runner`, `usr/bin/title/`; `AppRun` from `common/AppRun.in`; desktop entry and icon from the title |
+| macOS | `<Name>-<version>-macos-<arch>.dmg` | `<Name>.app`: `CFBundleExecutable` `retro-hub`, runner beside it, `Contents/Resources/title/`, id `com.retroportingtoolkit.title.<id>` |
+| Windows | `<Name>-<version>-windows-x64.exe` | the portable stub + a zip of `retro-hub.exe`, its DLLs, `retro-core-runner.exe`, `title/`; it unpacks to `<exe dir>\<id>-data\app\` |
+
+The icon is `--icon`, else the payload's `icon.png`, else the hub's own (the
+AppImage takes 16-512 px squares; other sizes are resized with ImageMagick when
+present). On Windows the exe keeps the stub's icon; `-Icon` is not applied.
+
+**Gates** (each fails the build, SHIPPING.md §4):
+
+1. **The allowlist.** Every file in `MANIFEST.txt` exists; nothing else is in
+   the payload; no symlinks; no ROM/disc extension (`.z64 .n64 .v64 .rom .bin
+   .iso .cue .chd .sfc .smc .gba .gb .gbc .nds .md .gen .sms .nes`, so a
+   Markdown `.md` is refused too); no file beginning with an N64 ROM header
+   (`80 37 12 40`, `37 80 40 12`, `40 12 37 80`). The magic scan runs again over
+   the whole staged app, and the artifact's `title/` must be byte-identical to
+   the payload (nothing rewrites the core or the package). Linux also checks
+   that every library the payload's ELF files import is in the AppImage, a
+   system library, or shipped in the payload itself (the game package imports
+   the generic core by soname; the runner has already loaded it).
+2. **Versions from the artifact.** The AppImage is extracted, the dmg mounted,
+   the exe's payload unpacked, and `retro-hub --version` must report
+   `title_app`, the runner `game_package 1` when the title has a package.
+3. **`retro-hub --check-title` from the artifact**, in an empty directory with
+   a clean environment: it must resolve, write nothing there, and put the data
+   dir beside the app (AppImage: `<out>/<id>-data`; exe: `<exe dir>\<id>-data`;
+   dmg: anywhere but inside the mounted image).
+
+Tools: linuxdeploy is downloaded once into
+`${RETRO_HUB_TOOLS_DIR:-${XDG_CACHE_HOME:-~/.cache}/retro-hub/tools}`;
+`RETRO_HUB_LINUXDEPLOY=<path>` uses a local copy instead (offline). macOS needs
+`sips`, `iconutil`, `hdiutil`, `codesign` (Xcode command line tools); Windows
+needs the portable stub (`retcomm-portable.exe`, in a Windows hub prefix).
+
+The macOS and Windows paths are written but have not been run (2026-09-26);
+only the Linux path is exercised.
+
 ## Icons
 
 ```sh
@@ -99,6 +170,9 @@ cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="
 cmake --build build -j && cmake --install build
 ./packaging/linux/build-appimage.sh "$PWD/out" 0.1.1 x86_64
 ```
+
+`build-appimage.sh` downloads linuxdeploy into `dist/tools/` once;
+`RETRO_HUB_LINUXDEPLOY=<path>` uses a local copy.
 
 Self-update replaces the running AppImage in place (`APPIMAGE` env). Dev
 binaries / loose copies under `~/.local/share/retcomm/bin` are not updatable —

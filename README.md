@@ -184,6 +184,23 @@ env `GITHUB_TOKEN` / `GH_TOKEN` (env wins). Hub UI needs system **SDL3** + OpenG
 
 Packaging lives under `packaging/`; icon source is `assets/retcomm.svg`.
 
+### A local hub for ports (`scripts/build-local.sh`)
+
+```sh
+scripts/build-local.sh [--debug] [--out DIR] [--build DIR] [--runtime <Retro-Runtime checkout>] [--jobs N]
+scripts/build-local.ps1 [-Debug] [-Out DIR] [-Build DIR] [-Runtime DIR] [-Jobs N]   # Windows (vcpkg)
+```
+
+Builds `retro-hub` and a `retro-core-runner` (the submodule's, or one built
+from `--runtime`) into a flat prefix, `out/local/<platform>/`, laid out like the
+bare hub archive plus the runner and the title-app kit (`packaging/title/`;
+on Windows also the portable stub). SDL3 is found, or built from source into
+`.cache/sdl3` (Homebrew on macOS, vcpkg on Windows). It checks the result
+(`title_app 1`, `--package`) and prints `RETRO_HUB=<path>` as its last line --
+what a port's framework (n64lle) takes to run and package a title app. See
+[`docs/RELEASES.md`](docs/RELEASES.md#title-app-mode) and
+[`packaging/README.md`](packaging/README.md#title-apps).
+
 ## Quick start (CLI)
 
 ```sh
@@ -207,7 +224,9 @@ port's dev build and a tool use), use Direct mode:
 `retro-hub --run-core <core> [--package <shim>] --rom <image> [--title-dir <dir>]`.
 It opens on the title's home page (Play, n64lle Settings, Mods); add
 `--boot` to play at once. Flags, files and runner lookup:
-[`docs/RELEASES.md`](docs/RELEASES.md#direct-mode).
+[`docs/RELEASES.md`](docs/RELEASES.md#direct-mode). A hub with a `title/`
+beside it (or `--title <title.json>`) is that title's app instead:
+[title-app mode](docs/RELEASES.md#title-app-mode).
 
 `launch` stages disc/ROM/BIOS sidecars next to the install and prefers a companion
 `.cue` for disc titles. Installs land under
