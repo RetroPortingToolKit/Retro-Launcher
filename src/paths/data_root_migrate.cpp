@@ -1,4 +1,5 @@
 #include "retcomm/data_root_migrate.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/config.hpp"
 
@@ -83,8 +84,9 @@ bool win_make_junction(const fs::path& link, const fs::path& target) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
+    const std::wstring cwd = local_cmd_working_dir(); // never a share (fs_util.hpp)
     if (!CreateProcessW(cmd_exe.c_str(), buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                        nullptr, nullptr, &si, &pi))
+                        nullptr, cwd.c_str(), &si, &pi))
         return false;
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
@@ -150,7 +152,7 @@ bool move_tree(const fs::path& from, const fs::path& to, std::string* error) {
 
     fs::create_directories(to.parent_path(), ec);
     ec.clear();
-    fs::rename(from, to, ec);
+    retcomm::robust_rename(from, to, ec);
     if (!ec) return true;
 
     // Cross-device (or a non-empty destination): copy then drop the source.

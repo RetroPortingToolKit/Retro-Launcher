@@ -92,7 +92,18 @@ int main(int argc, char** argv) {
     check(!load_title(dir / "t3", t, &err), "an id outside [a-z0-9_-] is refused");
     write(dir / "t4" / "title.json", R"({"schema": 1, "id": "x", "core": "../c.so"})");
     check(!load_title(dir / "t4", t, &err), "a path out of the payload is refused");
+    write(dir / "t5" / "title.json", R"({"schema": 1, "id": "x", "core": "c.so",
+      "boxart": "art/cover.png", "update": {"github": "Owner/Repo"}})");
+    check(load_title(dir / "t5", t, &err) &&
+              t.boxart == (dir / "t5" / "art" / "cover.png").lexically_normal() &&
+              t.update_github == "Owner/Repo",
+          "boxart and update.github are read");
+    write(dir / "t6" / "title.json", R"({"schema": 1, "id": "x", "core": "c.so", "boxart": "../a.png"})");
+    check(!load_title(dir / "t6", t, &err), "a boxart out of the payload is refused");
+    write(dir / "t7" / "title.json", R"({"schema": 1, "id": "x", "core": "c.so", "update": {"github": "no-slash"}})");
+    check(!load_title(dir / "t7", t, &err), "update.github must be owner/repo");
     check(load_title(payload / "title.json", t, &err), "load_title from the file");
+    check(t.boxart.empty() && t.update_github.empty(), "boxart and update are optional");
 
     // ---- the app and its data dir -------------------------------------------
     const fs::path exe = dir / "app" / "retro-hub";

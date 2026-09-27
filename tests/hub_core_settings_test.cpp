@@ -97,8 +97,11 @@ void test_bindings(const fs::path& dir) {
     const InputBindings def = default_input_bindings();
     std::vector<std::string> warn;
     check(load_platform_input(dir, "n64", &warn) == PlatformInput{}, "no file is the defaults");
-    check(PlatformInput{}.maps[3] == def && PlatformInput{}.deadzone_pct == 0,
-          "every seat starts on the default maps, deadzone off");
+    check(PlatformInput{}.maps[3] == def && PlatformInput{}.deadzone_pct == 10,
+          "every seat starts on the default maps, a 10% deadzone");
+    check(def.pad[static_cast<size_t>(PadTarget::Function)] ==
+              PadSource{PadSource::Button, SDL_GAMEPAD_BUTTON_BACK},
+          "Function defaults to Back / Select");
 
     // The defaults are the table the hub used before bindings existed.
     auto pad = [&](PadTarget t) { return def.pad[static_cast<int>(t)]; };
@@ -248,6 +251,56 @@ void test_n64lle_mods(const fs::path& dir) {
 
 } // namespace
 
+// A fake Game Boy header: `type` at 0x147, `ram` at 0x149, a valid checksum.
+void write_gb_rom(const fs::path& p, unsigned char type, unsigned char ram) {
+    std::string rom(0x8000, '\0');
+    rom[0x147] = static_cast<char>(type);
+    rom[0x149] = static_cast<char>(ram);
+    unsigned char sum = 0;
+    for (int i = 0x134; i <= 0x14C; ++i) sum = static_cast<unsigned char>(sum - static_cast<unsigned char>(rom[static_cast<size_t>(i)]) - 1);
+    rom[0x14D] = static_cast<char>(sum);
+    fs::create_directories(p.parent_path());
+    std::ofstream(p, std::ios::binary) << rom;
+}
+
+void test_transfer_pak(const fs::path& dir) {
+    const fs::path gb = dir / "tpak";
+    write_gb_rom(gb / "red.gb", 0x13, 0x03); // MBC3+RAM+BATTERY, 32 KiB
+    write_gb_rom(gb / "mbc2.gb", 0x06, 0x00);
+    write_gb_rom(gb / "noram.gb", 0x00, 0x00);
+    std::string err;
+    check(gb_cart_ram_bytes(gb / "red.gb", &err) == 32 * 1024, "32 KiB cart RAM from the header");
+    check(gb_cart_ram_bytes(gb / "mbc2.gb", &err) == 512, "MBC2 carts hold 512 bytes");
+    err.clear();
+    check(gb_cart_ram_bytes(gb / "noram.gb", &err) == 0 && err.empty(), "no RAM, no error");
+    {
+        std::ofstream(gb / "junk.gb", std::ios::binary) << std::string(0x200, 'x');
+        err.clear();
+        check(gb_cart_ram_bytes(gb / "junk.gb", &err) == 0 && !err.empty(), "a bad header is refused");
+    }
+    check(create_gb_save(gb / "red.gb", gb / "Red.srm", &err) &&
+              fs::file_size(gb / "Red.srm") == 32 * 1024,
+          "a new save is the cart's size");
+    {
+        std::ifstream in(gb / "Red.srm", std::ios::binary);
+        char c = 0;
+        in.get(c);
+        check(static_cast<unsigned char>(c) == 0xFF, "a new save reads as blank battery RAM");
+    }
+    check(!create_gb_save(gb / "red.gb", gb / "Red.srm", &err), "an existing save is not overwritten");
+    check(!create_gb_save(gb / "noram.gb", gb / "none.srm", &err), "a cart without RAM gets no save");
+
+    // Every seat's Transfer Pak round-trips through input.ini.
+    PlatformInput in;
+    in.paks[0] = {SeatPak::TransferPak, (gb / "red.gb").string(), (gb / "Red.srm").string()};
+    in.paks[3] = {SeatPak::TransferPak, (gb / "mbc2.gb").string(), ""};
+    check(save_platform_input(dir, "n64", in, &err), "input.ini with paks saves");
+    const PlatformInput back = load_platform_input(dir, "n64");
+    check(back.paks[0] == in.paks[0], "seat 1's Transfer Pak reads back");
+    check(back.paks[3] == in.paks[3], "seat 4's Transfer Pak reads back");
+    check(back.paks[1].kind == SeatPak::None, "a seat without one stays None");
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <scratch dir>\n", argv[0]);
@@ -272,6 +325,21 @@ int main(int argc, char** argv) {
     test_seat_plan();
     test_options(dir);
     test_n64lle_mods(dir);
+    test_transfer_pak(dir);
+    {
+        // The host hotkeys round-trip through play.ini with the overlay's settings.
+        PlayPrefs pr;
+        check(pr.hotkeys == default_host_hotkeys(), "hotkeys start at the defaults");
+        pr.show_fps = true;
+        pr.hotkeys.key[static_cast<size_t>(HostAction::Turbo)] = SDL_SCANCODE_LSHIFT;
+        pr.hotkeys.combo[static_cast<size_t>(HostAction::SaveStates)] =
+            PadSource{PadSource::Button, SDL_GAMEPAD_BUTTON_NORTH};
+        pr.hotkeys.combo[static_cast<size_t>(HostAction::ShowFps)] = {};
+        std::string err;
+        check(save_play_prefs(dir, pr, &err), "play.ini saves");
+        const PlayPrefs back = load_play_prefs(dir);
+        check(back == pr, "hotkeys, an unbound combo included, read back");
+    }
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

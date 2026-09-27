@@ -10,11 +10,15 @@
 // the same whichever core is running. This class feeds it events and draws
 // its images; it draws none of its own.
 //
-// Hotkeys while playing:
-//   F3            show / hide FPS (also on the settings page)
-//   Tab (held)    turbo: run the core as fast as it goes
-//   + / -         volume (the = and - keys, or the keypad's)
-//   F7            save states (also SELECT + R1 on a pad)
+// Hotkeys while playing, as bound on the settings page (PlayPrefs::hotkeys,
+// play.ini [keys] / [combos]); the defaults:
+//   Esc / F1      pause menu     Function + Start   (also L3 + R3)
+//   F7            save states    Function + R1
+//   F3            show FPS       Function + L1
+//   Tab (held)    turbo          Function + R2 (held)
+//   = / -         volume         Function + D-Up / D-Down (keypad +/- too)
+// Function is a per-seat pad input (the Configure page; Back / Select by
+// default); while it is held that seat sends the game no buttons.
 
 #include "core_link.hpp" // Retro-Runtime: retro_corelink
 #include "hub/hub_core_settings.hpp"
@@ -24,6 +28,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -41,8 +46,10 @@ struct PlayArgs {
     fs::path package;
     std::string rom;
     fs::path title_dir; // empty = the package's directory, else the core's
-    std::string tpak_rom;
-    fs::path tpak_save;
+    // Seat N's Transfer Pak (index N-1): the Game Boy cartridge (runner
+    // --tpakN-rom) and its battery save (region tpakN). Empty = no pak.
+    std::array<std::string, 4> tpak_rom;
+    std::array<fs::path, 4> tpak_save;
     std::map<std::string, std::string> options;
     bool gl = true;
     // Extra NAME=value for the runner, which passes its environment on to the
@@ -99,6 +106,8 @@ private:
     void open_states();
     bool handle_states_event(const SDL_Event& e);
     void poll_states_pad(std::uint64_t now);
+    void poll_host_combos();
+    std::string shortcut_text(HostAction a) const; // "F7 or Function+R1"
     void service_states();
     void draw_overlay();
     void draw_menu();
@@ -146,7 +155,11 @@ private:
     retro::overlay::SavestateMenu::Request state_request_; // waiting for a gap between frames
 
     PlayPrefs prefs_;
-    bool turbo_ = false;          // Tab held
+    bool turbo_ = false;          // turbo in effect this frame
+    bool turbo_key_ = false;      // its key held
+    bool turbo_pad_ = false;      // its Function combo held
+    std::array<bool, kHostActionCount> combo_prev_{}; // last frame's combos
+    bool l3r3_prev_ = false;
     bool audio_paused_ = true;    // the SDL stream's state, as last set
     bool was_paused_ = false;
     std::uint64_t noted_frames_ = 0, noted_ns_ = 0;

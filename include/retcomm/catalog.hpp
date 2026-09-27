@@ -175,6 +175,9 @@ struct Title {
     // has one: set for kind "core" titles and for catalog titles a registered
     // core attaches to (core_titles.hpp). Never read from the catalog JSON.
     std::string core_manifest;
+    // An adopted title app (core_titles.hpp): Play runs this executable, with
+    // the library's ROM, instead of a core in the hub's window.
+    std::string core_app;
 
     bool has_rom_identity() const;
     bool has_bios_identity() const;

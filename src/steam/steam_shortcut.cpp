@@ -1,4 +1,5 @@
 #include "retcomm/steam_shortcut.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/self_update.hpp"
 
@@ -140,7 +141,7 @@ bool write_file_atomic(const fs::path& p, const std::string& data, std::string* 
             return false;
         }
     }
-    fs::rename(tmp, p, ec);
+    retcomm::robust_rename(tmp, p, ec);
     if (ec) {
         std::error_code rec;
         fs::remove(tmp, rec);

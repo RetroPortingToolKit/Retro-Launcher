@@ -1,4 +1,5 @@
 #include "retcomm/build.hpp"
+#include "retcomm/fs_util.hpp"
 #include "retcomm/asset_arch.hpp"
 #include "retcomm/cache_gc.hpp"
 #include "retcomm/config.hpp"
@@ -119,7 +120,7 @@ bool activate_pack_tree(const fs::path& staging, const fs::path& dest, fs::path*
     const fs::path incoming = parent / (dest.filename().string() + ".new");
     fs::remove_all(incoming, ec);
     progress(on_progress, "Activating " + pack_label + "…");
-    fs::rename(staging, incoming, ec);
+    retcomm::robust_rename(staging, incoming, ec);
     if (ec) {
         std::error_code copy_ec;
         fs::copy(staging, incoming,
@@ -135,7 +136,7 @@ bool activate_pack_tree(const fs::path& staging, const fs::path& dest, fs::path*
     if (fs::exists(dest, ec)) {
         const fs::path outgoing = parent / (dest.filename().string() + ".old-" + unique_pack_suffix());
         ec.clear();
-        fs::rename(dest, outgoing, ec);
+        retcomm::robust_rename(dest, outgoing, ec);
         if (ec) {
             progress(on_progress, "Removing previous " + pack_label + "…");
             std::error_code rm_ec;
@@ -151,7 +152,7 @@ bool activate_pack_tree(const fs::path& staging, const fs::path& dest, fs::path*
     }
 
     ec.clear();
-    fs::rename(incoming, dest, ec);
+    retcomm::robust_rename(incoming, dest, ec);
     if (ec) {
         std::error_code copy_ec;
         fs::copy(incoming, dest,
@@ -465,7 +466,7 @@ bool install_extracted_tree(const fs::path& staging, const fs::path& dest, std::
     fs::create_directories(dest.parent_path(), ec);
     const fs::path inner = unwrap_single_subdir(staging);
     if (inner == staging) {
-        fs::rename(staging, dest, ec);
+        retcomm::robust_rename(staging, dest, ec);
         if (ec) {
             fs::copy(staging, dest,
                      fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
@@ -476,7 +477,7 @@ bool install_extracted_tree(const fs::path& staging, const fs::path& dest, std::
         for (auto it = fs::directory_iterator(inner, ec); !ec && it != fs::directory_iterator();
              it.increment(ec)) {
             const fs::path to = dest / it->path().filename();
-            fs::rename(it->path(), to, ec);
+            retcomm::robust_rename(it->path(), to, ec);
             if (ec) {
                 fs::copy(it->path(), to,
                          fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
@@ -826,7 +827,7 @@ bool ensure_working_source_dir(const Title& title, const fs::path& src_base, con
         if (from == current) return true;
         progress(on_progress, "Migrating source tree to src/current…");
         fs::create_directories(src_base, ec);
-        fs::rename(from, current, ec);
+        retcomm::robust_rename(from, current, ec);
         if (!ec && source_tree_buildable(title, current)) return true;
         ec.clear();
         fs::copy(from, current,
@@ -1808,8 +1809,9 @@ bool win_create_directory_junction_build(const fs::path& link, const fs::path& t
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
+    const std::wstring cwd = local_cmd_working_dir(); // never a share (fs_util.hpp)
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                        nullptr, nullptr, &si, &pi)) {
+                        nullptr, cwd.c_str(), &si, &pi)) {
         return false;
     }
     WaitForSingleObject(pi.hProcess, 15000);
@@ -1873,7 +1875,7 @@ bool link_directory_replace(const fs::path& link_path, const fs::path& target,
         parked += ".retcomm-promote-bak";
         remove_dir_entry_nofollow(parked, nullptr);
         ec.clear();
-        fs::rename(link_path, parked, ec);
+        retcomm::robust_rename(link_path, parked, ec);
         if (ec) {
             if (error)
                 *error = "cannot park local engine tree " + link_path.string() + ": " +
@@ -1888,7 +1890,7 @@ bool link_directory_replace(const fs::path& link_path, const fs::path& target,
         if (parked.empty()) return;
         remove_dir_entry_nofollow(link_path, nullptr);
         std::error_code rec;
-        fs::rename(parked, link_path, rec);
+        retcomm::robust_rename(parked, link_path, rec);
         if (!rec) parked.clear();
     };
     auto drop_parked = [&]() {
@@ -2503,7 +2505,7 @@ PackEnsureResult harvest_embedded_toolchain(const Paths& paths, const Title& tit
     fs::create_directories(dest.parent_path(), ec);
 
     // Prefer rename (no 2GB copy); fall back to copy + delete.
-    fs::rename(emb, dest, ec);
+    retcomm::robust_rename(emb, dest, ec);
     if (ec) {
         ec.clear();
         fs::create_directories(dest, ec);

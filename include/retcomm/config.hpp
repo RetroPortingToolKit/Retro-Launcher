@@ -39,8 +39,11 @@ struct InstallRootEntry {
 // core's sidecar (docs/CORE_LIBRARY.md). `name` is the display name; empty
 // shows the sidecar's title id.
 struct CoreTitleRef {
-    fs::path manifest;
+    fs::path manifest; // a per-title core's .rcore.toml, or a title app's title.json
     std::string name;
+    // An adopted port project (hub "Add Core Title…", core_titles.hpp): the
+    // title app Play runs, and the project folder it was built in.
+    fs::path app, project;
 };
 
 // User config (~/.config/retcomm/config.json). RomM/ES-style library layout:
@@ -168,6 +171,20 @@ fs::path builtin_apps_dir(const Paths& paths);
 // when a retcomm-root.json beside it says {"root": "."}), and Retro's data
 // folder for a default install.
 fs::path config_relative_base(const fs::path& config_path);
+
+// Portable setups (issue #6): when the root travels with the launcher
+// (portable_launcher_dir), config.json's paths are relative to the LAUNCHER's
+// folder -- ".\installed" is beside the .exe -- and every path under it is
+// saved relative, so the whole folder can move to another drive or share.
+// save_app_config marks such a file "paths_relative_to": "launcher"; a file
+// without the mark keeps resolving against config_relative_base (the form it
+// was written in) until it is saved. Empty when not portable.
+fs::path config_launcher_dir(const fs::path& config_path);
+// The folder a relative path typed now resolves against: the launcher's in a
+// portable setup, else config_relative_base.
+fs::path config_paths_base(const fs::path& config_path);
+// `p` made absolute against config_paths_base (unchanged when absolute).
+fs::path resolve_config_path(const fs::path& config_path, const fs::path& p);
 
 std::vector<InstallRootEntry> effective_install_roots(const AppConfig& cfg, const Paths& paths);
 // Roots to scan for existing installs (effective ∪ builtin apps/).

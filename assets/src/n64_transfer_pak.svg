@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The N64 Transfer Pak, front on, with a Game Boy cartridge in its slot: the
+     picture on the n64lle Gamepads tab's Transfer Pak panel. Grey pak body,
+     the cartridge rising out of the top slot, the controller connector below.
+     Drawn for Retro Launcher; no logo, text or trademark.
+     Render: rsvg-convert -w 400 n64_transfer_pak.svg -o ../controllers/n64_transfer_pak.png -->
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="480" viewBox="0 0 400 480">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cfd0d4"/>
+      <stop offset="0.5" stop-color="#b8b9be"/>
+      <stop offset="1" stop-color="#9c9da2"/>
+    </linearGradient>
+    <linearGradient id="bodyside" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000" stop-opacity="0.18"/>
+      <stop offset="0.12" stop-color="#000" stop-opacity="0"/>
+      <stop offset="0.88" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="cart" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bfc0c5"/>
+      <stop offset="1" stop-color="#9fa0a6"/>
+    </linearGradient>
+    <linearGradient id="label" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f1ecdc"/>
+      <stop offset="1" stop-color="#ddd6c0"/>
+    </linearGradient>
+    <linearGradient id="art" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e35a4c"/>
+      <stop offset="0.5" stop-color="#f0b23a"/>
+      <stop offset="1" stop-color="#3f7fd0"/>
+    </linearGradient>
+    <linearGradient id="plug" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b5d62"/>
+      <stop offset="1" stop-color="#3d3f43"/>
+    </linearGradient>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2"/></filter>
+  </defs>
+
+  <!-- shadow -->
+  <rect x="78" y="160" width="258" height="300" rx="24" fill="#000" opacity="0.45" filter="url(#drop)" transform="translate(6 12)"/>
+
+  <!-- the Game Boy cartridge, rising out of the slot -->
+  <path d="M112 44 Q112 30 126 30 H274 Q288 30 288 44 V190 H112 Z" fill="url(#cart)" stroke="#86878d" stroke-width="1.5"/>
+  <!-- its grip ridges -->
+  <g stroke="#8d8e94" stroke-width="2.5" opacity="0.8">
+    <line x1="132" y1="44" x2="268" y2="44"/>
+    <line x1="132" y1="52" x2="268" y2="52"/>
+    <line x1="132" y1="60" x2="268" y2="60"/>
+  </g>
+  <g stroke="#dcdde0" stroke-width="1" opacity="0.7">
+    <line x1="132" y1="46" x2="268" y2="46"/>
+    <line x1="132" y1="54" x2="268" y2="54"/>
+    <line x1="132" y1="62" x2="268" y2="62"/>
+  </g>
+  <!-- the label recess and a label with generic art -->
+  <rect x="128" y="76" width="144" height="110" rx="6" fill="#8f9096"/>
+  <rect x="134" y="82" width="132" height="104" rx="4" fill="url(#label)"/>
+  <rect x="142" y="92" width="116" height="62" rx="3" fill="url(#art)"/>
+  <circle cx="176" cy="118" r="14" fill="#fff" opacity="0.55"/>
+  <path d="M142 144 L170 126 L196 142 L222 120 L258 146 V154 H142 Z" fill="#2f5d3a" opacity="0.8"/>
+  <rect x="146" y="162" width="70" height="6" rx="3" fill="#b3aa94"/>
+  <rect x="146" y="173" width="44" height="5" rx="2.5" fill="#c6bea8"/>
+
+  <!-- the pak body -->
+  <rect x="74" y="160" width="252" height="262" rx="22" fill="url(#body)" stroke="#808187" stroke-width="1.5"/>
+  <rect x="74" y="160" width="252" height="262" rx="22" fill="url(#bodyside)"/>
+  <!-- the slot the cartridge sits in: a dark lip across the top -->
+  <rect x="100" y="156" width="200" height="14" rx="5" fill="#55575c"/>
+  <rect x="100" y="156" width="200" height="4" rx="2" fill="#2c2e31" opacity="0.8"/>
+  <!-- top highlight -->
+  <path d="M96 178 H304" stroke="#ffffff" stroke-width="3" opacity="0.45" filter="url(#soft)"/>
+  <!-- the front panel, recessed -->
+  <rect x="104" y="206" width="192" height="150" rx="12" fill="#b0b1b6"/>
+  <rect x="104" y="206" width="192" height="150" rx="12" fill="none" stroke="#909196" stroke-width="2"/>
+  <path d="M108 354 H292" stroke="#d9dade" stroke-width="1.5" opacity="0.8"/>
+  <!-- grip ribs on the panel -->
+  <g stroke="#9a9ba0" stroke-width="3" stroke-linecap="round">
+    <line x1="130" y1="236" x2="270" y2="236"/>
+    <line x1="130" y1="254" x2="270" y2="254"/>
+    <line x1="130" y1="272" x2="270" y2="272"/>
+    <line x1="130" y1="290" x2="270" y2="290"/>
+    <line x1="130" y1="308" x2="270" y2="308"/>
+    <line x1="130" y1="326" x2="270" y2="326"/>
+  </g>
+  <g stroke="#d3d4d8" stroke-width="1" stroke-linecap="round" opacity="0.8">
+    <line x1="130" y1="239" x2="270" y2="239"/>
+    <line x1="130" y1="257" x2="270" y2="257"/>
+    <line x1="130" y1="275" x2="270" y2="275"/>
+    <line x1="130" y1="293" x2="270" y2="293"/>
+    <line x1="130" y1="311" x2="270" y2="311"/>
+    <line x1="130" y1="329" x2="270" y2="329"/>
+  </g>
+  <!-- the insert-this-way arrow, moulded -->
+  <path d="M200 372 l14 16 h-28 z" fill="#9a9ba0"/>
+  <path d="M200 374 l11 12.5 h-22 z" fill="#c7c8cc"/>
+
+  <!-- the connector that plugs into the controller -->
+  <path d="M120 420 H280 V448 Q280 458 270 458 H130 Q120 458 120 448 Z" fill="url(#plug)" stroke="#2c2e31" stroke-width="1.2"/>
+  <g stroke="#2a2b2e" stroke-width="2">
+    <line x1="140" y1="428" x2="140" y2="450"/>
+    <line x1="160" y1="428" x2="160" y2="450"/>
+    <line x1="180" y1="428" x2="180" y2="450"/>
+    <line x1="200" y1="428" x2="200" y2="450"/>
+    <line x1="220" y1="428" x2="220" y2="450"/>
+    <line x1="240" y1="428" x2="240" y2="450"/>
+    <line x1="260" y1="428" x2="260" y2="450"/>
+  </g>
+  <rect x="120" y="420" width="160" height="4" fill="#77797e"/>
+</svg>

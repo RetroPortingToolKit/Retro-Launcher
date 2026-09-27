@@ -23,6 +23,10 @@ endif()
 set(RETCOMM_VERSION "0.1.1" CACHE STRING "Retro Launcher semantic version")
 # Reported by `retro-hub --version`; the release workflow passes GITHUB_SHA.
 set(RETCOMM_COMMIT "" CACHE STRING "Git commit the build is from (empty: unknown)")
+# ON only in .github/workflows/release.yml: a CI release. Every other build is a
+# local one, which offers Direct mode's Developer page and developer paths
+# (`build local|release` in `retro-hub --version`).
+option(RETCOMM_RELEASE_BUILD "A CI release build (hides Direct mode's developer tools)" OFF)
 set(RETCOMM_GITHUB_SLUG "RetroPortingToolKit/Retro-Launcher" CACHE STRING
     "GitHub owner/repo used for self-update")
 set(RETCOMM_CATALOG_GITHUB_REPO "RetroPortingToolKit/Retro-Catalog" CACHE STRING
@@ -40,6 +44,7 @@ set(RETCOMM_CORE_SOURCES
     src/paths/data_root_migrate.cpp
     src/paths/process_env.cpp
     src/paths/toolchain_env.cpp
+    src/paths/fs_util.cpp
     src/core/hash.cpp
     src/core/core_titles.cpp
     src/core/config.cpp
@@ -407,6 +412,9 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
     target_compile_definitions(retro-hub PRIVATE "RETCOMM_COMMIT=\"${RETCOMM_COMMIT}\"")
+    if(RETCOMM_RELEASE_BUILD)
+        target_compile_definitions(retro-hub PRIVATE RETCOMM_RELEASE_BUILD=1)
+    endif()
     if(UNIX AND NOT APPLE)
         set_target_properties(retro-hub PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN")
     endif()

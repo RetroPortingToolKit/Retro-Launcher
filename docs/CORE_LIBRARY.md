@@ -36,8 +36,23 @@ core instead of getting a twin row.
 `core_titles: [{manifest, name}]`, and merged into the catalog after every
 catalog load (hub and CLI). Two ways to add one:
 
-- In the hub: the drawer's **Add Core Title…** picks a sidecar, saves the
-  registration, and scans its platform for the ROM.
+- In the hub: the drawer's **Add Core Title…** adopts a **port project**
+  (since 2026-09-27; it used to pick a sidecar). Pick the title app the
+  project built (`tools/build_app.sh`: `<project>/<build>/app/<Name>-<v>-<os>
+  .AppImage|.exe`). The hub walks up from it to the project root -- an n64lle
+  port: `game.toml`, `CMakeLists.txt` and `tools/build_app.sh` -- and reads the
+  payload staged beside the app (`title/title.json`: the generic core, the game
+  package and the ROM's sha256). It then asks to move the whole project folder
+  into the default install root (`default_install_root`, where installed apps
+  live), as `<root>/<project folder name>`; a project already under an install
+  root is added where it is. **Declining adds nothing.** The move is a rename,
+  or a copy then removal across drives; a destination that exists is refused.
+  Build trees inside the project keep the old path in their CMake caches, so
+  they need configuring again. The registration is `core_titles: [{manifest:
+  <title.json>, name, app, project}]`: the row matches the library's ROM by
+  sha256, and **Play runs the title app** (detached, `--rom <the matched ROM>`
+  when there is one), which keeps its settings and saves in its own
+  `<id>-data/` beside it (docs/RELEASES.md, "Title-app mode").
 - On the CLI: `retcomm core add <sidecar.rcore.toml> [--name NAME]`, then
   `retcomm scan`. `retcomm core list` shows each core title, its core and its
   matched ROM.

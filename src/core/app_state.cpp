@@ -1,4 +1,5 @@
 #include "retcomm/app_state.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -118,7 +119,7 @@ bool save_app_state(const fs::path& path, const AppState& state, std::string* er
         }
         out << j.dump(2) << '\n';
     }
-    fs::rename(tmp, path, ec);
+    retcomm::robust_rename(tmp, path, ec);
     if (ec) {
         if (error) *error = "cannot replace " + path.string() + ": " + ec.message();
         return false;
