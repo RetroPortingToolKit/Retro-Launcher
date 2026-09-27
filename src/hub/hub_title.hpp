@@ -53,6 +53,10 @@ struct TitleInfo {
     std::vector<std::pair<std::string, std::string>> opts;
     bool has_rom = false;
     TitleRom rom;
+    // `update`: {"github": "owner/repo"}, where the port publishes releases.
+    // The Update page compares the newest one to `version`; the game package
+    // is built from the player's ROM, so nothing of the game is downloaded.
+    std::string update_github;
 };
 
 // `p` is title.json or the directory holding it.

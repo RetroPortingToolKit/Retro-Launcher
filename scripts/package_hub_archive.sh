@@ -194,6 +194,8 @@ set -e
 env -u LD_LIBRARY_PATH bash "${CLEAN}/packaging/title/build-title-app.sh" --help >/dev/null ||
   die "the archived title-app kit does not run"
 [[ "$(field title_app)" =~ ^[1-9][0-9]*$ ]] || die "the archived hub has no title-app mode"
+# Direct mode's Update page: a hub without it is never installed by one.
+[[ "$(field updates)" =~ ^[1-9][0-9]*$ ]] || die "the archived hub has no Update page"
 
 # ---- record what shipped --------------------------------------------------
 SHA256="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"
@@ -218,6 +220,7 @@ entry = {
     "rcore_abi": {"major": $(field rcore_abi_major),
                   "draft_revision": $(field rcore_draft_revision)},
     "direct_mode": {"cli_revision": $(field direct_mode),
+                    "updates": $(field updates),
                     "flags": "$(field direct_mode_flags)".split(),
                     "runner_lookup": "$(field runner_lookup)"},
 }

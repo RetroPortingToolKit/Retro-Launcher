@@ -22,8 +22,10 @@ namespace retcomm {
 
 namespace fs = std::filesystem;
 
-// The newest non-prerelease manifest, unless RETRO_RUNTIME_MANIFEST_URL names
-// another (any URL libcurl reads, file:// included -- for testing).
+// RETRO_RUNTIME_MANIFEST_URL when set (any URL libcurl reads, file:// included
+// -- for testing), else the newest non-prerelease manifest. update_runtime()
+// itself reads the newest release's manifest, pre-releases included, from the
+// release feed, and falls back to this URL only when the feed cannot be read.
 std::string runtime_manifest_url();
 
 // This build's key in the manifest's `platforms`: linux-x86_64, linux-arm64,
@@ -36,16 +38,19 @@ fs::path runtime_dir(const Paths& paths);
 struct ResolvedRunner {
     fs::path path;       // empty when no usable runner was found
     std::string version; // as the runner reports it
-    std::string source;  // "override" | "updated" | "bundled"
+    std::string source;  // "override" | "dev" | "updated" | "bundled"
     // What the runner reports it can do (`--version`): 1 when it takes
     // --package for a GAME_PACKAGE core, 0 for one from before that.
     std::uint32_t game_package = 0;
     std::string note;    // why this one; what was skipped
 };
 
-// The runner to start a core with: $RETRO_CORE_RUNNER when set; otherwise the
-// newest of the bundled runner (beside the launcher) and the updated ones that
-// this build can drive. A bundled "dev" build counts as older than any
+// The runner to start a core with: $RETRO_CORE_RUNNER when set; then
+// $RETRO_HUB_DEV_RUNNER (Direct mode's developer path) when it can be driven;
+// otherwise the
+// newest of the bundled runner (beside the launcher, or the one
+// $RETRO_HUB_BUNDLED_RUNNER names: a hub that handed over to an updated hub
+// passes its own) and the updated ones that this build can drive. A bundled "dev" build counts as older than any
 // release; on a tie the bundled one wins.
 ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir);
 

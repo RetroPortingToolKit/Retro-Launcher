@@ -4,6 +4,7 @@
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
 #include "hub/hub_title.hpp"
+#include "hub/hub_update.hpp"
 #include "runner_probe.hpp" // Retro-Runtime: probe_runner
 #include "transport.hpp"    // Retro-Runtime: utf8_args, path_utf8
 #include "retcomm/process_env.hpp"
@@ -11,6 +12,10 @@
 #include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
 #include "hub/hub_theme.hpp"
+
+#if !defined(RETCOMM_COMMIT)
+#define RETCOMM_COMMIT ""
+#endif
 
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
@@ -50,6 +55,7 @@
 #include <unordered_set>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -8886,9 +8892,15 @@ struct DirectPlay {
     fs::path title_arg;       // --title (title.json or its directory)
     fs::path runner;          // --runner
     fs::path hub;             // --hub
+    // `hub` was not given: it is a newer hub the Update page installed
+    // (hub_update.hpp), which this app now runs on.
+    bool hub_auto = false;
     bool check_title = false; // --check-title
     std::string cli_rom;      // --rom as given (absolute); args.rom is the resolved one
     bool core_given = false, package_given = false, title_dir_given = false;
+    // The config's developer paths are in use (Update page, Browse): the core
+    // in args.core, and `hub` is the dev hub this one hands over to.
+    bool core_dev = false, hub_dev = false;
     retcomm::hub::TitleInfo title;
     std::string title_error;  // title.json could not be used
     retcomm::hub::AppAnchor anchor;
@@ -8975,6 +8987,26 @@ void setup_title_app(DirectPlay& d, const fs::path& title_json, bool create) {
     if (!d.data.beside_app)
         std::fprintf(stderr, "retro-hub: data dir %s (%s)\n", d.data.dir.string().c_str(),
                      d.data.note.c_str());
+    if (!d.core_given) {
+        // The title's core, unless the Update page installed a newer build of
+        // it for this game's module ABI (hub_update.hpp).
+        const ResolvedCore rc = resolve_title_core(title_paths(d.data.dir), t.core, d.args.package);
+        d.args.core = rc.path;
+        std::fprintf(stderr, "retro-hub: core: %s: %s (%s)\n", rc.source.c_str(),
+                     retro::corelink::path_utf8(rc.path).c_str(), rc.note.c_str());
+        // A developer's core, set on the Update page, wins over both.
+        const std::string dev =
+            retcomm::load_app_config(title_paths(d.data.dir).config_path).dev_core_path;
+        std::error_code ec;
+        if (!dev.empty() && fs::is_regular_file(retro::corelink::utf8_path(dev), ec)) {
+            d.args.core = retro::corelink::utf8_path(dev);
+            d.core_dev = true;
+            std::fprintf(stderr, "retro-hub: core: dev: %s (config dev_core_path)\n", dev.c_str());
+        } else if (!dev.empty()) {
+            std::fprintf(stderr, "retro-hub: core: dev_core_path %s does not exist; ignored\n",
+                         dev.c_str());
+        }
+    }
     d.args.env = {"RETRO_TITLE_STATE_DIR=" + retro::corelink::path_utf8(d.data.dir)};
 
     d.rom = resolve_rom(t, retro::corelink::utf8_path(d.cli_rom), d.anchor.dir, d.data.dir);
@@ -9154,6 +9186,61 @@ int exec_hub(const fs::path& target, const std::vector<std::string>& args) {
 #endif
 }
 
+void unset_process_env(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    ::unsetenv(name);
+#endif
+}
+
+// What sanitize_env_for_external_child() takes away before a hub outside the
+// AppImage runs, so a restart can go back into the AppImage's hub as it was
+// started: `KEY=value` records separated by \x1e; a key not listed was unset.
+constexpr const char* kEntryEnvKeys[] = {"LD_LIBRARY_PATH", "LD_PRELOAD", "XDG_DATA_DIRS",
+                                         "PATH",            "APPDIR",     "APPIMAGE",
+                                         "ARGV0",           "OWNDIR"};
+
+std::string save_entry_env() {
+    std::string out;
+    for (const char* k : kEntryEnvKeys) {
+        const char* v = std::getenv(k);
+        if (!v) continue;
+        if (!out.empty()) out.push_back('\x1e');
+        out += std::string(k) + "=" + v;
+    }
+    return out;
+}
+
+// The Update page's "Restart": start this app again, from the hub it was
+// started as (RETRO_HUB_ENTRY, when that hub handed over to an updated one)
+// with the arguments this process was given. That hub picks the newest
+// installed hub, core and runner again. The window is already closed.
+int restart_hub(const std::vector<std::string>& argv, const fs::path& self) {
+    fs::path target = self;
+    if (const char* entry = std::getenv("RETRO_HUB_ENTRY"); entry && *entry) {
+        target = retro::corelink::utf8_path(entry);
+        const char* saved = std::getenv("RETRO_HUB_ENTRY_ENV");
+        const std::string env = saved ? saved : "";
+        for (const char* k : kEntryEnvKeys) unset_process_env(k);
+        size_t at = 0;
+        while (at < env.size()) {
+            const size_t end = std::min(env.find('\x1e', at), env.size());
+            const std::string kv = env.substr(at, end - at);
+            const auto eq = kv.find('=');
+            if (eq != std::string::npos) set_process_env(kv.substr(0, eq).c_str(), kv.substr(eq + 1));
+            at = end + 1;
+        }
+    }
+    for (const char* k : {"RETRO_HUB_REEXEC", "RETRO_HUB_ENTRY", "RETRO_HUB_ENTRY_ENV",
+                          "RETRO_HUB_BUNDLED_RUNNER", "RETRO_HUB_DEV_RUNNER"})
+        unset_process_env(k);
+    std::fprintf(stderr, "retro-hub: restarting\n");
+    std::vector<std::string> args = argv;
+    if (args.empty()) args.push_back(retro::corelink::path_utf8(target));
+    return exec_hub(target, args);
+}
+
 // -1: carry on in this process. Otherwise the exit status to return.
 int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
                      const fs::path& self, const fs::path& exe_dir) {
@@ -9167,7 +9254,7 @@ int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
     }
     if (!fs::is_regular_file(d.hub, ec)) {
         std::fprintf(stderr, "retro-hub: --hub %s: no such file\n", d.hub.string().c_str());
-        return 2;
+        return d.hub_auto ? -1 : 2;
     }
     if (!self.empty() && fs::equivalent(d.hub, self, ec)) {
         std::fprintf(stderr, "retro-hub: --hub %s is this hub; carrying on\n", d.hub.string().c_str());
@@ -9175,9 +9262,11 @@ int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
     }
     const std::string tag = retro::corelink::path_utf8(self.empty() ? exe_dir : self);
 
-    // The runner this hub would have used (--runner wins).
+    // The runner this hub would have used (--runner wins). An updated hub
+    // resolves its own, counting this hub's bundled one (below), so an
+    // updated runner still wins over it.
     fs::path runner = d.runner;
-    if (runner.empty() && d.title_mode && d.title_error.empty()) {
+    if (runner.empty() && d.title_mode && d.title_error.empty() && !d.hub_auto) {
         runner = resolve_title_runner(d, retcomm::hub::title_paths(d.data.dir), exe_dir).path;
     }
 
@@ -9193,12 +9282,22 @@ int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
         }
     };
     if (ver.empty()) {
-        std::fprintf(stderr, "retro-hub: --hub %s: cannot read its --version (%s)\n",
-                     d.hub.string().c_str(), perr.c_str());
-        return 2;
+        std::fprintf(stderr, "retro-hub: --hub %s: cannot read its --version (%s)%s\n",
+                     d.hub.string().c_str(), perr.c_str(),
+                     d.hub_auto ? "; carrying on with this hub" : "");
+        return d.hub_auto ? -1 : 2;
     }
 
     set_process_env("RETRO_HUB_REEXEC", tag);
+    if (d.hub_auto) {
+        // What a restart from the Update page comes back to: this hub, in
+        // the environment it was started with (restart_hub).
+        set_process_env("RETRO_HUB_ENTRY", tag);
+        set_process_env("RETRO_HUB_ENTRY_ENV", save_entry_env());
+        const fs::path bundled = exe_dir / retro::corelink::runner_file_name();
+        if (fs::is_regular_file(bundled, ec))
+            set_process_env("RETRO_HUB_BUNDLED_RUNNER", retro::corelink::path_utf8(bundled));
+    }
     if (d.title_mode && d.title_error.empty()) {
         // State stays with the app this hub was started as; the other hub is
         // not inside an AppImage mount, so its environment is cleaned of it.
@@ -9237,7 +9336,12 @@ int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
             out.push_back("--runner");
             out.push_back(retro::corelink::path_utf8(runner));
         }
-        return exec_hub(d.hub, out);
+        const int rc = exec_hub(d.hub, out);
+        if (d.hub_auto && rc == 127) {
+            std::fprintf(stderr, "retro-hub: carrying on with this hub\n");
+            return -1;
+        }
+        return rc;
     }
 
     // An older hub: title-app mode as a Direct-mode command line, or refuse.
@@ -9247,18 +9351,18 @@ int maybe_reexec_hub(const DirectPlay& d, const std::vector<std::string>& argv,
     if (direct < 2 || !d.title_error.empty() || d.check_title) {
         std::fprintf(stderr, "retro-hub: %s, direct_mode %d); it cannot run this title\n",
                      why.c_str(), direct);
-        return 2;
+        return d.hub_auto ? -1 : 2;
     }
     if (d.rom.refused) {
         std::fprintf(stderr, "retro-hub: --rom refused: %s\n", d.rom.error.c_str());
-        return 2;
+        return d.hub_auto ? -1 : 2;
     }
     if (d.args.rom.empty()) {
         std::fprintf(stderr,
                      "retro-hub: %s), and no ROM resolves: it cannot show the ROM picker. Pass "
                      "--rom <image>.\n",
                      why.c_str());
-        return 2;
+        return d.hub_auto ? -1 : 2;
     }
     std::fprintf(stderr, "retro-hub: %s); giving it the title as Direct mode (direct_mode %d)\n",
                  why.c_str(), direct);
@@ -9507,6 +9611,9 @@ struct CoreSettingsPage {
     // title's layer instead of every title's.
     std::string title_key, title_name;
     bool title_scope = false;
+    // Opened by Direct mode for its one title: the page edits that title's
+    // values only, and there is no all-titles layer to choose.
+    bool direct = false;
 
     std::future<retcomm::hub::CoreDescription> describing;
     retcomm::hub::CoreDescription desc;
@@ -9568,13 +9675,15 @@ void cancel_core_capture(CoreSettingsPage& p) { p.cap_target = -1; }
 void open_core_settings(HubModel& hub, const std::string& platform, const std::string& title_key,
                         const std::string& title_name, const fs::path& core,
                         const fs::path& package,
-                        const retcomm::hub::CoreDescription* known = nullptr) {
+                        const retcomm::hub::CoreDescription* known = nullptr,
+                        bool direct = false) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
     p.platform = platform;
     p.title_key = title_key;
     p.title_name = title_name;
-    p.title_scope = false;
+    p.direct = direct && !title_key.empty();
+    p.title_scope = p.direct;
     p.input = p.input_saved = retcomm::hub::load_platform_input(data, platform);
     p.plat_opts = p.plat_saved = retcomm::hub::load_core_options(data, platform, "");
     p.prefs = p.prefs_saved = retcomm::hub::load_play_prefs(data);
@@ -9582,6 +9691,7 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
         title_key.empty() ? std::map<std::string, std::string>{}
                           : retcomm::hub::load_core_options(data, platform, title_key);
     p.gamepads_tab = false;
+    p.show_developer = hub.cfg.show_developer_options;
     p.configuring = -1;
     p.status.clear();
     cancel_core_capture(p);
@@ -9753,8 +9863,16 @@ std::string option_group(const std::string& key) {
     return g == key ? std::string("OTHER") : g;
 }
 
-// One option as a settings row. In title scope the value may be inherited:
-// the row then shows the all-titles value and offers it as its first choice.
+// One option as a settings row. In platform scope an unset value is the
+// core's default, shown as such and offered as the first choice. In title
+// scope the row shows the value the title plays with -- its own file's, else
+// the one it inherits -- as a plain value, with only the core's choices, less
+// the value named "title": n64lle's "what this title's game.toml declares",
+// which is what an unset value already means when one title is being edited.
+// Such a value shows as "Default"; the hub cannot name what game.toml
+// resolves it to without re-implementing the core, so it does not guess.
+// Reset to Default clears the title's file.
+constexpr const char* kTitleDeclaredValue = "title";
 void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o,
                           const Theme& th) {
     std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
@@ -9771,14 +9889,19 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
     std::string t, f;
     if (o.type == "enum" && !o.values.empty()) {
         settings_row(label.c_str(), th, kSettingsCtrlW);
-        const std::string preview = set ? cur : std::string(inherit_word) + ": " + cur;
+        const std::string preview =
+            !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
+                           : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
         if (ImGui::BeginCombo("##v", preview.c_str())) {
-            if (ImGui::Selectable((std::string(inherit_word) + " (" + inherited + ")").c_str(),
+            if (!p.title_scope &&
+                ImGui::Selectable((std::string(inherit_word) + " (" + inherited + ")").c_str(),
                                   !set))
                 layer.erase(o.key);
             for (const std::string& v : o.values) {
-                if (ImGui::Selectable(v.c_str(), set && v == cur)) layer[o.key] = v;
-                if (set && v == cur) ImGui::SetItemDefaultFocus();
+                if (p.title_scope && v == kTitleDeclaredValue) continue;
+                const bool chosen = (set || p.title_scope) && v == cur;
+                if (ImGui::Selectable(v.c_str(), chosen)) layer[o.key] = v;
+                if (chosen) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
@@ -9878,9 +10001,15 @@ void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, f
         "Leave them alone to play; an unset knob is the engine's own default.");
     ImGui::PopStyleColor();
     const std::string lbl = "Show developer options (" + std::to_string(dev) + ")";
-    ImGui::BeginDisabled(dev == 0);
-    if (settings_checkbox(lbl.c_str(), "##showdev", th, &p.show_developer)) {}
-    ImGui::EndDisabled();
+    // Never disabled: it also shows the Update page's Browse buttons, which
+    // matter most when the core declares nothing (a runner without --describe).
+    // A view preference, not a core setting: saved at once, no Save needed.
+    if (settings_checkbox(lbl.c_str(), "##showdev", th, &p.show_developer)) {
+        hub.cfg.show_developer_options = p.show_developer;
+        std::string err;
+        if (!retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err))
+            hub.append_log("config not saved: " + err);
+    }
     if (p.show_developer && p.desc.ok) {
         ImGui::Dummy(ImVec2(0, 6));
         draw_core_option_group(p, th, true);
@@ -10356,11 +10485,17 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
             if (p.desc_ready && p.desc.ok)
                 from = " Declared by " + p.desc.core_id + " " + p.desc.core_version +
                        (p.desc.cached ? " (remembered from an earlier run)." : ".");
-            ImGui::TextWrapped(
-                "What the core says it can be told when a game starts. Every %s title reads "
-                "these; a title can override them, and a --opt on the command line wins over "
-                "both.%s",
-                platform_display_name(p.platform), from.c_str());
+            if (p.direct)
+                ImGui::TextWrapped(
+                    "What the core says it can be told when %s starts, as this title's "
+                    "settings file holds them. A --opt on the command line wins over it.%s",
+                    (p.title_name.empty() ? p.title_key : p.title_name).c_str(), from.c_str());
+            else
+                ImGui::TextWrapped(
+                    "What the core says it can be told when a game starts. Every %s title reads "
+                    "these; a title can override them, and a --opt on the command line wins over "
+                    "both.%s",
+                    platform_display_name(p.platform), from.c_str());
         }
         ImGui::PopTextWrapPos();
         ImGui::SameLine();
@@ -10385,9 +10520,11 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
         ImGui::SameLine();
         const std::string all = std::string("All ") + platform_display_name(p.platform) + " titles";
         const std::string one = (p.title_name.empty() ? p.title_key : p.title_name) + " only";
-        if (p.title_scope ? ImGui::Button(all.c_str()) : accent_button(all.c_str(), th))
-            p.title_scope = false;
-        ImGui::SameLine();
+        if (!p.direct) {
+            if (p.title_scope ? ImGui::Button(all.c_str()) : accent_button(all.c_str(), th))
+                p.title_scope = false;
+            ImGui::SameLine();
+        }
         if (p.title_scope ? accent_button(one.c_str(), th) : ImGui::Button(one.c_str()))
             p.title_scope = true;
         if (p.title_scope) {
@@ -10477,9 +10614,90 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
 
 // ---- Direct home ------------------------------------------------------------
 
-enum class DirectPage { Home, Mods };
+enum class DirectPage { Home, Mods, Update };
+
+// run_direct_home's answer when the player pressed Restart on the Update page:
+// main closes the window and starts the app again (restart_hub).
+constexpr int kDirectRestart = -100;
 
 struct TitleRomPick;
+struct DevPick;
+
+// The Update page's checks and installs (hub_update.hpp), on a worker so the
+// page keeps drawing. Like DirectRuntimeUpdate, an unfinished one never holds
+// up the exit: installs only write into staging directories they clear first.
+class DirectUpdates {
+public:
+    using Items = std::array<retcomm::hub::UpdateItem, 4>;
+    static constexpr const char* kNames[4] = {"Game", "Core", "Runner", "Hub"};
+
+    // `install`: install what the last check found available, and keep the
+    // other rows as they were; otherwise check every row.
+    void start(const retcomm::hub::UpdateTarget& t, bool install) {
+        Items prev;
+        {
+            std::lock_guard<std::mutex> lock(state_->mu);
+            if (state_->running) return;
+            state_->running = true;
+            state_->installing = install;
+            prev = state_->items;
+        }
+        if (worker_.joinable()) worker_.join();
+        worker_ = std::thread([st = state_, t, install, prev] {
+            Items r = prev;
+            if (!install) r[0] = retcomm::hub::check_game(t);
+            if (!install || prev[1].available) r[1] = retcomm::hub::update_core(t, install);
+            if (!install || prev[2].available) r[2] = retcomm::hub::update_runner(t, install);
+            if (!install || prev[3].available) r[3] = retcomm::hub::update_hub(t, install);
+            for (int i = 0; i < 4; ++i)
+                std::fprintf(stderr, "retro-hub: update: %s: %s\n", kNames[i], r[i].message.c_str());
+            std::lock_guard<std::mutex> lock(st->mu);
+            st->items = r;
+            st->have = true;
+            st->running = false;
+            ++st->generation;
+        });
+    }
+    // Goes up each time a check or install finishes.
+    int generation() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        return state_->generation;
+    }
+    bool running() const { return get(&State::running); }
+    bool installing() const { return get(&State::installing); }
+    bool have() const { return get(&State::have); }
+    Items items() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        return state_->items;
+    }
+    // Rows that want the player: something to install, a game to rebuild, or
+    // something installed that the next start picks up.
+    int attention() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        int n = 0;
+        for (const auto& it : state_->items) n += it.available || it.manual || it.installed;
+        return n;
+    }
+    ~DirectUpdates() {
+        if (!worker_.joinable()) return;
+        if (running()) worker_.detach();
+        else worker_.join();
+    }
+
+private:
+    struct State {
+        std::mutex mu;
+        bool running = false, installing = false, have = false;
+        int generation = 0;
+        Items items;
+    };
+    bool get(bool State::*f) const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        return (*state_).*f;
+    }
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::thread worker_;
+};
 
 struct DirectHome {
     DirectPlay d;
@@ -10505,6 +10723,20 @@ struct DirectHome {
     fs::path mods_state_dir;
     SDL_Window* window = nullptr;
     std::shared_ptr<TitleRomPick> pick;
+    DirectUpdates updates;
+    int updates_seen = 0;          // DirectUpdates::generation() handled
+    bool startup_check = false;    // the launch's check: prompt when it lands
+    bool prompt_pending = false;   // open the "Updates available" prompt
+    bool install_then_restart = false; // the prompt's Install & Restart
+    bool restart_needed = false;   // something installed or a dev path dropped
+    // Set by the Update page: close the window and start this app again.
+    bool restart = false;
+    // The developer paths being edited on the Update page (core, runner, hub;
+    // config dev_*_path), what each one is, and the file picker's answer.
+    std::array<std::string, 3> dev_draft;
+    std::array<std::string, 3> dev_note;
+    std::array<bool, 3> dev_bad{};
+    std::shared_ptr<DevPick> dev_pick;
     std::string rom_note; // the last pick's result, or why none resolved
     bool rom_note_bad = false;
 };
@@ -10649,9 +10881,196 @@ void take_direct_focus(DirectHome& h) {
     ImGui::SetNavCursorVisible(true);
 }
 
+// What this hub runs, for the Update page.
+retcomm::hub::UpdateTarget direct_update_target(const DirectHome& h, const HubModel& hub) {
+    retcomm::hub::UpdateTarget t;
+    t.paths = hub.paths;
+    t.exe_dir = hub.exe_dir;
+    t.title_mode = h.d.title_mode;
+    if (h.d.title_mode) {
+        t.title_version = h.d.title.version;
+        t.game_github = h.d.title.update_github;
+        t.bundled_core = h.d.title.core;
+    }
+    t.core = h.d.args.core;
+    t.package = h.d.args.package;
+    // Direct mode's core is always the command line's.
+    t.core_pinned = h.d.core_given || !h.d.title_mode;
+    t.hub_version = retcomm::retcomm_app_version();
+    t.hub_commit = RETCOMM_COMMIT[0] ? RETCOMM_COMMIT : "unknown";
+    t.core_dev = h.d.core_dev;
+    // This hub is the config's dev hub when an older one handed over to it.
+    std::error_code ec;
+    const fs::path self = retcomm::hub::current_exe_path();
+    t.hub_dev = !hub.cfg.dev_hub_path.empty() && !self.empty() &&
+                fs::equivalent(self, retro::corelink::utf8_path(hub.cfg.dev_hub_path), ec);
+    return t;
+}
+
+// ---- developer paths (Update page, dev options on) -----------------------------
+//
+// Browse picks a core, runner or hub binary; Save & Restart writes the picks
+// to config.json (dev_core_path, dev_runner_path, dev_hub_path) and starts the
+// app again, which then uses them in place of the bundled ones; Reset to
+// Defaults empties the picks. Nothing is copied: the paths are used where
+// they are.
+
+enum DevSlot { kDevCore = 0, kDevRunner = 1, kDevHub = 2 };
+
+struct DevPick {
+    std::mutex mu;
+    bool busy = false, answered = false;
+    int slot = 0;
+    std::string path, error;
+};
+
+void SDLCALL on_dev_pick_dialog(void* userdata, const char* const* filelist, int /*filter*/) {
+    auto* ref = static_cast<std::shared_ptr<DevPick>*>(userdata);
+    {
+        DevPick& p = **ref;
+        std::lock_guard<std::mutex> lock(p.mu);
+        p.busy = false;
+        p.answered = true;
+        p.path.clear();
+        p.error.clear();
+        if (!filelist) p.error = SDL_GetError();
+        else if (filelist[0]) p.path = filelist[0];
+    }
+    delete ref;
+}
+
+std::string& dev_config_path(retcomm::AppConfig& cfg, int slot) {
+    return slot == kDevCore ? cfg.dev_core_path
+                            : (slot == kDevRunner ? cfg.dev_runner_path : cfg.dev_hub_path);
+}
+
+// What a dev path is, or why it cannot be used: the same checks a start
+// makes, so a bad pick is refused here rather than ignored later.
+bool describe_dev_path(const DirectHome& h, int slot, const std::string& path, std::string* note) {
+    if (path.empty()) {
+        *note = slot == kDevCore ? "the title's core" : "bundled";
+        return true;
+    }
+    const fs::path p = retro::corelink::utf8_path(path);
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec)) {
+        *note = "no such file";
+        return false;
+    }
+    std::string err;
+    if (slot == kDevCore) {
+        retcomm::hub::CoreSidecar sc;
+        if (!retcomm::hub::read_core_sidecar(p, sc, &err)) {
+            *note = "not a core: " + err;
+            return false;
+        }
+        retcomm::hub::CoreSidecar title;
+        if (!h.d.title.core.empty() && retcomm::hub::read_core_sidecar(h.d.title.core, title, nullptr) &&
+            title.id != sc.id) {
+            *note = "a " + sc.id + " core; this title runs " + title.id;
+            return false;
+        }
+        *note = sc.id + " " + sc.version;
+        return true;
+    }
+    if (slot == kDevRunner) {
+        retro::corelink::RunnerVersion v;
+        if (!retro::corelink::probe_runner(p, v, &err)) {
+            *note = "not a runner: " + err;
+            return false;
+        }
+        if (!v.compatible()) {
+            *note = "runner " + v.version + " speaks another link or ABI major";
+            return false;
+        }
+        *note = "runner " + v.version;
+        return true;
+    }
+    const auto ver = retcomm::hub::probe_version(p, &err);
+    if (ver.empty()) {
+        *note = "not a hub: " + err;
+        return false;
+    }
+    auto num = [&](const char* k) {
+        const auto it = ver.find(k);
+        try {
+            return it == ver.end() ? 0 : std::stoi(it->second);
+        } catch (...) {
+            return 0;
+        }
+    };
+    if (num("direct_mode") < 4 || (h.d.title_mode && num("title_app") < 1)) {
+        *note = "hub " + (ver.count("version") ? ver.at("version") : std::string("?")) +
+                " cannot run this " + (h.d.title_mode ? "title app" : "Direct mode");
+        return false;
+    }
+    *note = "hub " + (ver.count("version") ? ver.at("version") : std::string("?")) +
+            (num("updates") < 1 ? " (no Update page)" : "");
+    return true;
+}
+
+void load_dev_draft(DirectHome& h, HubModel& hub) {
+    for (int i = 0; i < 3; ++i) {
+        h.dev_draft[static_cast<size_t>(i)] = dev_config_path(hub.cfg, i);
+        h.dev_bad[static_cast<size_t>(i)] =
+            !describe_dev_path(h, i, h.dev_draft[static_cast<size_t>(i)], &h.dev_note[static_cast<size_t>(i)]);
+    }
+}
+
+void begin_dev_pick(DirectHome& h, int slot) {
+    if (!h.dev_pick) h.dev_pick = std::make_shared<DevPick>();
+    {
+        std::lock_guard<std::mutex> lock(h.dev_pick->mu);
+        if (h.dev_pick->busy) return;
+        h.dev_pick->busy = true;
+        h.dev_pick->answered = false;
+        h.dev_pick->slot = slot;
+    }
+    const std::string& cur = h.dev_draft[static_cast<size_t>(slot)];
+    const std::string start =
+        cur.empty() ? std::string() : retro::corelink::path_utf8(retro::corelink::utf8_path(cur).parent_path());
+    SDL_ShowOpenFileDialog(on_dev_pick_dialog, new std::shared_ptr<DevPick>(h.dev_pick), h.window,
+                           nullptr, 0, start.empty() ? nullptr : start.c_str(), false);
+}
+
+void take_dev_pick(DirectHome& h) {
+    if (!h.dev_pick) return;
+    std::string path, error;
+    int slot = 0;
+    {
+        std::lock_guard<std::mutex> lock(h.dev_pick->mu);
+        if (!h.dev_pick->answered) return;
+        h.dev_pick->answered = false;
+        path = h.dev_pick->path;
+        error = h.dev_pick->error;
+        slot = h.dev_pick->slot;
+    }
+    const auto i = static_cast<size_t>(slot);
+    if (!error.empty()) {
+        h.dev_note[i] = "the file dialog failed: " + error;
+        h.dev_bad[i] = true;
+        return;
+    }
+    if (path.empty()) return; // cancelled
+    std::string note;
+    if (!describe_dev_path(h, slot, path, &note)) {
+        // Refused: the draft keeps what it had, the row says why.
+        h.dev_note[i] = "refused " + retro::corelink::utf8_path(path).filename().string() + ": " + note;
+        h.dev_bad[i] = true;
+        return;
+    }
+    h.dev_draft[i] = path;
+    h.dev_note[i] = note;
+    h.dev_bad[i] = false;
+}
+
 void open_direct_page(DirectHome& h, HubModel& hub, DirectPage p) {
     h.page = p;
     h.focus_pending = true;
+    if (p == DirectPage::Update) {
+        load_dev_draft(h, hub);
+        if (!h.updates.running()) h.updates.start(direct_update_target(h, hub), false);
+    }
     if (p == DirectPage::Mods) {
         hub.show_mods_page = true;
         hub.mods_focus_pending = true;
@@ -10732,10 +11151,24 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         ImGui::TextWrapped("%s", h.rom_note.c_str());
         ImGui::PopStyleColor();
     }
-    ImGui::BeginDisabled(!have_rom);
-    if (have_rom) take_direct_focus(h);
-    if (good_button("Play", th, ImVec2(w, big))) act = DirectAction::Play;
-    ImGui::EndDisabled();
+    {
+        const float gap = ImGui::GetStyle().ItemSpacing.x;
+        const float upd_w = std::max(120.f, w * 0.32f);
+        ImGui::BeginDisabled(!have_rom);
+        if (have_rom) take_direct_focus(h);
+        if (good_button("Play", th, ImVec2(w - upd_w - gap, big))) act = DirectAction::Play;
+        ImGui::EndDisabled();
+        ImGui::SameLine(0.f, gap);
+        // The game, its core, the runner and this hub (hub_update.hpp).
+        const int n = h.updates.attention();
+        const std::string label =
+            h.updates.running() ? std::string("Update...")
+                                : (n ? "Update (" + std::to_string(n) + ")" : std::string("Update"));
+        if (ImGui::Button((label + "###update").c_str(), ImVec2(upd_w, big)))
+            open_direct_page(h, hub, DirectPage::Update);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Check for a newer game, core, runner and hub, and install them.");
+    }
     if (h.d.title_mode && have_rom) {
         if (ImGui::Button("Choose another ROM\xE2\x80\xA6", ImVec2(w, 0))) begin_title_rom_pick(h);
     }
@@ -10750,7 +11183,7 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         (h.desc.ok ? h.desc.core_id : platform_label(h.platform)) + " Settings";
     if (ImGui::Button(settings_label.c_str(), ImVec2(w, 0))) {
         open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core, h.d.args.package,
-                           h.desc_ready ? &h.desc : nullptr);
+                           h.desc_ready ? &h.desc : nullptr, /*direct=*/true);
     }
     ImGui::TextColored(th.text_muted, "Controllers, video and the core's options");
     ImGui::Dummy(ImVec2(0, 6));
@@ -10794,6 +11227,262 @@ bool draw_direct_subpage_header(const Theme& th, const char* title) {
     ImGui::SetWindowFontScale(1.f);
     ImGui::Separator();
     return back;
+}
+
+// The Update page: one row per piece, what runs and what is published, and
+// what can be done about it. Installs land in the data dir; the hub and core
+// are picked up by the next start (Restart), the runner by the next Play.
+// With developer options on (Core Settings), the core, runner and hub rows
+// also take a binary from disk (Browse), applied by Save & Restart.
+void draw_direct_updates(DirectHome& h, HubModel& hub, const Theme& th) {
+    const bool running = h.updates.running();
+    const DirectUpdates::Items items = h.updates.items();
+    const bool dev = hub.cfg.show_developer_options;
+    int installable = 0;
+    bool restart = h.restart_needed;
+    for (int i = 0; i < 4; ++i) {
+        installable += items[static_cast<size_t>(i)].available;
+        // The runner needs no restart: every Play looks for the newest.
+        restart = restart || (i != 2 && items[static_cast<size_t>(i)].installed);
+    }
+    bool picking = false;
+    if (h.dev_pick) {
+        std::lock_guard<std::mutex> lock(h.dev_pick->mu);
+        picking = h.dev_pick->busy;
+    }
+
+    const float footer_h = ImGui::GetFrameHeightWithSpacing() + 8.f;
+    ImGui::BeginChild("direct_updates", ImVec2(0, -footer_h), ImGuiChildFlags_NavFlattened);
+    // Actions first, so the focus ring lands on the one that matters.
+    if (restart) {
+        take_direct_focus(h);
+        ImGui::BeginDisabled(running);
+        if (accent_button("Restart now", th, ImVec2(180, 0))) h.restart = true;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+    }
+    ImGui::BeginDisabled(running || installable == 0);
+    if (installable) take_direct_focus(h);
+    const std::string inst = "Install " + std::to_string(installable) + " update" +
+                             (installable == 1 ? "" : "s");
+    if (good_button(installable ? inst.c_str() : "Install updates", th, ImVec2(200, 0)))
+        h.updates.start(direct_update_target(h, hub), true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running);
+    take_direct_focus(h);
+    if (ImGui::Button("Check again", ImVec2(150, 0)))
+        h.updates.start(direct_update_target(h, hub), false);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    if (running)
+        ImGui::TextColored(th.text_muted, "%s", h.updates.installing() ? "Installing..." : "Checking...");
+    else if (restart)
+        ImGui::TextColored(th.warn, "Restart to use what was installed.");
+    ImGui::Dummy(ImVec2(0, 8));
+
+    for (int i = 0; i < 4; ++i) {
+        const retcomm::hub::UpdateItem& it = items[static_cast<size_t>(i)];
+        ImGui::PushID(i);
+        ImGui::BeginChild("row", ImVec2(0, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                              ImGuiChildFlags_NavFlattened);
+        ImGui::SetWindowFontScale(1.25f);
+        ImGui::TextUnformatted(DirectUpdates::kNames[i]);
+        ImGui::SetWindowFontScale(1.f);
+        ImGui::SameLine(160.f);
+        const std::string cur = it.current.empty() ? std::string("-") : it.current;
+        if (!it.latest.empty() && it.latest != it.current)
+            ImGui::Text("%s  \xE2\x86\x92  %s", cur.c_str(), it.latest.c_str());
+        else
+            ImGui::TextUnformatted(cur.c_str());
+        if (!h.updates.have()) {
+            ImGui::TextDisabled("Not checked yet.");
+        } else {
+            const ImVec4 col = !it.ok ? th.warn
+                               : (it.available || it.manual || it.installed) ? th.accent
+                                                                             : th.text_muted;
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            ImGui::TextWrapped("%s", it.message.c_str());
+            ImGui::PopStyleColor();
+        }
+        if (!it.link.empty() && ImGui::Button("Open release page"))
+            SDL_OpenURL(it.link.c_str());
+        if (dev && i >= 1) {
+            const int slot = i - 1; // core, runner, hub
+            const auto si = static_cast<size_t>(slot);
+            // Direct mode's core is its command line's: a dev core cannot win.
+            const bool core_locked = slot == kDevCore && (h.d.core_given || !h.d.title_mode);
+            ImGui::BeginDisabled(picking || core_locked);
+            if (ImGui::Button("Browse\xE2\x80\xA6")) begin_dev_pick(h, slot);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            const std::string& path = h.dev_draft[si];
+            const bool changed = path != dev_config_path(hub.cfg, slot);
+            std::string line = core_locked ? std::string("Direct mode runs the core its command line names.")
+                                           : (path.empty() ? std::string("Default") : path);
+            if (!core_locked && !h.dev_note[si].empty()) line += "  (" + h.dev_note[si] + ")";
+            if (changed) line += "  -- Save & Restart to use";
+            ImGui::PushStyleColor(ImGuiCol_Text, h.dev_bad[si] ? th.warn
+                                                 : changed      ? th.accent
+                                                                : th.text_muted);
+            ImGui::TextWrapped("%s", line.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped("Updates install into %s, never into the app itself.",
+                       hub.paths.data_dir.string().c_str());
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    // Footer: the startup check (saved as it is toggled) on the left; with
+    // developer options, the dev paths' Reset and Save & Restart on the right.
+    ImGui::Separator();
+    bool on_start = hub.cfg.check_updates_on_startup;
+    if (ImGui::Checkbox("Check for updates on startup", &on_start)) {
+        hub.cfg.check_updates_on_startup = on_start;
+        std::string err;
+        if (!retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err))
+            set_direct_status(h, "The setting was not saved: " + err, true);
+    }
+    if (dev) {
+        constexpr float kSaveW = 170.f, kResetW = 160.f;
+        const float gap = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - kSaveW - kResetW - gap);
+        ImGui::BeginDisabled(running);
+        if (ImGui::Button("Reset to Defaults", ImVec2(kResetW, 0))) {
+            for (int i = 0; i < 3; ++i) {
+                h.dev_draft[static_cast<size_t>(i)].clear();
+                h.dev_bad[static_cast<size_t>(i)] = false;
+                describe_dev_path(h, i, "", &h.dev_note[static_cast<size_t>(i)]);
+            }
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Back to the bundled core, runner and hub (and any installed\n"
+                              "updates). Save & Restart applies it.");
+        ImGui::SameLine(0.f, gap);
+        if (accent_button("Save & Restart", th, ImVec2(kSaveW, 0))) {
+            for (int i = 0; i < 3; ++i)
+                dev_config_path(hub.cfg, i) = h.dev_draft[static_cast<size_t>(i)];
+            std::string err;
+            if (retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err)) {
+                std::fprintf(stderr, "retro-hub: dev paths saved: core '%s', runner '%s', hub '%s'\n",
+                             hub.cfg.dev_core_path.c_str(), hub.cfg.dev_runner_path.c_str(),
+                             hub.cfg.dev_hub_path.c_str());
+                h.restart = true;
+            } else {
+                set_direct_status(h, "The dev paths were not saved: " + err, true);
+            }
+        }
+        ImGui::EndDisabled();
+    }
+}
+
+// A check or install finished (DirectUpdates::generation moved). After an
+// install, a component whose release went in drops its dev path (a release
+// always replaces a dev build), and the prompt's Install & Restart restarts
+// when everything installed. After the launch's check, the prompt opens if
+// anything wants the player.
+void on_direct_updates_done(DirectHome& h, HubModel& hub) {
+    const DirectUpdates::Items items = h.updates.items();
+    if (h.updates.installing()) {
+        bool failed = false, cleared = false;
+        for (int i = 1; i < 4; ++i) {
+            const retcomm::hub::UpdateItem& it = items[static_cast<size_t>(i)];
+            failed = failed || !it.ok;
+            if (!it.installed) continue;
+            if (i != 2) h.restart_needed = true;
+            std::string& path = dev_config_path(hub.cfg, i - 1);
+            if (!path.empty()) {
+                path.clear();
+                h.dev_draft[static_cast<size_t>(i - 1)].clear();
+                cleared = true;
+            }
+        }
+        if (cleared) {
+            h.restart_needed = true;
+            std::string err;
+            if (!retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err))
+                set_direct_status(h, "The dev paths were not cleared: " + err, true);
+        }
+        if (h.install_then_restart) {
+            h.install_then_restart = false;
+            if (failed) {
+                set_direct_status(h, "Some updates did not install; see Update.", true);
+                open_direct_page(h, hub, DirectPage::Update);
+            } else if (h.restart_needed) {
+                h.restart = true;
+            } else {
+                set_direct_status(h, "Updates installed; the next Play uses them.", false);
+            }
+        }
+        return;
+    }
+    if (h.startup_check) {
+        h.startup_check = false;
+        const bool wanted = std::any_of(items.begin(), items.end(), [](const auto& it) {
+            return it.available || it.manual;
+        });
+        // Not over a page the player went to, where the rows already say it.
+        if (wanted && h.page == DirectPage::Home && !hub.show_core_settings) h.prompt_pending = true;
+    }
+}
+
+// "Updates available", after the launch's check: install everything that can
+// be installed in one go and restart, or look at the details, or not now.
+void draw_direct_update_prompt(DirectHome& h, HubModel& hub, const Theme& th) {
+    constexpr const char* kPrompt = "Updates available";
+    if (h.prompt_pending) {
+        ImGui::OpenPopup(kPrompt);
+        h.prompt_pending = false;
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(620.f, vp->WorkSize.x - 40.f), 0.f));
+    if (!ImGui::BeginPopupModal(kPrompt, nullptr,
+                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    const DirectUpdates::Items items = h.updates.items();
+    int installable = 0;
+    for (int i = 0; i < 4; ++i) {
+        const retcomm::hub::UpdateItem& it = items[static_cast<size_t>(i)];
+        if (!it.available && !it.manual) continue;
+        installable += it.available;
+        ImGui::Text("%-7s %s  \xE2\x86\x92  %s", DirectUpdates::kNames[i],
+                    it.current.empty() ? "-" : it.current.c_str(), it.latest.c_str());
+        if (it.manual) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped("%s", it.message.c_str());
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    if (installable) {
+        if (accent_button("Install & Restart", th, ImVec2(190, 0))) {
+            h.install_then_restart = true;
+            h.updates.start(direct_update_target(h, hub), true);
+            set_direct_status(h, "Installing updates...", false);
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Details", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+        open_direct_page(h, hub, DirectPage::Update);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Not now", ImVec2(120, 0)) ||
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 // Starts the session. False with *why set when it cannot, and the page says so.
@@ -10893,8 +11582,13 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     }
     refresh_direct_mods(h);
 
-    DirectRuntimeUpdate update;
-    update.start(hub);
+    // The game, core, runner and hub, checked at launch; the prompt offers
+    // what it finds (on_direct_updates_done). This replaces the runtime
+    // updater's silent install: nothing installs without the player.
+    if (hub.cfg.check_updates_on_startup) {
+        h.startup_check = true;
+        h.updates.start(direct_update_target(h, hub), false);
+    }
     retcomm::hub::BoxartCache boxart;
 
     std::unique_ptr<retcomm::hub::PlaySession> play;
@@ -10902,6 +11596,11 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     while (running) {
         hub_sync_open_gamepads();
         take_title_rom_pick(h);
+        take_dev_pick(h);
+        if (const int gen = h.updates.generation(); gen != h.updates_seen) {
+            h.updates_seen = gen;
+            on_direct_updates_done(h, hub);
+        }
         if (!h.desc_ready && h.describing.valid() &&
             h.describing.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             h.desc = h.describing.get();
@@ -10974,6 +11673,11 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     draw_mods_page(hub, th);
                     ImGui::EndChild();
                 }
+            } else if (h.page == DirectPage::Update) {
+                if (draw_direct_subpage_header(th, "Updates"))
+                    open_direct_page(h, hub, DirectPage::Home);
+                else
+                    draw_direct_updates(h, hub, th);
             } else {
                 draw_page_header(th, platform_label(h.platform).c_str(), "");
                 const float total = ImGui::GetContentRegionAvail().x;
@@ -10987,6 +11691,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                                   ImGuiChildFlags_NavFlattened);
                 act = draw_direct_actions(h, hub, th);
                 ImGui::EndChild();
+                draw_direct_update_prompt(h, hub, th);
             }
             // B / Escape backs out of a page, unless something in front owns it
             // or the settings page holds edits (Save or Cancel decides those).
@@ -11007,7 +11712,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             }
             ImGui::End();
 
-            if (act == DirectAction::Quit) running = false;
+            if (act == DirectAction::Quit || h.restart) running = false;
             if (act == DirectAction::Play) {
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string why;
@@ -11031,7 +11736,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         SDL_GL_SwapWindow(window);
     }
     if (play) play->shutdown();
-    return 0;
+    return h.restart ? kDirectRestart : 0;
 }
 
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
@@ -11117,10 +11822,6 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 }
 #endif
 
-#if !defined(RETCOMM_COMMIT)
-#define RETCOMM_COMMIT ""
-#endif
-
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 // Revision of the Direct-mode command line (the flags parse_direct_play reads).
 // It goes up whenever that set of flags changes, so a tool can require the
@@ -11137,6 +11838,11 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 constexpr int kDirectModeCliRevision = 4;
 // title.json schema this hub reads (hub_title.hpp); `title_app` in --version.
 constexpr int kTitleAppRevision = 1;
+// The home page's Update button (hub_update.hpp); `updates` in --version and
+// in hub-manifest.json. The Update page installs, and a start hands over to,
+// only a hub that has it too, so an app never updates itself out of updates.
+// A hub with it counts RETRO_HUB_BUNDLED_RUNNER as bundled (resolve_runner).
+constexpr int kUpdatesRevision = 1;
 #endif
 
 // `retro-hub --version`: one `key value` per line, exit 0, before SDL starts,
@@ -11157,6 +11863,7 @@ int print_hub_version() {
     std::printf("direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom "
                 "--tpak1-save --no-gl --opt --boot --title --core --runner --hub --check-title\n");
     std::printf("title_app %d\n", kTitleAppRevision);
+    std::printf("updates %d\n", kUpdatesRevision);
     // resolve_runner (src/update/runtime_update.cpp): the override, else the
     // newest of the bundled runner and the ones the runtime updater installed.
     std::printf("runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner "
@@ -11200,6 +11907,52 @@ int main(int argc, char** argv) {
         setup_title_app(direct, title_json, !direct.check_title && direct.hub.empty());
     } else {
         direct.active = direct.core_given;
+    }
+    // The Update page's developer paths (config dev_*_path) and the hubs it
+    // installed. Not for --check-title (the packaging gate checks the
+    // artifact's own hub), not when --hub names one, and not twice.
+    const bool direct_ui = direct.title_mode ? direct.title_error.empty() : direct.active;
+    if (direct_ui && !direct.check_title) {
+        const retcomm::Paths up = direct.title_mode ? retcomm::hub::title_paths(direct.data.dir)
+                                                    : retcomm::default_paths(self_dir);
+        const retcomm::AppConfig early = retcomm::load_app_config(up.config_path);
+        std::error_code ec;
+        // The dev runner: resolve_runner reads it, here and in a hub this one
+        // hands over to. --runner and RETRO_CORE_RUNNER still win.
+        if (!early.dev_runner_path.empty()) {
+            if (fs::is_regular_file(retro::corelink::utf8_path(early.dev_runner_path), ec))
+                set_process_env("RETRO_HUB_DEV_RUNNER", early.dev_runner_path);
+            else
+                std::fprintf(stderr, "retro-hub: dev_runner_path %s does not exist; ignored\n",
+                             early.dev_runner_path.c_str());
+        }
+        if (direct.hub.empty() && !std::getenv("RETRO_HUB_REEXEC")) {
+            const fs::path dev_hub = retro::corelink::utf8_path(early.dev_hub_path);
+            if (!early.dev_hub_path.empty() && fs::is_regular_file(dev_hub, ec)) {
+                // Handed over to like an updated hub, from any build: it was
+                // chosen by hand.
+                std::fprintf(stderr, "retro-hub: dev hub %s (config dev_hub_path)\n",
+                             early.dev_hub_path.c_str());
+                direct.hub = dev_hub;
+                direct.hub_auto = true;
+                direct.hub_dev = true;
+            } else if (direct.title_mode || RETCOMM_COMMIT[0] != '\0') {
+                // An installed newer hub runs this app from now on. In Direct
+                // mode not from a development build, which shares its data dir
+                // with the released launcher (a title app's is its own).
+                const retcomm::hub::InstalledHub newer = retcomm::hub::newest_installed_hub(
+                    up, retcomm::retcomm_app_version(), direct.title_mode);
+                if (!newer.path.empty()) {
+                    std::fprintf(stderr,
+                                 "retro-hub: updated hub %s installed at %s (this one is %s)\n",
+                                 newer.version.c_str(),
+                                 retro::corelink::path_utf8(newer.path).c_str(),
+                                 retcomm::retcomm_app_version().c_str());
+                    direct.hub = newer.path;
+                    direct.hub_auto = true;
+                }
+            }
+        }
     }
     if (const int rc = maybe_reexec_hub(direct, args_utf8, self_exe, self_dir); rc >= 0) return rc;
     if (!direct.runner.empty()) {
@@ -11309,11 +12062,10 @@ int main(int argc, char** argv) {
     if (!self_dir.empty()) hub.exe_dir = self_dir;
     if (direct.title_mode && direct.title_error.empty()) {
         // A title app keeps everything in its own data dir: config.json,
-        // sessions, saves, settings, mods.toml, the remembered ROM. The
-        // runtime updater stays off: the app runs the runner it was built with.
+        // sessions, saves, settings, mods.toml, the remembered ROM, and what
+        // the home page's Update installs (hub_update.hpp).
         hub.paths = retcomm::hub::title_paths(direct.data.dir);
         hub.cfg = retcomm::load_app_config(hub.paths.config_path);
-        hub.cfg.check_updates_on_startup = false;
         std::fprintf(stderr, "retro-hub: title %s (%s), data %s%s\n", direct.title.id.c_str(),
                      direct.title.json.string().c_str(), direct.data.dir.string().c_str(),
                      direct.data.beside_app ? "" : " (user data fallback)");
@@ -11360,6 +12112,7 @@ int main(int argc, char** argv) {
         SDL_GL_DestroyContext(gl);
         SDL_DestroyWindow(window);
         SDL_Quit();
+        if (rc == kDirectRestart) return restart_hub(args_utf8, self_exe);
         return rc;
     }
 #endif
