@@ -6,6 +6,7 @@
 // retro-core-runner, reached through corelink::CoreLink.
 
 #include "core_link.hpp" // Retro-Runtime: retro_corelink
+#include "hub/hub_core_settings.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -32,6 +33,9 @@ struct PlayArgs {
     fs::path tpak_save;
     std::map<std::string, std::string> options;
     bool gl = true;
+    // Which device each seat reads and what its inputs drive
+    // (hub_core_settings.hpp): the platform's saved seats, or the defaults.
+    PlatformInput input;
 };
 
 class PlaySession {

@@ -633,11 +633,245 @@ void find_unstaged(const fs::path& install_root, const fs::path& game_root, ModS
     }
 }
 
+// ---- n64lle guarded-write packages ------------------------------------------
+//
+// Read to show and toggle them, never to apply them: the resolver that decides
+// what actually lands (guards, contested bytes, the target image) is n64lle's
+// (crates/n64lle-host mod_catalog / mod_plan), and a refusal is reported by the
+// game at boot. What this reader mirrors is only what a page must not get
+// wrong: which packages the game will see, and what mods.toml means.
+
+std::string unquote_key(const std::string& k) {
+    std::string t = trim(k);
+    if (t.size() >= 2 && (t.front() == '"' || t.front() == '\'') && t.back() == t.front())
+        t = t.substr(1, t.size() - 2);
+    return t;
+}
+
+// mods/<origin>/<id>/manifest.toml whose document has a [target] rom_sha256:
+// the shape only an n64lle package has.
+bool is_n64lle_manifest(const fs::path& manifest) {
+    bool target_sha = false;
+    for_each_toml_pair(read_file(manifest), [&](const std::string& section, bool aot,
+                                                 const std::string& key, const std::string&) {
+        if (!aot && section == "target" && key == "rom_sha256") target_sha = true;
+    });
+    return target_sha;
+}
+
+bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string* error) {
+    const std::string body = read_file(path);
+    if (body.empty()) {
+        if (error) *error = path.string() + ": unreadable or empty";
+        return false;
+    }
+    std::string game_id;
+    std::vector<std::pair<std::string, int>> writes; // feature -> guarded writes
+    std::string patch_feature;
+    auto count_patch = [&] {
+        if (patch_feature.empty()) return;
+        for (auto& w : writes)
+            if (w.first == patch_feature) { ++w.second; patch_feature.clear(); return; }
+        writes.emplace_back(patch_feature, 1);
+        patch_feature.clear();
+    };
+    for_each_toml_pair(body, [&](const std::string& section, bool, const std::string& key,
+                                 const std::string& val) {
+        if (key.empty()) {
+            count_patch();
+            if (section.rfind("feature.", 0) == 0) {
+                ModFeatureInfo f;
+                f.id = section.substr(8);
+                f.name = f.id; // n64lle manifests carry no display names
+                out.features.push_back(std::move(f));
+            }
+            return;
+        }
+        if (section.empty()) {
+            if (key == "id") out.id = unquote(val);
+            else if (key == "version") out.version = unquote(val);
+        } else if (section == "target" && key == "game_id") {
+            game_id = unquote(val);
+        } else if (section.rfind("feature.", 0) == 0 && key == "default_enabled" &&
+                   !out.features.empty()) {
+            out.features.back().default_enabled = truthy(val);
+        } else if (section.rfind("patch.", 0) == 0 && key == "feature") {
+            patch_feature = unquote(val);
+        }
+    });
+    count_patch();
+    if (out.id.empty()) {
+        if (error) *error = path.string() + ": no id";
+        return false;
+    }
+    // mod_catalog.rs: a directory whose name is not its manifest's id is refused.
+    if (path.parent_path().filename().string() != out.id) {
+        if (error)
+            *error = path.string() + ": id '" + out.id + "' is not its directory's name '" +
+                     path.parent_path().filename().string() + "'; the game refuses it";
+        return false;
+    }
+    out.name = out.id;
+    if (!game_id.empty()) out.description = "For " + game_id + ".";
+    for (ModFeatureInfo& f : out.features) {
+        int n = 0;
+        for (const auto& w : writes)
+            if (w.first == f.id) n = w.second;
+        f.description = std::to_string(n) + " guarded write" + (n == 1 ? "" : "s") + ".";
+        f.group = out.id; // no groups in this format: the page heads each by its package
+        f.enabled = f.default_enabled;
+    }
+    return true;
+}
+
+void scan_n64lle_origin(const fs::path& root, ModOrigin origin, ModScanResult& out) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;
+    for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator();
+         it.increment(ec)) {
+        const fs::path manifest = it->path() / "manifest.toml";
+        if (!it->is_directory(ec) || !fs::is_regular_file(manifest, ec)) continue;
+        ModPackageInfo pkg;
+        pkg.origin = origin;
+        pkg.manifest = manifest;
+        std::string err;
+        if (read_n64lle_manifest(manifest, pkg, &err)) out.packages.push_back(std::move(pkg));
+        else out.errors.push_back(err);
+    }
+}
+
+// mods.toml (MODDING.md §5.3): a package with a section runs exactly the
+// features its `enabled` lists; one without runs its manifest defaults.
+void apply_n64lle_selection(const fs::path& path, ModScanResult& r) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return;
+    const std::string body = read_file(path);
+    std::vector<std::pair<std::string, std::string>> sel; // package -> enabled list
+    for_each_toml_pair(body, [&](const std::string& section, bool, const std::string& key,
+                                 const std::string& val) {
+        const std::string pkg = unquote_key(section);
+        if (key.empty()) {
+            if (!pkg.empty()) sel.emplace_back(pkg, std::string());
+            return;
+        }
+        if (key == "enabled" && !sel.empty() && sel.back().first == pkg)
+            sel.back().second = unquote(val);
+    });
+    for (ModPackageInfo& p : r.packages) {
+        for (const auto& [id, list] : sel) {
+            if (id != p.id) continue;
+            std::istringstream words(list);
+            std::vector<std::string> on;
+            for (std::string w; words >> w;) on.push_back(w);
+            for (ModFeatureInfo& f : p.features)
+                f.enabled = std::find(on.begin(), on.end(), f.id) != on.end();
+        }
+    }
+}
+
+// Rewrites (or appends) the package's section so `enabled` lists exactly
+// `on`. Every other line of mods.toml stays as it was.
+bool write_n64lle_selection(const fs::path& game_dir, const ModPackageInfo& pkg,
+                            const std::vector<std::string>& on, std::string* error) {
+    const fs::path path = game_dir / "mods.toml";
+    std::string list;
+    for (const std::string& f : on) list += (list.empty() ? "" : " ") + f;
+    const std::string enabled_line = "enabled = \"" + list + "\"";
+
+    std::vector<std::string> lines = split_lines(read_file(path));
+    long header = -1, end = static_cast<long>(lines.size());
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string t = trim(lines[i]);
+        if (t.empty() || t[0] != '[') continue;
+        if (header >= 0) { end = static_cast<long>(i); break; }
+        const size_t close = t.find(']');
+        if (close != std::string::npos && unquote_key(t.substr(1, close - 1)) == pkg.id)
+            header = static_cast<long>(i);
+    }
+    if (header < 0) {
+        if (lines.empty()) {
+            lines.push_back("# Which mod features are on (n64lle docs/MODDING.md 5.3).");
+            lines.push_back("# Written by the launcher's Mods page; a package with no");
+            lines.push_back("# section runs its manifest's defaults.");
+        }
+        lines.push_back("");
+        // Bare, dots and all, as n64lle's own writer emits it
+        // (mod_selection.rs): its reader takes the header text whole, so a
+        // quoted ["a.b"] would name a package called "\"a.b\"".
+        lines.push_back("[" + pkg.id + "]");
+        lines.push_back("version = \"" + pkg.version + "\"");
+        lines.push_back(enabled_line);
+    } else {
+        bool replaced = false;
+        for (long i = header + 1; i < end; ++i) {
+            const std::string t = trim(lines[static_cast<size_t>(i)]);
+            if (t.rfind("enabled", 0) == 0 && t.find('=') != std::string::npos) {
+                lines[static_cast<size_t>(i)] = enabled_line;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) lines.insert(lines.begin() + header + 1, enabled_line);
+    }
+    std::string out;
+    for (const std::string& l : lines) out += l + "\n";
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f || !(f << out)) {
+        if (error) *error = path.string() + ": cannot write";
+        return false;
+    }
+    return true;
+}
+
+ModScanResult scan_n64lle_mods(const fs::path& game_dir) {
+    ModScanResult r;
+    r.layout = ModLayout::N64lle;
+    r.root = game_dir / "mods";
+    std::error_code ec;
+    r.root_exists = fs::is_directory(r.root, ec);
+    scan_n64lle_origin(r.root / "bundled", ModOrigin::Bundled, r);
+    scan_n64lle_origin(r.root / "installed", ModOrigin::Installed, r);
+    // mod_catalog.rs: the same id in both roots refuses both; neither shadows
+    // the other. Shown as an error, not as two rows the game will not run.
+    std::vector<ModPackageInfo> kept;
+    for (const ModPackageInfo& p : r.packages) {
+        const auto n = std::count_if(r.packages.begin(), r.packages.end(),
+                                     [&](const ModPackageInfo& q) { return q.id == p.id; });
+        if (n == 1) kept.push_back(p);
+        else if (p.origin == ModOrigin::Bundled)
+            r.errors.push_back(p.id + " is in both mods/bundled and mods/installed; the game "
+                                      "refuses both until one is removed");
+    }
+    r.packages = std::move(kept);
+    apply_n64lle_selection(game_dir / "mods.toml", r);
+    std::sort(r.packages.begin(), r.packages.end(),
+              [](const ModPackageInfo& a, const ModPackageInfo& b) { return a.id < b.id; });
+    return r;
+}
+
+// Which layout a game's mods tree is in: n64lle when mods.toml is there or any
+// package directly under an origin has an n64lle manifest.
+bool is_n64lle_tree(const fs::path& game_dir) {
+    std::error_code ec;
+    if (fs::is_regular_file(game_dir / "mods.toml", ec)) return true;
+    for (const char* origin : {"bundled", "installed"}) {
+        const fs::path root = game_dir / "mods" / origin;
+        if (!fs::is_directory(root, ec)) continue;
+        for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator();
+             it.increment(ec)) {
+            const fs::path m = it->path() / "manifest.toml";
+            if (fs::is_regular_file(m, ec) && is_n64lle_manifest(m)) return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root) {
     ModScanResult r;
     if (game_dir.empty()) return r;
+    if (is_n64lle_tree(game_dir)) return scan_n64lle_mods(game_dir);
     r.root = game_dir / "mods";
     std::error_code ec;
     r.root_exists = fs::is_directory(r.root, ec);
@@ -667,6 +901,32 @@ ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_r
                   return a.version < b.version;
               });
     return r;
+}
+
+bool set_scanned_mod_enabled(const ModScanResult& scan, const fs::path& game_dir,
+                             const ModPackageInfo& pkg, const std::string& feature_id,
+                             bool enabled, std::string* error) {
+    if (scan.layout == ModLayout::Engine)
+        return set_mod_enabled(game_dir, pkg.id, feature_id, enabled, error);
+    std::vector<std::string> on;
+    for (const ModFeatureInfo& f : pkg.features)
+        if (f.id == feature_id ? enabled : f.enabled) on.push_back(f.id);
+    return write_n64lle_selection(game_dir, pkg, on, error);
+}
+
+bool set_scanned_mod_all(const ModScanResult& scan, const fs::path& game_dir,
+                         const ModPackageInfo& pkg, bool enabled, std::string* error) {
+    if (scan.layout == ModLayout::Engine) {
+        if (!pkg.has_features()) return set_mod_enabled(game_dir, pkg.id, {}, enabled, error);
+        bool ok = true;
+        for (const ModFeatureInfo& f : pkg.features)
+            ok &= set_mod_enabled(game_dir, pkg.id, f.id, enabled, error);
+        return ok;
+    }
+    std::vector<std::string> on;
+    if (enabled)
+        for (const ModFeatureInfo& f : pkg.features) on.push_back(f.id);
+    return write_n64lle_selection(game_dir, pkg, on, error);
 }
 
 } // namespace retcomm

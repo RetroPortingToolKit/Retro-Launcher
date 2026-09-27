@@ -411,9 +411,22 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp)
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp)
     target_link_libraries(retro-hub PRIVATE retro_corelink)
     target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
+    # The pieces of it that need no window: --describe parsing, bindings and
+    # option files, and the pad table they produce.
+    include(CTest)
+    if(BUILD_TESTING)
+        add_executable(retro-hub-settings-test tests/hub_core_settings_test.cpp
+            src/hub/hub_core_settings.cpp)
+        target_include_directories(retro-hub-settings-test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(retro-hub-settings-test PRIVATE retcomm_core retro_corelink
+            ${RETCOMM_HUB_SDL_TARGET})
+        add_test(NAME hub_core_settings COMMAND retro-hub-settings-test
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
+    endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
     # shortcuts, Steam entries and older self-updaters relaunch it by name.
