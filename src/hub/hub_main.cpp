@@ -9087,9 +9087,13 @@ std::string rcore_manifest_platform(const fs::path& core) {
 
 // Loads the player's seats and option values into a session's arguments:
 // the platform's options, the title's over them, and the command line's --opt
-// over both (it is the most specific request).
+// over both (it is the most specific request). Also the play overlay's
+// settings (play.ini), which the in-game hotkeys write back.
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
                            const std::string& platform, const std::string& title_key) {
+    // The overlay's settings are every core's: loaded whatever the platform.
+    args.prefs = retcomm::hub::load_play_prefs(data_dir);
+    args.data_dir = data_dir;
     if (platform.empty()) return;
     std::vector<std::string> warnings;
     args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
@@ -9128,6 +9132,8 @@ struct CoreSettingsPage {
 
     retcomm::hub::PlatformInput input, input_saved;
     std::map<std::string, std::string> plat_opts, plat_saved, title_opts, title_saved;
+    // The play overlay's settings (play.ini): every core's, shown here too.
+    retcomm::hub::PlayPrefs prefs, prefs_saved;
 
     bool gamepads_tab = false;
     bool show_developer = false;
@@ -9139,7 +9145,8 @@ struct CoreSettingsPage {
     std::string status;
 
     bool dirty() const {
-        return input != input_saved || plat_opts != plat_saved || title_opts != title_saved;
+        return input != input_saved || plat_opts != plat_saved || title_opts != title_saved ||
+               prefs != prefs_saved;
     }
 };
 
@@ -9187,6 +9194,7 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
     p.title_scope = false;
     p.input = p.input_saved = retcomm::hub::load_platform_input(data, platform);
     p.plat_opts = p.plat_saved = retcomm::hub::load_core_options(data, platform, "");
+    p.prefs = p.prefs_saved = retcomm::hub::load_play_prefs(data);
     p.title_opts = p.title_saved =
         title_key.empty() ? std::map<std::string, std::string>{}
                           : retcomm::hub::load_core_options(data, platform, title_key);
@@ -9261,6 +9269,9 @@ bool save_core_settings(HubModel& hub, std::string* err) {
     if (!p.title_key.empty() &&
         !retcomm::hub::save_core_options(data, p.platform, p.title_key, p.title_opts, err))
         return false;
+    if (p.prefs != p.prefs_saved && !retcomm::hub::save_play_prefs(data, p.prefs, err))
+        return false;
+    p.prefs_saved = p.prefs;
     p.input_saved = p.input;
     p.plat_saved = p.plat_opts;
     p.title_saved = p.title_opts;
@@ -9274,6 +9285,7 @@ void close_core_settings(HubModel& hub) {
     p.input = p.input_saved;
     p.plat_opts = p.plat_saved;
     p.title_opts = p.title_saved;
+    p.prefs = p.prefs_saved;
     p.configuring = -1;
     cancel_core_capture(p);
     hub.show_core_settings = false;
@@ -9452,6 +9464,22 @@ void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, f
     } else {
         draw_core_option_group(p, th, false);
     }
+    // Not the core's: Retro-Runtime's play overlay, the same for every core
+    // (play.ini). The hotkeys change the same values in game.
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextColored(th.text_muted, "OVERLAY & AUDIO (EVERY SYSTEM)");
+    ImGui::Separator();
+    settings_checkbox("Show FPS", "##showfps", th, &p.prefs.show_fps);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Frames per second in the top left while playing.\nIn game: F3.");
+    settings_row("Volume", th, kSettingsCtrlW);
+    ImGui::SliderInt("##volume", &p.prefs.volume, 0, 100, "%d%%");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("In game: + and - (a meter shows on the right).");
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped("In game: F3 FPS, Tab (hold) turbo, + / - volume, F7 or Select+R1 save "
+                       "states, Esc or F1 the pause menu.");
+    ImGui::PopStyleColor();
     ImGui::EndChild();
 
     ImGui::SameLine(0.f, gap);

@@ -786,4 +786,30 @@ std::map<std::string, std::string> layer_core_options(
     return out;
 }
 
+// ---- play preferences -------------------------------------------------------
+
+PlayPrefs load_play_prefs(const fs::path& data_dir) {
+    PlayPrefs p;
+    for_each_ini(read_text(data_dir / "play.ini"), [&](const std::string& section,
+                                                       const std::string& key,
+                                                       const std::string& value) {
+        if (section != "overlay" && section != "audio") return;
+        std::int64_t v = 0;
+        if (key == "show_fps") p.show_fps = value == "1" || value == "true";
+        else if (key == "volume" && parse_i64(value, v)) p.volume = static_cast<int>(std::clamp<std::int64_t>(v, 0, 100));
+    });
+    return p;
+}
+
+bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::string* error) {
+    std::ostringstream o;
+    o << "# Retro Launcher play settings, every core and every title.\n"
+      << "# Written by retro-hub's settings page and its in-game hotkeys.\n\n"
+      << "[overlay]\n"
+      << "show_fps = " << (prefs.show_fps ? 1 : 0) << "\n\n"
+      << "[audio]\n"
+      << "volume = " << std::clamp(prefs.volume, 0, 100) << "\n";
+    return write_atomically(data_dir / "play.ini", o.str(), error);
+}
+
 } // namespace retcomm::hub
