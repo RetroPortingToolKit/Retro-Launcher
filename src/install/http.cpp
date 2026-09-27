@@ -1,4 +1,5 @@
 #include "retcomm/http.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include <curl/curl.h>
 
@@ -350,7 +351,7 @@ bool http_download(const std::string& url, const fs::path& dest, std::string* er
         const auto psz = fs::file_size(part, ec);
         if (!ec && psz > 0) {
             if (expected_size > 0 && static_cast<std::uint64_t>(psz) == expected_size) {
-                fs::rename(part, dest, ec);
+                retcomm::robust_rename(part, dest, ec);
                 if (ec) {
                     if (error) *error = "rename failed: " + ec.message();
                     return false;
@@ -404,7 +405,7 @@ bool http_download(const std::string& url, const fs::path& dest, std::string* er
     }
 
     fs::remove(dest, ec); // replace if present
-    fs::rename(part, dest, ec);
+    retcomm::robust_rename(part, dest, ec);
     if (ec) {
         if (error) *error = "rename failed: " + ec.message();
         fs::remove(part, ec);

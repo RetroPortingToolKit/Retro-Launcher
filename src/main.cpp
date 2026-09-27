@@ -1415,7 +1415,10 @@ int cmd_root(const retcomm::Paths& paths, const std::vector<std::string>& args,
     }
 
     const retcomm::RootMigrationResult res = retcomm::migrate_data_root(
-        paths, target, mode, exe_dir, /*prefer_exe_marker=*/false,
+        paths, target, mode, exe_dir,
+        // Keep a portable marker a portable setup already uses (issue #6):
+        // writing the OS pointer instead would delete it.
+        /*prefer_exe_marker=*/fs::exists(exe_dir / "retcomm-root.json"),
         [](const std::string& m) { std::cout << "  " << m << "\n"; });
     for (const auto& n : res.notes) std::cout << "note: " << n << "\n";
     if (!res.ok) {

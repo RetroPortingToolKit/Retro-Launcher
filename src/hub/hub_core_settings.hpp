@@ -96,6 +96,11 @@ enum class PadTarget : int {
     LxMinus, LxPlus, LyMinus, LyPlus, RxMinus, RxPlus, RyMinus, RyPlus,
     // Triggers, 0..32767.
     Lt, Rt,
+    // Not the core's: the host's modifier for controller shortcuts
+    // (Function + R1 save states, ...; HostHotkeys). Bound per seat on the
+    // Configure page, by default to the Back/Select button; while it is held,
+    // that seat's buttons do not reach the game.
+    Function,
     Count
 };
 constexpr int kPadTargetCount = static_cast<int>(PadTarget::Count);
@@ -136,6 +141,8 @@ InputBindings default_input_bindings();
 std::string pad_source_to_string(const PadSource& s);     // "a", "lefty+", ""
 bool pad_source_from_string(const std::string& s, PadSource& out);
 std::string pad_source_display(const PadSource& s);       // for the page
+// Short, console-neutral: "R1", "L2", "Start", "D-Up", "South" ... ("" for none).
+std::string pad_source_label(const PadSource& s);
 
 // ---- seats -------------------------------------------------------------------
 
@@ -159,17 +166,38 @@ struct SeatAssign {
     bool operator!=(const SeatAssign& o) const { return !(*this == o); }
 };
 
+// What is plugged into a controller's expansion slot. Only the Transfer Pak
+// so far (a Game Boy cartridge and its save, which the core reads through
+// it); the Controller Pak and Rumble Pak are not implemented yet. Every seat
+// can hold one (retro-core-runner --tpak1-rom .. --tpak4-rom); a runner from
+// before seats 2-4 gets port 1's only (limit_transfer_paks, hub_main.cpp).
+struct SeatPak {
+    enum Kind : int { None, TransferPak };
+    Kind kind = None;
+    std::string gb_rom;  // .gb / .gbc, absolute
+    std::string gb_save; // .srm, absolute; empty = the game starts without one
+    bool operator==(const SeatPak& o) const {
+        return kind == o.kind && gb_rom == o.gb_rom && gb_save == o.gb_save;
+    }
+    bool operator!=(const SeatPak& o) const { return !(*this == o); }
+};
+constexpr int kTransferPakSeats = 4; // seats [0, this) can take a Transfer Pak
+
+constexpr int kDefaultDeadzonePct = 10;
+
 struct PlatformInput {
     std::array<SeatAssign, kInputSeats> seats{};
+    std::array<SeatPak, kInputSeats> paks{};
     // Each seat's own maps: a gamepad map and a keyboard map. The one the seat
     // reads is its device's (an Auto seat can read either).
     std::array<InputBindings, kInputSeats> maps;
-    // Stick deadzone, percent of full throw, every seat. 0 = raw (the default:
-    // what the hub always sent, and every N64 game has a deadzone of its own).
-    int deadzone_pct = 0;
+    // Stick deadzone, percent of full throw, every seat. 10 by default, as on
+    // every console's page (worn and third-party sticks drift); 0 = raw.
+    int deadzone_pct = kDefaultDeadzonePct;
     PlatformInput();
     bool operator==(const PlatformInput& o) const {
-        return seats == o.seats && maps == o.maps && deadzone_pct == o.deadzone_pct;
+        return seats == o.seats && paks == o.paks && maps == o.maps &&
+               deadzone_pct == o.deadzone_pct;
     }
     bool operator!=(const PlatformInput& o) const { return !(*this == o); }
 };
@@ -200,9 +228,32 @@ std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,
 
 std::string gamepad_guid_string(SDL_JoystickID id);
 
-// One frame of pads, from the connected devices and the seats' maps.
+// ---- Game Boy saves (Transfer Pak) --------------------------------------------
+
+// The cartridge RAM a Game Boy ROM declares (header 0x147 type, 0x149 RAM
+// size): what its battery save holds. MBC2 carts have 512 bytes built in.
+// 0 with *error set for a file that is not a Game Boy ROM; 0 without an
+// error for a cart with no RAM (it keeps no save).
+std::size_t gb_cart_ram_bytes(const fs::path& rom, std::string* error);
+
+// Writes a new, blank save for `rom` at `dest` (0xFF, as a fresh battery RAM
+// reads): the size the cart declares. Refuses a cart without RAM and an
+// existing `dest`.
+bool create_gb_save(const fs::path& rom, const fs::path& dest, std::string* error);
+
+// One frame of pads, from the connected devices and the seats' maps. A seat
+// holding its Function input sends no buttons (sticks still pass).
 void fill_pads_from_input(const PlatformInput& in, rcore_pad pads[RCORE_MAX_SEATS],
                           std::uint32_t max_seats);
+
+// For host shortcuts: each seat's gamepad this frame (null for none or the
+// keyboard) and whether its Function input is held.
+struct SeatPadState {
+    SDL_Gamepad* pad = nullptr;
+    bool function = false;
+};
+std::array<SeatPadState, kInputSeats> seat_pad_states(const PlatformInput& in);
+bool pad_source_down(SDL_Gamepad* g, const PadSource& s);
 
 // ---- option values ----------------------------------------------------------
 
@@ -224,6 +275,27 @@ std::map<std::string, std::string> layer_core_options(
     const std::map<std::string, std::string>& title,
     const std::map<std::string, std::string>& command_line);
 
+// ---- host hotkeys ------------------------------------------------------------
+
+// What the host does with the player's shortcuts while a game runs (the play
+// overlay's): the same for every core, so stored with the play preferences.
+enum class HostAction : int { Menu, SaveStates, ShowFps, Turbo, VolumeUp, VolumeDown, Count };
+constexpr int kHostActionCount = static_cast<int>(HostAction::Count);
+const char* host_action_key(HostAction a);   // "menu", "states", ...
+const char* host_action_label(HostAction a); // "Pause menu", ...
+
+struct HostHotkeys {
+    // A key for each action (Turbo is held). F1 also opens the menu.
+    std::array<SDL_Scancode, kHostActionCount> key{};
+    // Function + this on any seat's pad. L3 + R3 also opens the menu, fixed;
+    // Guide is never used (Steam and the OS keep it).
+    std::array<PadSource, kHostActionCount> combo{};
+    bool operator==(const HostHotkeys& o) const { return key == o.key && combo == o.combo; }
+    bool operator!=(const HostHotkeys& o) const { return !(*this == o); }
+};
+// Escape, F7, F3, Tab, =, -; Function + Start, R1, L1, R2, D-pad up, D-pad down.
+HostHotkeys default_host_hotkeys();
+
 // ---- play preferences -------------------------------------------------------
 
 // What the play overlay (Retro-Runtime retro_overlay) shows and how loud the
@@ -232,8 +304,9 @@ std::map<std::string, std::string> layer_core_options(
 struct PlayPrefs {
     bool show_fps = false;
     int volume = 100; // percent, 0..100
+    HostHotkeys hotkeys = default_host_hotkeys();
     bool operator==(const PlayPrefs& o) const {
-        return show_fps == o.show_fps && volume == o.volume;
+        return show_fps == o.show_fps && volume == o.volume && hotkeys == o.hotkeys;
     }
     bool operator!=(const PlayPrefs& o) const { return !(*this == o); }
 };

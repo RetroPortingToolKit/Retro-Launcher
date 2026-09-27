@@ -1,4 +1,5 @@
 #include "hub/hub_boxart.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/http.hpp"
 
@@ -232,7 +233,7 @@ bool download_image_url(const std::string& url, const fs::path& dest,
         return false;
     }
     fs::remove(dest, ec);
-    fs::rename(tmp, dest, ec);
+    retcomm::robust_rename(tmp, dest, ec);
     if (ec) {
         if (error) *error = "rename failed: " + ec.message();
         fs::remove(tmp, ec);
@@ -473,7 +474,7 @@ BoxartFetchResult fetch_romm(const Paths& paths, const AppConfig& cfg, const Tit
         if (stale != dest && stale != staged) fs::remove(stale, ec);
     }
     fs::remove(dest, ec);
-    fs::rename(staged, dest, ec);
+    retcomm::robust_rename(staged, dest, ec);
     if (ec) {
         r.message = "RomM: failed to finalize cover cache";
         fs::remove(staged, ec);

@@ -1,4 +1,5 @@
 #include "retcomm/launch.hpp"
+#include "retcomm/fs_util.hpp"
 #include "retcomm/app_state.hpp"
 #include "retcomm/config.hpp"
 #include "retcomm/disc_stage.hpp"
@@ -772,6 +773,17 @@ bool spawn_process(const LaunchPlan& plan, bool detach, int* exit_code, std::str
 
 } // namespace
 
+bool launch_app_detached(const fs::path& app, const std::vector<std::string>& args,
+                         std::string* error) {
+    LaunchPlan plan;
+    plan.binary = app;
+    plan.cwd = app.parent_path();
+    plan.argv.push_back(app.string());
+    plan.argv.insert(plan.argv.end(), args.begin(), args.end());
+    int code = 0;
+    return spawn_process(plan, /*detach=*/true, &code, error);
+}
+
 LaunchMode parse_launch_mode(const std::string& s, std::string* error) {
     if (s.empty() || s == "default" || s == "launcher") return LaunchMode::Default;
     if (s == "direct" || s == "no-launcher") return LaunchMode::Direct;
@@ -901,12 +913,12 @@ bool upsert_keyed_line(const fs::path& path, const std::string& section, const s
             return false;
         }
     }
-    fs::rename(temp, path, ec);
+    retcomm::robust_rename(temp, path, ec);
     if (ec) {
         ec.clear();
         fs::remove(path, ec);
         ec.clear();
-        fs::rename(temp, path, ec);
+        retcomm::robust_rename(temp, path, ec);
     }
     if (ec) {
         if (error) *error = "cannot publish " + path.string() + ": " + ec.message();

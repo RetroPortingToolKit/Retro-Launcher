@@ -98,7 +98,7 @@ struct SnesPlatformSettings {
     // player_src (gamepad seat -> true, None/Keyboard -> false). Kept so parsing
     // an existing file stays symmetric with writing one.
     std::array<bool, kMaxPlayers> enable_gamepad{{true, true, false, false, false}};
-    int gamepad_deadzone = 10000;  // raw axis units 1..32767 (UI shows percent)
+    int gamepad_deadzone = 3277;   // raw axis units 1..32767 (UI shows percent); 10%
     // Per-seat device, the way recomp-ui's launcher writes [Controller]:
     // SourcePn 0 none / 1 keyboard / 2 gamepad, GuidPn when src == 2.
     std::array<int, kMaxPlayers> player_src{{1, 0, 0, 0, 0}};

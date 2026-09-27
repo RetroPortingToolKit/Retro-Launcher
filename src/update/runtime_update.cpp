@@ -1,4 +1,5 @@
 #include "retcomm/runtime_update.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "manifest_util.hpp"
 
@@ -79,6 +80,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
         if (corelink::probe_runner(out.path, v, &err)) {
             out.version = v.version;
             out.game_package = v.game_package;
+            out.transfer_pak_seats = v.transfer_pak_seats;
         }
         out.note = "RETRO_CORE_RUNNER names it" + (err.empty() ? "" : " (" + err + ")");
         return out;
@@ -94,6 +96,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
             out.path = dev;
             out.version = v.version;
             out.game_package = v.game_package;
+            out.transfer_pak_seats = v.transfer_pak_seats;
             out.source = "dev";
             out.note = "dev runner " + v.version + " (RETRO_HUB_DEV_RUNNER)";
             return out;
@@ -161,6 +164,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
     out.path = best->path;
     out.version = best->info.version;
     out.game_package = best->info.game_package;
+    out.transfer_pak_seats = best->info.transfer_pak_seats;
     out.source = best->source;
     out.note = dev_note + best->source + " runner " + best->info.version;
     for (const auto& s : skipped) out.note += "; skipped " + s;
@@ -295,7 +299,7 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     // ---- 8. into place, beside (never over) the runner in use --------------------
     const fs::path dest = root / r.latest_version;
     fs::remove_all(dest, ec); // a half-installed copy of this same version, if any
-    fs::rename(staging, dest, ec);
+    retcomm::robust_rename(staging, dest, ec);
     if (ec) {
         return discard("cannot move the new runner into " + corelink::path_utf8(dest) + ": " +
                        ec.message());

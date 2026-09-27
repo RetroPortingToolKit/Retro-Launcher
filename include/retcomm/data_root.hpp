@@ -45,6 +45,12 @@ fs::path default_os_data_dir();
 // Read just one marker file, without applying precedence. Empty on any failure.
 fs::path read_data_root_marker(const fs::path& marker_file);
 
+// The launcher's own folder when the root travels with it (a portable setup,
+// issue #6): the portable exe's folder ($RETCOMM_PORTABLE_EXE, set by the
+// Windows stub), else the folder whose retcomm-root.json resolves to `root`
+// (the root itself or its parent). Empty for an installed launcher.
+fs::path portable_launcher_dir(const fs::path& root);
+
 // Persist `root` so the next launch resolves it. When `prefer_exe_marker` is set
 // (portable builds) the marker is written beside the binary and the config
 // pointer is removed; otherwise the config pointer is written.

@@ -1,4 +1,5 @@
 #include "retcomm/library_index.hpp"
+#include "retcomm/fs_util.hpp"
 #include "retcomm/hash.hpp"
 
 #include <nlohmann/json.hpp>
@@ -458,10 +459,10 @@ bool save_library_index(const fs::path& path, const LibraryIndex& index) {
         if (!out) return false;
         out << j.dump(2) << '\n';
     }
-    fs::rename(tmp, path, ec);
+    retcomm::robust_rename(tmp, path, ec);
     if (ec) {
         fs::remove(path, ec);
-        fs::rename(tmp, path, ec);
+        retcomm::robust_rename(tmp, path, ec);
     }
     return !ec;
 }

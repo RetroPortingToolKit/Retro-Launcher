@@ -1,4 +1,5 @@
 #include "hub/hub_update.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "hub/hub_title.hpp"
 #include "update/manifest_util.hpp"
@@ -438,7 +439,7 @@ UpdateItem update_core(const UpdateTarget& t, bool install) {
     }
     const fs::path dest = root / item.latest;
     fs::remove_all(dest, ec);
-    fs::rename(staging, dest, ec);
+    retcomm::robust_rename(staging, dest, ec);
     if (ec) return discard("cannot move the core into " + corelink::path_utf8(dest) + ": " + ec.message());
     fs::remove_all(extract, ec);
     fs::remove(download, ec);
@@ -588,7 +589,7 @@ UpdateItem update_hub(const UpdateTarget& t, bool install) {
                        commit + "; not installed");
     const fs::path dest = root / item.latest;
     fs::remove_all(dest, ec);
-    fs::rename(staging, dest, ec);
+    retcomm::robust_rename(staging, dest, ec);
     if (ec) return discard("cannot move the hub into " + corelink::path_utf8(dest) + ": " + ec.message());
     fs::remove(download, ec);
     update_detail::prune_versions(root, 2);

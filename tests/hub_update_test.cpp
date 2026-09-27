@@ -9,6 +9,8 @@
 #include "hub/hub_title.hpp"
 #include "hub/hub_update.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/core_titles.hpp"
+#include "retcomm/fs_util.hpp"
 #include "retcomm/hash.hpp"
 #include "retcomm/runtime_update.hpp"
 
@@ -16,7 +18,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace retcomm::hub;
@@ -315,6 +319,125 @@ int main(int argc, char** argv) {
         check(back.dev_core_path == "/a/core.so" && back.dev_runner_path == "/a/runner" &&
                   back.dev_hub_path == "/a/hub" && back.show_developer_options,
               "dev paths and developer options round-trip");
+    }
+
+    // ---- adopting a port project (Add Core Title) -------------------------------
+    {
+        const fs::path proj = scratch / "projects" / "GameRecomp";
+        write(proj / "game.toml", "[game]\nname = \"Game\"\n");
+        write(proj / "CMakeLists.txt", "project(g)\n");
+        write(proj / "tools" / "build_app.sh", "#!/bin/sh\n");
+        const fs::path appdir = proj / "build-release" / "app";
+        write(appdir / "Game-0.0.1-linux-x86_64.AppImage", "app");
+        write_sidecar(appdir / "title" / "core" / "n64lle_core.so", "0.375.0");
+        write(appdir / "title" / "package" / "game_game.so", "pkg");
+        write(appdir / "title" / "title.json", R"({"schema": 1, "id": "game", "name": "Game",
+          "version": "0.0.1", "platform": "n64", "core": "core/n64lle_core.so",
+          "package": "package/game_game.so", "title_dir": "package",
+          "rom": {"sha256": "ABCDEF"}})");
+        retcomm::AdoptableProject ap;
+        std::string err;
+        check(retcomm::find_adoptable_project(appdir / "Game-0.0.1-linux-x86_64.AppImage", ap, &err) &&
+                  ap.root == fs::weakly_canonical(proj) && ap.title.id == "game" &&
+                  ap.title.package.filename() == "game_game.so" &&
+                  ap.title.content_sha256.size() == 1 && ap.title.content_sha256[0] == "abcdef" &&
+                  ap.title.core_id == "n64lle" && ap.title.core_version == "0.375.0",
+              "a built title app inside a port project is found, with its payload");
+        write(scratch / "loose" / "Game.AppImage", "app");
+        check(!retcomm::find_adoptable_project(scratch / "loose" / "Game.AppImage", ap, &err) &&
+                  err.find("not inside a port project") != std::string::npos,
+              "an app outside a port project is refused");
+        write(proj / "elsewhere" / "Game.AppImage", "app");
+        check(!retcomm::find_adoptable_project(proj / "elsewhere" / "Game.AppImage", ap, &err) &&
+                  err.find("title/title.json") != std::string::npos,
+              "an app with no staged payload beside it is refused");
+
+        retcomm::CoreTitle ct;
+        check(retcomm::read_core_title(appdir / "title" / "title.json", ct, &err) &&
+                  retcomm::title_from_core(ct).rom_identity.sha256.size() == 1,
+              "a title.json registers as a core title");
+
+        // Same filesystem: a rename.
+        const fs::path dest = scratch / "apps" / "GameRecomp";
+        check(retcomm::move_folder(proj, dest, &err) && fs::is_regular_file(dest / "game.toml") &&
+                  !fs::exists(proj),
+              "move_folder renames on one filesystem");
+        check(!retcomm::move_folder(scratch / "loose", dest, &err) &&
+                  err.find("already exists") != std::string::npos,
+              "move_folder refuses an existing destination");
+        // Another filesystem, when there is one to try: copy, then remove.
+        const fs::path shm = fs::path("/dev/shm") / ("retro-hub-update-test-" + std::to_string(::getpid()));
+        std::error_code ec;
+        if (fs::is_directory("/dev/shm", ec)) {
+            const bool moved = retcomm::move_folder(dest, shm, &err);
+            check(moved && fs::is_regular_file(shm / "build-release" / "app" / "title" / "title.json") &&
+                      !fs::exists(dest),
+                  "move_folder copies across filesystems and removes the source");
+            fs::remove_all(shm, ec);
+        }
+    }
+
+    // ---- issue #6: a portable setup's paths are the launcher folder's ------------
+    {
+        const fs::path L = scratch / "portable" / "Launcher";
+        write(L / "retcomm-root.json", R"({"schema_version": 1, "root": "RetComM-Data"})");
+        const fs::path cfg_path = L / "RetComM-Data" / "config" / "config.json";
+        check(retcomm::config_launcher_dir(cfg_path) == L, "the launcher folder is found from the marker");
+        // A file from before paths_relative_to: "roms" is the root's.
+        write(cfg_path, R"({"library_root": "roms", "install_roots": [{"label": "Here", "path": "installed"}]})");
+        retcomm::AppConfig c = retcomm::load_app_config(cfg_path);
+        check(c.library_root == (L / "RetComM-Data" / "roms").lexically_normal(),
+              "an unmarked file keeps resolving against the root");
+        c.install_roots = {{"Here", retcomm::resolve_config_path(cfg_path, "./installed")},
+                           {"NAS", "/mnt/nas/games"}};
+        check(c.install_roots[0].path == (L / "installed").lexically_normal(),
+              "a path typed relative now is the launcher folder's");
+        check(retcomm::save_app_config(cfg_path, c), "portable config saves");
+        std::string body;
+        {
+            std::ifstream in(cfg_path);
+            body.assign(std::istreambuf_iterator<char>(in), {});
+        }
+        check(body.find("\"paths_relative_to\": \"launcher\"") != std::string::npos &&
+                  body.find("\"RetComM-Data/roms\"") != std::string::npos &&
+                  body.find("\"installed\"") != std::string::npos &&
+                  body.find("/mnt/nas/games") != std::string::npos,
+              "saved relative to the launcher, outside paths absolute");
+        // The whole folder moves (another drive letter, another share).
+        const fs::path L2 = scratch / "portable" / "Moved";
+        std::error_code ec;
+        fs::rename(L, L2, ec);
+        const retcomm::AppConfig moved =
+            retcomm::load_app_config(L2 / "RetComM-Data" / "config" / "config.json");
+        check(moved.library_root == (L2 / "RetComM-Data" / "roms").lexically_normal() &&
+                  moved.install_roots.size() == 2 &&
+                  moved.install_roots[0].path == (L2 / "installed").lexically_normal() &&
+                  moved.install_roots[1].path == fs::path("/mnt/nas/games"),
+              "after the folder moves, its paths follow it");
+        // Not portable: no marker, no launcher folder, the old base.
+        const fs::path plain = scratch / "plain" / "config" / "config.json";
+        check(retcomm::config_launcher_dir(plain).empty() &&
+                  retcomm::config_paths_base(plain) == scratch / "plain",
+              "an installed setup keeps the root as its base");
+    }
+    // ---- robust_rename --------------------------------------------------------------
+    {
+        std::error_code ec;
+        write(scratch / "rr" / "a.txt", "a");
+        check(retcomm::robust_rename(scratch / "rr" / "a.txt", scratch / "rr" / "b.txt", ec) &&
+                  fs::is_regular_file(scratch / "rr" / "b.txt"),
+              "robust_rename renames");
+        check(!retcomm::robust_rename(scratch / "rr" / "missing", scratch / "rr" / "c", ec) &&
+                  ec == std::errc::no_such_file_or_directory,
+              "a missing source fails at once");
+        const fs::path shm = fs::path("/dev/shm") / ("retro-rr-" + std::to_string(::getpid()));
+        if (fs::is_directory("/dev/shm", ec)) {
+            write(scratch / "rr" / "dir" / "f.txt", "f");
+            check(retcomm::robust_rename(scratch / "rr" / "dir", shm, ec) &&
+                      fs::is_regular_file(shm / "f.txt") && !fs::exists(scratch / "rr" / "dir"),
+                  "across filesystems it copies and removes the source");
+            fs::remove_all(shm, ec);
+        }
     }
 
     if (g_failures) {

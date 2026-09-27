@@ -42,6 +42,9 @@ struct ResolvedRunner {
     // What the runner reports it can do (`--version`): 1 when it takes
     // --package for a GAME_PACKAGE core, 0 for one from before that.
     std::uint32_t game_package = 0;
+    // Seats that take a Transfer Pak (--tpakN-rom): 4, or 1 for a runner from
+    // before seats 2-4.
+    std::uint32_t transfer_pak_seats = 1;
     std::string note;    // why this one; what was skipped
 };
 

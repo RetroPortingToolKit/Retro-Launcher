@@ -109,4 +109,9 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title,
 LaunchResult launch_title(const Paths& paths, const Title& title,
                           const LaunchOptions& opts = {});
 
+// Starts an app on its own (an adopted title app, core_titles.hpp), detached,
+// in its own directory, with an environment cleaned of this AppImage's.
+bool launch_app_detached(const fs::path& app, const std::vector<std::string>& args,
+                         std::string* error = nullptr);
+
 } // namespace retcomm

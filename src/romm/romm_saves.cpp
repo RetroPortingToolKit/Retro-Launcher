@@ -1,4 +1,5 @@
 #include "retcomm/romm_saves.hpp"
+#include "retcomm/fs_util.hpp"
 
 #include "retcomm/app_state.hpp"
 #include "retcomm/hash.hpp"
@@ -1188,7 +1189,7 @@ int migrate_legacy_flat_library_saves(const Paths& paths, const AppConfig& cfg,
             fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
             if (ec) continue;
         } else {
-            fs::rename(src, dest, ec);
+            retcomm::robust_rename(src, dest, ec);
             if (ec) {
                 ec.clear();
                 fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
