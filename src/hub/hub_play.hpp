@@ -15,7 +15,7 @@
 //   Esc / F1      pause menu     Function + Start   (also L3 + R3)
 //   F7            save states    Function + R1
 //   F3            show FPS       Function + L1
-//   Tab (held)    turbo          Function + R2 (held)
+//   Tab (held)    turbo          Function + R2 (toggles on / off)
 //   = / -         volume         Function + D-Up / D-Down (keypad +/- too)
 // Function is a per-seat pad input (the Configure page; Back / Select by
 // default); while it is held that seat sends the game no buttons.
@@ -95,6 +95,7 @@ private:
     void grant(std::uint64_t now);
     void grant_if_due();
     bool audio_queue_full() const;
+    double audio_queued_ms() const;
     void await_late_frame();
     void run_turbo();
     void set_turbo_running(bool on);
@@ -161,7 +162,8 @@ private:
     PlayPrefs prefs_;
     bool turbo_ = false;          // turbo in effect this frame
     bool turbo_key_ = false;      // its key held
-    bool turbo_pad_ = false;      // its Function combo held
+    bool turbo_pad_ = false;      // toggled by its Function combo
+    double turbo_sound_ratio_ = 1.0; // the sound's speed-up while turbo runs
     bool turbo_running_ = false;  // what tick() last put in force
     std::optional<int> saved_swap_interval_; // vsync to put back when turbo ends
     std::array<bool, kHostActionCount> combo_prev_{}; // last frame's combos

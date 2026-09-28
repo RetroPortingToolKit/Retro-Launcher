@@ -22,6 +22,10 @@ constexpr std::uint64_t kPersistEveryNs = 5 * kNsPerSec;
 constexpr std::uint32_t kSeats = 4;
 // Turbo grants back to back for this long per hub frame, then draws.
 constexpr std::uint64_t kTurboBudgetNs = 10 * 1000000ull;
+// Turbo with sound: the stream plays faster, up to this, to keep up with the
+// frames; past this much queued, it is dropped rather than left to lag.
+constexpr double kTurboMaxSoundRatio = 8.0;
+constexpr double kTurboSoundCapMs = 250.0;
 constexpr int kVolumeStep = 10;
 
 // Every connected gamepad, read by position (SOUTH is the bottom face button
@@ -214,7 +218,8 @@ void PlaySession::poll_host_combos() {
     if (edge(HostAction::ShowFps)) set_show_fps(!prefs_.show_fps);
     if (edge(HostAction::VolumeUp)) set_volume(prefs_.volume + kVolumeStep);
     if (edge(HostAction::VolumeDown)) set_volume(prefs_.volume - kVolumeStep);
-    turbo_pad_ = held[static_cast<size_t>(HostAction::Turbo)] && !menu_open_;
+    // The combo toggles turbo (the key is held instead).
+    if (edge(HostAction::Turbo) && !menu_open_) turbo_pad_ = !turbo_pad_;
     combo_prev_ = held;
 }
 
@@ -378,6 +383,10 @@ void PlaySession::run_turbo() {
 // core could do (n64lle, about 12.5 ms a frame, ran exactly that).
 void PlaySession::set_turbo_running(bool on) {
     turbo_running_ = on;
+    // The sound's speed-up (pump_audio) starts from real time, and ends there.
+    turbo_sound_ratio_ = 1.0;
+    if (audio_) SDL_SetAudioStreamFrequencyRatio(audio_, 1.0f);
+    if (!on && audio_ && audio_queued_ms() > kTargetQueuedMs) SDL_ClearAudioStream(audio_);
     if (on) {
         if (audio_) SDL_ClearAudioStream(audio_); // no stale sound
         int interval = 0;
@@ -403,10 +412,13 @@ void PlaySession::note_frames(std::uint64_t now) {
     noted_ns_ = now;
 }
 
+double PlaySession::audio_queued_ms() const {
+    if (!audio_ || !audio_hz_) return 0.0;
+    return SDL_GetAudioStreamQueued(audio_) / (double(audio_hz_) * 4.0) * 1000.0;
+}
+
 bool PlaySession::audio_queue_full() const {
-    if (!audio_ || !audio_hz_) return false;
-    const int queued = SDL_GetAudioStreamQueued(audio_);
-    return queued / (double(audio_hz_) * 4.0) * 1000.0 >= kTargetQueuedMs;
+    return audio_ && audio_hz_ && audio_queued_ms() >= kTargetQueuedMs;
 }
 
 // A frame still running when the hub frame starts would get its successor's
@@ -475,9 +487,19 @@ void PlaySession::pump_audio() {
     for (;;) {
         const std::size_t n = link_.drain_audio(audio_buf_.data(), 4096);
         if (!n) break;
-        if (audio_ && !turbo_) {
+        if (audio_ && (!turbo_ || prefs_.turbo_sound)) {
             SDL_PutAudioStreamData(audio_, audio_buf_.data(), static_cast<int>(n * 4));
         }
+    }
+    // Turbo with sound: frames come faster than real time, so the stream plays
+    // faster (higher pitched) to keep up, eased toward what the queue asks for
+    // and capped; a queue that runs away anyway is dropped, never left to lag.
+    if (audio_ && turbo_ && prefs_.turbo_sound) {
+        const double q = audio_queued_ms();
+        const double want = std::clamp(q / kTargetQueuedMs, 1.0, kTurboMaxSoundRatio);
+        turbo_sound_ratio_ += (want - turbo_sound_ratio_) * 0.25;
+        SDL_SetAudioStreamFrequencyRatio(audio_, static_cast<float>(turbo_sound_ratio_));
+        if (q > kTurboSoundCapMs) SDL_ClearAudioStream(audio_);
     }
 }
 

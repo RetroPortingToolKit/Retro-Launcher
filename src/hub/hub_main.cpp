@@ -10241,7 +10241,8 @@ void draw_core_hotkeys_panel(HubModel& hub, CoreSettingsPage& p, const Theme& th
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped("Hold Function and press the button. Function is set per controller: "
                        "Gamepads, Configure (by default the Select / Back button). While it is "
-                       "held the game gets no buttons from that controller.");
+                       "held the game gets no buttons from that controller. Turbo's combo "
+                       "turns it on and off; its key works while held.");
     ImGui::PopStyleColor();
     for (int a = 0; a < kHostActionCount; ++a) {
         settings_row(retcomm::hub::host_action_label(static_cast<HostAction>(a)), th, kChipW);
@@ -10322,6 +10323,10 @@ void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, f
     settings_checkbox("Show FPS", "##showfps", th, &p.prefs.show_fps);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
         ImGui::SetTooltip("Frames per second in the top left while playing.");
+    settings_checkbox("Sound during turbo", "##turbosound", th, &p.prefs.turbo_sound);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Keep the game's sound while turbo runs, played faster (and so higher)\n"
+                          "to keep up with the frames. Off mutes it during turbo.");
     settings_row("Volume", th, kSettingsCtrlW);
     ImGui::SliderInt("##volume", &p.prefs.volume, 0, 100, "%d%%");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
