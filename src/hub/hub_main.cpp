@@ -9694,9 +9694,41 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         std::fprintf(stderr, "retro-hub: transfer pak, seat %zu: %s, save %s\n", seat + 1,
                      pak.gb_rom.c_str(), pak.gb_save.empty() ? "none" : pak.gb_save.c_str());
     }
-    args.options = retcomm::hub::layer_core_options(
-        retcomm::hub::load_core_options(data_dir, platform, ""),
-        retcomm::hub::load_core_options(data_dir, platform, title_key), args.options);
+    auto plat = retcomm::hub::load_core_options(data_dir, platform, "");
+    auto title = retcomm::hub::load_core_options(data_dir, platform, title_key);
+    // A stored value the core no longer takes -- an option it does not declare,
+    // or an enum value it no longer lists (n64lle, 2026-09-28: the renderer's
+    // lle-software, HLE graphics' title) -- would make the runner refuse the
+    // session: left out, and said, when the core's last description is at
+    // hand. The command line's and title.json's --opt are not touched.
+    const retcomm::hub::CoreDescription desc = retcomm::hub::load_description_cache(data_dir, platform);
+    if (desc.ok) {
+        auto drop = [&](std::map<std::string, std::string>& layer, const char* where) {
+            for (auto it = layer.begin(); it != layer.end();) {
+                const auto decl =
+                    std::find_if(desc.options.begin(), desc.options.end(),
+                                 [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == it->first; });
+                const bool declared = decl != desc.options.end();
+                const bool listed =
+                    !declared || decl->type != "enum" || decl->values.empty() ||
+                    std::find(decl->values.begin(), decl->values.end(), it->second) != decl->values.end();
+                if (declared && listed) {
+                    ++it;
+                    continue;
+                }
+                std::fprintf(stderr,
+                             "retro-hub: option %s=%s (%s settings) left out: %s %s %s; change it "
+                             "on the settings page\n",
+                             it->first.c_str(), it->second.c_str(), where, desc.core_id.c_str(),
+                             desc.core_version.c_str(),
+                             declared ? "does not list that value" : "does not declare it");
+                it = layer.erase(it);
+            }
+        };
+        drop(plat, "every title's");
+        drop(title, "this title's");
+    }
+    args.options = retcomm::hub::layer_core_options(plat, title, args.options);
 }
 
 // A runner from before seats 2-4 took a Transfer Pak (no transfer_pak_seats
