@@ -285,7 +285,8 @@ const char* host_action_key(HostAction a);   // "menu", "states", ...
 const char* host_action_label(HostAction a); // "Pause menu", ...
 
 struct HostHotkeys {
-    // A key for each action (Turbo is held). F1 also opens the menu.
+    // A key for each action (Turbo's is held; its combo toggles). F1 also
+    // opens the menu.
     std::array<SDL_Scancode, kHostActionCount> key{};
     // Function + this on any seat's pad. L3 + R3 also opens the menu, fixed;
     // Guide is never used (Steam and the OS keep it).
@@ -304,9 +305,13 @@ HostHotkeys default_host_hotkeys();
 struct PlayPrefs {
     bool show_fps = false;
     int volume = 100; // percent, 0..100
+    // Keep the game's sound while turbo runs, played faster (higher pitched)
+    // so it keeps up; off drops it, as turbo used to.
+    bool turbo_sound = true;
     HostHotkeys hotkeys = default_host_hotkeys();
     bool operator==(const PlayPrefs& o) const {
-        return show_fps == o.show_fps && volume == o.volume && hotkeys == o.hotkeys;
+        return show_fps == o.show_fps && volume == o.volume && turbo_sound == o.turbo_sound &&
+               hotkeys == o.hotkeys;
     }
     bool operator!=(const PlayPrefs& o) const { return !(*this == o); }
 };

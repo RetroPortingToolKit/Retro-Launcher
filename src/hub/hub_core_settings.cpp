@@ -828,8 +828,8 @@ const char* host_action_key(HostAction a) {
 }
 
 const char* host_action_label(HostAction a) {
-    static const char* k[] = {"Pause menu",   "Save states",  "Show FPS",
-                              "Turbo (hold)", "Volume up",    "Volume down"};
+    static const char* k[] = {"Pause menu", "Save states", "Show FPS",
+                              "Turbo",      "Volume up",   "Volume down"};
     return k[static_cast<int>(a)];
 }
 
@@ -956,6 +956,7 @@ PlayPrefs load_play_prefs(const fs::path& data_dir) {
         std::int64_t v = 0;
         if (key == "show_fps") p.show_fps = value == "1" || value == "true";
         else if (key == "volume" && parse_i64(value, v)) p.volume = static_cast<int>(std::clamp<std::int64_t>(v, 0, 100));
+        else if (key == "turbo_sound") p.turbo_sound = value == "1" || value == "true";
     });
     return p;
 }
@@ -967,7 +968,8 @@ bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::stri
       << "[overlay]\n"
       << "show_fps = " << (prefs.show_fps ? 1 : 0) << "\n\n"
       << "[audio]\n"
-      << "volume = " << std::clamp(prefs.volume, 0, 100) << "\n\n"
+      << "volume = " << std::clamp(prefs.volume, 0, 100) << "\n"
+      << "turbo_sound = " << (prefs.turbo_sound ? 1 : 0) << "\n\n"
       << "# Keyboard shortcuts in game (SDL key names; F1 also opens the menu).\n"
       << "[keys]\n";
     for (int a = 0; a < kHostActionCount; ++a) {

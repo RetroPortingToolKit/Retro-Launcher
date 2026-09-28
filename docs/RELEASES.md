@@ -117,7 +117,11 @@ every core and saved in `<data dir>/play.ini` (`[keys]`, `[combos]`) with the
 page: a key for each of pause menu, save states, show FPS, turbo (held) and
 volume up/down (defaults Esc, F7, F3, Tab, =, -; F1 and keypad +/- always
 work), and a controller combo for each, **Function + a button** (defaults
-Start, R1, L1, R2, D-Up, D-Down). Function replaces the old fixed Select: it
+Start, R1, L1, R2, D-Up, D-Down; turbo's combo toggles it, its key is held).
+**Sound during turbo** (on by default, `play.ini` `turbo_sound`) keeps the
+game's sound while turbo runs, played faster -- and so higher -- to keep up
+(up to 8x, and dropped rather than left to lag); off mutes it, as turbo used
+to. Function replaces the old fixed Select: it
 is an input each seat binds on its Configure page (Back / Select by default),
 because some pads (N64 USB adapters among them) report Select oddly; while it
 is held that seat sends the game no buttons. L3 + R3 also opens the pause

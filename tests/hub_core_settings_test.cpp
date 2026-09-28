@@ -331,6 +331,8 @@ int main(int argc, char** argv) {
         PlayPrefs pr;
         check(pr.hotkeys == default_host_hotkeys(), "hotkeys start at the defaults");
         pr.show_fps = true;
+        check(pr.turbo_sound, "sound during turbo is on by default");
+        pr.turbo_sound = false;
         pr.hotkeys.key[static_cast<size_t>(HostAction::Turbo)] = SDL_SCANCODE_LSHIFT;
         pr.hotkeys.combo[static_cast<size_t>(HostAction::SaveStates)] =
             PadSource{PadSource::Button, SDL_GAMEPAD_BUTTON_NORTH};
