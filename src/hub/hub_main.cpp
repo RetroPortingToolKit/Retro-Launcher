@@ -10325,8 +10325,9 @@ void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, f
         ImGui::SetTooltip("Frames per second in the top left while playing.");
     settings_checkbox("Sound during turbo", "##turbosound", th, &p.prefs.turbo_sound);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-        ImGui::SetTooltip("Keep the game's sound while turbo runs, played faster (and so higher)\n"
-                          "to keep up with the frames. Off mutes it during turbo.");
+        ImGui::SetTooltip("Keep the game's sound while turbo runs, at its own pitch: stretches of\n"
+                          "it play and the rest is skipped, as other emulators fast-forward.\n"
+                          "Off mutes it during turbo.");
     settings_row("Volume", th, kSettingsCtrlW);
     ImGui::SliderInt("##volume", &p.prefs.volume, 0, 100, "%d%%");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))

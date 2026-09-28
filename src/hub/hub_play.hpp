@@ -96,6 +96,8 @@ private:
     void grant_if_due();
     bool audio_queue_full() const;
     double audio_queued_ms() const;
+    void keep_turbo_sound(std::int16_t* s, std::size_t frames);
+    void end_turbo_stretch();
     void await_late_frame();
     void run_turbo();
     void set_turbo_running(bool on);
@@ -163,7 +165,10 @@ private:
     bool turbo_ = false;          // turbo in effect this frame
     bool turbo_key_ = false;      // its key held
     bool turbo_pad_ = false;      // toggled by its Function combo
-    double turbo_sound_ratio_ = 1.0; // the sound's speed-up while turbo runs
+    // Turbo's sound (keep_turbo_sound): whether a stretch is being kept, and
+    // its last few milliseconds, held back to fade out when it ends.
+    bool turbo_keeping_ = false;
+    std::vector<std::int16_t> turbo_tail_;
     bool turbo_running_ = false;  // what tick() last put in force
     std::optional<int> saved_swap_interval_; // vsync to put back when turbo ends
     std::array<bool, kHostActionCount> combo_prev_{}; // last frame's combos

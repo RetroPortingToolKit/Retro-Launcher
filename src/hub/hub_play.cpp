@@ -22,10 +22,13 @@ constexpr std::uint64_t kPersistEveryNs = 5 * kNsPerSec;
 constexpr std::uint32_t kSeats = 4;
 // Turbo grants back to back for this long per hub frame, then draws.
 constexpr std::uint64_t kTurboBudgetNs = 10 * 1000000ull;
-// Turbo with sound: the stream plays faster, up to this, to keep up with the
-// frames; past this much queued, it is dropped rather than left to lag.
-constexpr double kTurboMaxSoundRatio = 8.0;
-constexpr double kTurboSoundCapMs = 250.0;
+// Turbo with sound, at the game's own pitch: the sound is kept in stretches --
+// queued from when the queue is below the low mark until it passes the high
+// mark -- and what turbo makes in between is skipped. Each stretch fades in and
+// out over kTurboFadeMs so the splices do not click.
+constexpr double kTurboSoundLowMs = 40.0;
+constexpr double kTurboSoundHighMs = 100.0;
+constexpr double kTurboFadeMs = 4.0;
 constexpr int kVolumeStep = 10;
 
 // Every connected gamepad, read by position (SOUTH is the bottom face button
@@ -383,10 +386,11 @@ void PlaySession::run_turbo() {
 // core could do (n64lle, about 12.5 ms a frame, ran exactly that).
 void PlaySession::set_turbo_running(bool on) {
     turbo_running_ = on;
-    // The sound's speed-up (pump_audio) starts from real time, and ends there.
-    turbo_sound_ratio_ = 1.0;
-    if (audio_) SDL_SetAudioStreamFrequencyRatio(audio_, 1.0f);
-    if (!on && audio_ && audio_queued_ms() > kTargetQueuedMs) SDL_ClearAudioStream(audio_);
+    // Turbo's sound (keep_turbo_sound) starts a stretch afresh; when turbo
+    // ends, the stretch in progress fades out before the game's own sound.
+    if (!on) end_turbo_stretch();
+    turbo_keeping_ = false;
+    turbo_tail_.clear();
     if (on) {
         if (audio_) SDL_ClearAudioStream(audio_); // no stale sound
         int interval = 0;
@@ -487,20 +491,54 @@ void PlaySession::pump_audio() {
     for (;;) {
         const std::size_t n = link_.drain_audio(audio_buf_.data(), 4096);
         if (!n) break;
-        if (audio_ && (!turbo_ || prefs_.turbo_sound)) {
-            SDL_PutAudioStreamData(audio_, audio_buf_.data(), static_cast<int>(n * 4));
+        if (!audio_) continue;
+        if (!turbo_) SDL_PutAudioStreamData(audio_, audio_buf_.data(), static_cast<int>(n * 4));
+        else if (prefs_.turbo_sound) keep_turbo_sound(audio_buf_.data(), n);
+    }
+}
+
+// Turbo makes sound faster than it can be played. Speeding the playback up
+// raises its pitch and distorts it; instead the sound stays at its own pitch
+// and is kept in stretches, the rest skipped, the way emulators fast-forward.
+// A stretch starts (fading in) once the queue is below kTurboSoundLowMs and
+// ends (its held-back tail fading out) once it is past kTurboSoundHighMs.
+void PlaySession::keep_turbo_sound(std::int16_t* s, std::size_t frames) {
+    const double q = audio_queued_ms();
+    const std::size_t fade = std::max<std::size_t>(1, static_cast<std::size_t>(audio_hz_ * kTurboFadeMs / 1000.0));
+    if (!turbo_keeping_) {
+        if (q > kTurboSoundLowMs) return; // still playing the last stretch: skip
+        turbo_keeping_ = true;
+        const std::size_t in = std::min(fade, frames);
+        for (std::size_t i = 0; i < in; ++i) {
+            const float g = float(i) / float(in);
+            s[2 * i] = static_cast<std::int16_t>(s[2 * i] * g);
+            s[2 * i + 1] = static_cast<std::int16_t>(s[2 * i + 1] * g);
         }
+    } else if (q > kTurboSoundHighMs) {
+        end_turbo_stretch(); // this chunk is skipped
+        return;
     }
-    // Turbo with sound: frames come faster than real time, so the stream plays
-    // faster (higher pitched) to keep up, eased toward what the queue asks for
-    // and capped; a queue that runs away anyway is dropped, never left to lag.
-    if (audio_ && turbo_ && prefs_.turbo_sound) {
-        const double q = audio_queued_ms();
-        const double want = std::clamp(q / kTargetQueuedMs, 1.0, kTurboMaxSoundRatio);
-        turbo_sound_ratio_ += (want - turbo_sound_ratio_) * 0.25;
-        SDL_SetAudioStreamFrequencyRatio(audio_, static_cast<float>(turbo_sound_ratio_));
-        if (q > kTurboSoundCapMs) SDL_ClearAudioStream(audio_);
+    // Carry on: the last chunk's tail, then this one less its own tail.
+    if (!turbo_tail_.empty())
+        SDL_PutAudioStreamData(audio_, turbo_tail_.data(), static_cast<int>(turbo_tail_.size() * 2));
+    const std::size_t keep = frames > fade ? frames - fade : 0;
+    SDL_PutAudioStreamData(audio_, s, static_cast<int>(keep * 4));
+    turbo_tail_.assign(s + keep * 2, s + frames * 2);
+}
+
+// The stretch in progress ends: its held-back tail fades out and is queued.
+void PlaySession::end_turbo_stretch() {
+    if (audio_ && !turbo_tail_.empty()) {
+        const std::size_t n = turbo_tail_.size() / 2;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float g = 1.f - float(i + 1) / float(n);
+            turbo_tail_[2 * i] = static_cast<std::int16_t>(turbo_tail_[2 * i] * g);
+            turbo_tail_[2 * i + 1] = static_cast<std::int16_t>(turbo_tail_[2 * i + 1] * g);
+        }
+        SDL_PutAudioStreamData(audio_, turbo_tail_.data(), static_cast<int>(turbo_tail_.size() * 2));
     }
+    turbo_tail_.clear();
+    turbo_keeping_ = false;
 }
 
 void PlaySession::upload_frame() {

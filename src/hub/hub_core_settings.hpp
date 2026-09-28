@@ -305,8 +305,8 @@ HostHotkeys default_host_hotkeys();
 struct PlayPrefs {
     bool show_fps = false;
     int volume = 100; // percent, 0..100
-    // Keep the game's sound while turbo runs, played faster (higher pitched)
-    // so it keeps up; off drops it, as turbo used to.
+    // Keep the game's sound while turbo runs: at its own pitch, in stretches,
+    // the rest skipped (hub_play.cpp keep_turbo_sound); off mutes turbo.
     bool turbo_sound = true;
     HostHotkeys hotkeys = default_host_hotkeys();
     bool operator==(const PlayPrefs& o) const {
