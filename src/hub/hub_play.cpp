@@ -403,15 +403,43 @@ void PlaySession::note_frames(std::uint64_t now) {
     noted_ns_ = now;
 }
 
+bool PlaySession::audio_queue_full() const {
+    if (!audio_ || !audio_hz_) return false;
+    const int queued = SDL_GetAudioStreamQueued(audio_);
+    return queued / (double(audio_hz_) * 4.0) * 1000.0 >= kTargetQueuedMs;
+}
+
+// A frame still running when the hub frame starts would get its successor's
+// grant only on the next refresh: one grant window per present, so a core
+// whose frames alternate either side of the refresh period (n64lle's Pokemon
+// Stadium flyover: about 14 / 18.5 ms a field against 16.7) lost a whole
+// refresh on every long one and read 50 fps while averaging above 60. Wait
+// for it here, up to half a frame period, so it is shown and the next one is
+// granted before this hub frame draws; the present still makes the same
+// vsync. Only when the next grant would be due: a full audio queue means
+// nothing is gained by waiting.
+void PlaySession::await_late_frame() {
+    if (paused() || link_.state_pending() || audio_queue_full()) return;
+    std::uint32_t num = 0, den = 0;
+    const std::uint64_t period =
+        link_.frame_rate(num, den) ? std::uint64_t(den) * kNsPerSec / num : kFallbackFrameNs;
+    const std::uint64_t until = SDL_GetTicksNS() + period / 2;
+    while (link_.state() == corelink::LinkState::Ready &&
+           link_.frames_granted() > link_.frames_done()) {
+        const std::uint64_t now = SDL_GetTicksNS();
+        if (now >= until) break;
+        // pump() returns at the first message of any kind; loop to FrameDone.
+        link_.pump(int((until - now + 999999) / 1000000));
+    }
+}
+
 void PlaySession::grant_if_due() {
     if (paused() || !link_.can_grant()) return;
     const std::uint64_t now = SDL_GetTicksNS();
     bool due;
     if (audio_ && audio_hz_) {
         // The core's audio clock paces it: grant while the queue is short.
-        const int queued = SDL_GetAudioStreamQueued(audio_);
-        const double queued_ms = queued / (double(audio_hz_) * 4.0) * 1000.0;
-        due = queued_ms < kTargetQueuedMs;
+        due = !audio_queue_full();
     } else {
         // No audio to follow: the core's stated frame rate, else 60 Hz.
         std::uint32_t num = 0, den = 0;
@@ -500,6 +528,7 @@ void PlaySession::tick() {
         service_states();
     }
     sync_pause();
+    if (!turbo_) await_late_frame();
     pump_audio();
     note_frames(SDL_GetTicksNS());
     upload_frame();

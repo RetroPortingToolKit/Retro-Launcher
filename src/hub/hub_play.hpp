@@ -94,6 +94,8 @@ private:
     void fill_pads(rcore_pad pads[RCORE_MAX_SEATS]);
     void grant(std::uint64_t now);
     void grant_if_due();
+    bool audio_queue_full() const;
+    void await_late_frame();
     void run_turbo();
     void set_turbo_running(bool on);
     void note_frames(std::uint64_t now);
