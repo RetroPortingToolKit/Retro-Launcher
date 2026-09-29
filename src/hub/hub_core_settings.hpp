@@ -241,6 +241,45 @@ std::size_t gb_cart_ram_bytes(const fs::path& rom, std::string* error);
 // existing `dest`.
 bool create_gb_save(const fs::path& rom, const fs::path& dest, std::string* error);
 
+// ---- Transfer Pak Support: the Game Boy cartridges netplay accepts ---------------
+//
+// A Transfer Pak match simulates every player's pak on every peer, so every
+// peer must hold the same cartridge images. Only these dumps are accepted
+// (No-Intro; checked by size and sha256 when chosen, and again before a
+// Transfer Pak lobby is hosted or joined). Each player brings their own.
+struct SupportedGbRom {
+    const char* key;    // "red" | "blue" | "yellow": the settings section, the wire id
+    const char* label;  // "Pokemon Red"
+    const char* dump;   // the exact release: what the picker asks for
+    const char* sha256; // lowercase
+    std::uint64_t size;
+};
+constexpr int kSupportedGbRoms = 3;
+const SupportedGbRom& supported_gb_rom(int i); // 0..kSupportedGbRoms-1
+// The index whose sha256 this is, or -1.
+int supported_gb_rom_by_sha256(const std::string& sha256);
+
+struct TransferPakLibrary {
+    std::array<std::string, kSupportedGbRoms> path;   // absolute; empty = not set
+    std::array<std::string, kSupportedGbRoms> sha256; // as verified when saved
+    bool complete() const; // every one set
+    bool operator==(const TransferPakLibrary& o) const {
+        return path == o.path && sha256 == o.sha256;
+    }
+};
+// platform/<platform>/transfer_pak.ini
+TransferPakLibrary load_tpak_library(const fs::path& data_dir, const std::string& platform);
+bool save_tpak_library(const fs::path& data_dir, const std::string& platform,
+                       const TransferPakLibrary& lib, std::string* error);
+// Whether `file` is supported cartridge `which`: its size, then its sha256
+// (returned in *sha256). False with one sentence in *error saying what it is
+// instead (another supported cartridge, not a Game Boy ROM, another dump).
+bool verify_supported_gb_rom(int which, const fs::path& file, std::string* sha256,
+                             std::string* error);
+// The whole library, re-read from disk: every entry set, still at its path,
+// and still the dump it was saved as. The first problem in *error.
+bool recheck_tpak_library(const TransferPakLibrary& lib, std::string* error);
+
 // One frame of pads, from the connected devices and the seats' maps. A seat
 // holding its Function input sends no buttons (sticks still pass).
 void fill_pads_from_input(const PlatformInput& in, rcore_pad pads[RCORE_MAX_SEATS],

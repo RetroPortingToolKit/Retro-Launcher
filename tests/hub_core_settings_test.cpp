@@ -263,6 +263,63 @@ void write_gb_rom(const fs::path& p, unsigned char type, unsigned char ram) {
     std::ofstream(p, std::ios::binary) << rom;
 }
 
+// Transfer Pak Support: the three accepted dumps, their settings file, and the
+// refusals. The real dumps are checked too when RETRO_TEST_GB_DIR names a
+// folder holding them (they are not in the repo).
+void test_tpak_library(const fs::path& dir) {
+    check(supported_gb_rom_by_sha256(supported_gb_rom(1).sha256) == 1 &&
+              supported_gb_rom_by_sha256("00") == -1,
+          "supported dumps are found by sha256");
+    const fs::path gb = dir / "tpaklib";
+    write_gb_rom(gb / "fake_red.gb", 0x13, 0x03);
+    std::string sha, err;
+    check(!verify_supported_gb_rom(0, gb / "fake_red.gb", &sha, &err) &&
+              err.find("not the supported Pokemon Red dump") != std::string::npos &&
+              sha.size() == 64,
+          "a Game Boy ROM that is not the dump is refused, naming the dump");
+    fs::create_directories(gb);
+    std::ofstream(gb / "junk.gb", std::ios::binary) << std::string(0x200, 'x');
+    err.clear();
+    check(!verify_supported_gb_rom(2, gb / "junk.gb", &sha, &err) &&
+              err.find("no valid Game Boy header") != std::string::npos,
+          "a file that is no Game Boy ROM says so");
+    err.clear();
+    check(!verify_supported_gb_rom(1, gb / "missing.gb", &sha, &err) && !err.empty(),
+          "a missing file is refused");
+
+    TransferPakLibrary lib;
+    check(!lib.complete(), "an empty library is incomplete");
+    lib.path[0] = "/roms/red.gb";
+    lib.sha256[0] = supported_gb_rom(0).sha256;
+    lib.path[2] = "/roms/yellow.gb";
+    lib.sha256[2] = supported_gb_rom(2).sha256;
+    check(save_tpak_library(dir, "n64", lib, &err), "transfer_pak.ini saves");
+    check(load_tpak_library(dir, "n64") == lib, "paths and hashes read back, the unset one empty");
+    err.clear();
+    check(!recheck_tpak_library(lib, &err) && err.find("Pokemon Red") != std::string::npos,
+          "a recheck reports the first problem");
+
+    if (const char* real = std::getenv("RETRO_TEST_GB_DIR")) {
+        const char* names[3] = {"Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb",
+                                "Pokemon - Blue Version (USA, Europe) (SGB Enhanced).gb",
+                                "Pokemon - Yellow Version - Special Pikachu Edition (USA, Europe) "
+                                "(CGB+SGB Enhanced).gb"};
+        TransferPakLibrary full;
+        for (int i = 0; i < 3; ++i) {
+            const fs::path f = fs::path(real) / names[i];
+            err.clear();
+            check(verify_supported_gb_rom(i, f, &sha, &err), ("the real dump verifies: " + err).c_str());
+            full.path[static_cast<size_t>(i)] = f.string();
+            full.sha256[static_cast<size_t>(i)] = sha;
+        }
+        err.clear();
+        check(!verify_supported_gb_rom(0, fs::path(real) / names[1], &sha, &err) &&
+                  err.find("is Pokemon Blue, not Pokemon Red") != std::string::npos,
+              "Blue offered as Red is named as Blue");
+        check(full.complete() && recheck_tpak_library(full, &err), "the real library rechecks");
+    }
+}
+
 void test_transfer_pak(const fs::path& dir) {
     const fs::path gb = dir / "tpak";
     write_gb_rom(gb / "red.gb", 0x13, 0x03); // MBC3+RAM+BATTERY, 32 KiB
@@ -326,6 +383,7 @@ int main(int argc, char** argv) {
     test_options(dir);
     test_n64lle_mods(dir);
     test_transfer_pak(dir);
+    test_tpak_library(dir);
     {
         // The host hotkeys round-trip through play.ini with the overlay's settings.
         PlayPrefs pr;

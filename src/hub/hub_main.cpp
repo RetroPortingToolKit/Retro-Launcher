@@ -11545,6 +11545,16 @@ struct DirectHome {
     std::shared_ptr<DevPick> dev_pick;
     std::string rom_note; // the last pick's result, or why none resolved
     bool rom_note_bad = false;
+    // Transfer Pak Support (a title whose game.toml supports the Transfer Pak):
+    // the three Game Boy cartridges netplay Transfer Pak lobbies need, each
+    // checked by sha256 before it is kept (hub_core_settings.hpp).
+    bool tpak_supported = false;
+    bool tpak_open = false;
+    retcomm::hub::TransferPakLibrary tpak_lib;
+    std::array<std::string, retcomm::hub::kSupportedGbRoms> tpak_note;
+    std::array<bool, retcomm::hub::kSupportedGbRoms> tpak_bad{};
+    int tpak_picking = -1;
+    std::shared_ptr<TitleRomPick> tpak_pick;
 };
 
 // SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
@@ -11640,6 +11650,190 @@ void take_title_rom_pick(DirectHome& h) {
                  " and remembered.";
     h.rom_note_bad = false;
     std::fprintf(stderr, "retro-hub: rom: %s (chosen, remembered)\n", path.c_str());
+}
+
+// game.toml `[transfer_pak] supported = true`: the title reads a Game Boy
+// cartridge through a Transfer Pak (n64lle setup_project --transfer-pak).
+bool title_supports_transfer_pak(const fs::path& title_dir) {
+    std::ifstream in(title_dir / "game.toml");
+    std::string line;
+    bool in_section = false;
+    while (std::getline(in, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const auto first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        line = line.substr(first);
+        if (line[0] == '[') {
+            in_section = line.rfind("[transfer_pak]", 0) == 0;
+            continue;
+        }
+        if (!in_section || line.rfind("supported", 0) != 0) continue;
+        const auto eq = line.find('=');
+        return eq != std::string::npos && line.find("true", eq) != std::string::npos;
+    }
+    return false;
+}
+
+void begin_tpak_pick(DirectHome& h, int which) {
+    if (!h.tpak_pick) h.tpak_pick = std::make_shared<TitleRomPick>();
+    TitleRomPick& p = *h.tpak_pick;
+    {
+        std::lock_guard<std::mutex> lock(p.mu);
+        if (p.busy) return;
+        p.busy = true;
+        p.answered = false;
+    }
+    h.tpak_picking = which;
+    p.filter_name = std::string(retcomm::hub::supported_gb_rom(which).label) + " (.gb)";
+    p.filter_pattern = "gb;gbc";
+    p.filters[0].name = p.filter_name.c_str();
+    p.filters[0].pattern = p.filter_pattern.c_str();
+    p.filters[1].name = "All files";
+    p.filters[1].pattern = "*";
+    const std::string& have = h.tpak_lib.path[static_cast<size_t>(which)];
+    const std::string start = have.empty() ? std::string() : fs::path(have).parent_path().string();
+    SDL_ShowOpenFileDialog(on_title_rom_dialog, new std::shared_ptr<TitleRomPick>(h.tpak_pick),
+                           h.window, p.filters, 2, start.empty() ? nullptr : start.c_str(), false);
+}
+
+// The dialog's answer: kept only when it is the supported dump, then saved.
+void take_tpak_pick(DirectHome& h, HubModel& hub) {
+    if (!h.tpak_pick || h.tpak_picking < 0) return;
+    std::string path, error;
+    {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        if (!h.tpak_pick->answered) return;
+        h.tpak_pick->answered = false;
+        path = h.tpak_pick->path;
+        error = h.tpak_pick->error;
+    }
+    const int i = h.tpak_picking;
+    h.tpak_picking = -1;
+    const size_t k = static_cast<size_t>(i);
+    if (path.empty()) {
+        if (!error.empty()) {
+            h.tpak_note[k] = "The file dialog failed: " + error;
+            h.tpak_bad[k] = true;
+        }
+        return;
+    }
+    std::string sha, err;
+    if (!retcomm::hub::verify_supported_gb_rom(i, path, &sha, &err)) {
+        h.tpak_note[k] = err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+    lib.path[k] = path;
+    lib.sha256[k] = sha;
+    if (!retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+        h.tpak_note[k] = "Not saved: " + err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    h.tpak_lib = lib;
+    h.tpak_note[k] = "Verified: sha256 " + sha.substr(0, 16) + "\xE2\x80\xA6";
+    h.tpak_bad[k] = false;
+}
+
+void draw_tpak_support(DirectHome& h, HubModel& hub, const Theme& th) {
+    using retcomm::hub::kSupportedGbRoms;
+    using retcomm::hub::supported_gb_rom;
+    constexpr const char* kId = "Transfer Pak Support###tpak_support";
+    take_tpak_pick(h, hub);
+    if (h.tpak_open) {
+        h.tpak_open = false;
+        h.tpak_lib = retcomm::hub::load_tpak_library(hub.paths.data_dir, h.platform);
+        // Say up front whether what was saved still checks out.
+        for (int i = 0; i < kSupportedGbRoms; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            h.tpak_note[k].clear();
+            h.tpak_bad[k] = false;
+            const std::string& p = h.tpak_lib.path[k];
+            if (p.empty()) continue;
+            std::string sha, err;
+            if (!retcomm::hub::verify_supported_gb_rom(i, p, &sha, &err)) {
+                h.tpak_note[k] = err;
+                h.tpak_bad[k] = true;
+            } else if (sha != h.tpak_lib.sha256[k]) {
+                h.tpak_note[k] = "Changed since it was saved; choose it again.";
+                h.tpak_bad[k] = true;
+            } else {
+                h.tpak_note[k] = "Verified";
+            }
+        }
+        ImGui::OpenPopup(kId);
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->WorkSize.x - 40.f), 0.f));
+    if (!ImGui::BeginPopupModal(kId, nullptr,
+                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextColored(th.text_muted,
+                       "Transfer Pak lobbies need all three cartridges on every player's machine: "
+                       "each player's pak is simulated by everyone. Only these dumps are accepted; "
+                       "each file is checked when you choose it and again before a Transfer Pak "
+                       "lobby.");
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, 6));
+    bool picking = false;
+    if (h.tpak_pick) {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        picking = h.tpak_pick->busy;
+    }
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        const auto& rom = supported_gb_rom(i);
+        ImGui::PushID(i);
+        ImGui::Separator();
+        ImGui::TextColored(th.accent, "%s", rom.label);
+        ImGui::SameLine();
+        ImGui::TextColored(th.text_muted, "%s", rom.dump);
+        const std::string& p = h.tpak_lib.path[k];
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextUnformatted(p.empty() ? "Not set" : p.c_str());
+        ImGui::PopTextWrapPos();
+        if (!h.tpak_note[k].empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(h.tpak_bad[k] ? th.warn : th.good, "%s", h.tpak_note[k].c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::BeginDisabled(picking);
+        if (ImGui::Button(h.tpak_picking == i ? "Choosing..." : "Choose\xE2\x80\xA6", ImVec2(140, 0)))
+            begin_tpak_pick(h, i);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(p.empty());
+        if (ImGui::Button("Clear", ImVec2(100, 0))) {
+            retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+            lib.path[k].clear();
+            lib.sha256[k].clear();
+            std::string err;
+            if (retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+                h.tpak_lib = lib;
+                h.tpak_note[k].clear();
+            } else {
+                h.tpak_note[k] = "Not saved: " + err;
+                h.tpak_bad[k] = true;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 4));
+    if (h.tpak_lib.complete())
+        ImGui::TextColored(th.good, "All three are set: you can host and join Transfer Pak lobbies.");
+    else
+        ImGui::TextColored(th.text_muted, "Set all three to host or join a Transfer Pak lobby.");
+    if (ImGui::Button("Close", ImVec2(140, 0)) ||
+        (!picking && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 std::string platform_label(const std::string& platform) {
@@ -12069,6 +12263,11 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
     ImGui::Dummy(ImVec2(0, 6));
 
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
+    if (h.tpak_supported) {
+        if (ImGui::Button("Transfer Pak Support\xE2\x80\xA6", ImVec2(w, 0))) h.tpak_open = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Pokemon Red, Blue and Yellow for Transfer Pak netplay lobbies.");
+    }
     if (!h.session_notes.empty()) {
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextColored(th.text_muted, "Last session");
@@ -12390,6 +12589,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     h.d = d;
     h.window = window;
     h.title_dir = direct_title_dir(d.args);
+    h.tpak_supported = title_supports_transfer_pak(h.title_dir);
     h.title_key = d.title_key.empty() ? direct_title_key(d.args) : d.title_key;
     h.platform = rcore_manifest_platform(d.args.core);
     if (h.platform.empty() && d.title_mode) h.platform = d.title.platform;
@@ -12562,6 +12762,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 act = draw_direct_actions(h, hub, th);
                 ImGui::EndChild();
                 draw_direct_update_prompt(h, hub, th);
+                if (h.tpak_supported) draw_tpak_support(h, hub, th);
             }
             // B / Escape backs out of a page, unless something in front owns it
             // or the settings page holds edits (Save or Cancel decides those).
