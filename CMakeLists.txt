@@ -78,6 +78,7 @@ set(RETCOMM_CORE_SOURCES
     src/netplay/netplay_ws.cpp
     src/netplay/netplay_client.cpp
     src/netplay/netplay_account.cpp
+    src/netplay/netplay_lan.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
@@ -382,6 +383,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
             ${RETCOMM_RC_HUB}
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
@@ -399,6 +401,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
         )
     endif()
     target_include_directories(retro-hub PRIVATE
@@ -455,6 +458,10 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
             add_test(NAME hub_update COMMAND retro-hub-update-test
                 ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
+            # Netplay LAN discovery: both beacons, over loopback.
+            add_executable(retcomm-netplay-lan-test tests/netplay_lan_test.cpp)
+            target_link_libraries(retcomm-netplay-lan-test PRIVATE retcomm_core)
+            add_test(NAME netplay_lan COMMAND retcomm-netplay-lan-test)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

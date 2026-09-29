@@ -12,6 +12,8 @@
 #include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
 #include "hub/hub_theme.hpp"
+#include "hub/hub_widgets.hpp"
+#include "hub/hub_netplay.hpp"
 
 #if !defined(RETCOMM_COMMIT)
 #define RETCOMM_COMMIT ""
@@ -950,46 +952,10 @@ void draw_status_badge_glyph(ImDrawList* dl, const ImVec2& c, float rad, TileSta
     }
 }
 
-bool accent_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.accent_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.accent_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.accent_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.accent_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Play / success actions — muted green fill; bright th.good stays for status text.
 // A button as wide as its label plus the same padding at both ends, so a
 // fixed width never crowds (or clips) the text at one side.
 float padded_button_width(const char* label, float pad = 20.f) {
     return ImGui::CalcTextSize(label).x + 2.f * pad;
-}
-
-bool good_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.good_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.good_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.good_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.good_button_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Destructive actions — muted red fill (mirrors good_button contrast).
-bool danger_button(const char* label, const Theme& /*th*/, const ImVec2& size = ImVec2(0, 0)) {
-    const ImVec4 btn(0.561f, 0.165f, 0.200f, 1.f);       // #8F2A33
-    const ImVec4 hovered(0.655f, 0.220f, 0.255f, 1.f);   // #A73841
-    const ImVec4 active(0.455f, 0.130f, 0.165f, 1.f);    // #74212A
-    const ImVec4 text(0.980f, 0.920f, 0.925f, 1.f);      // #FAEBEB
-    ImGui::PushStyleColor(ImGuiCol_Button, btn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
-    ImGui::PushStyleColor(ImGuiCol_Text, text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
 }
 
 // RomM brand purple (docs.romm.app brand guidelines: #553e98 / #371f69).
@@ -1099,6 +1065,7 @@ void go_back_to_titles(HubModel& hub) {
 void close_settings_pages(HubModel& hub) {
     request_page_focus(hub);
     hub.show_mods_page = false;
+    hub.show_netplay = false; // its connection and seat carry on (hub_netplay.hpp)
     hub.show_library_panel = false;
     hub.show_settings = false;
     hub.show_romm_settings = false;
@@ -1351,8 +1318,8 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         // plus Back, which belongs beside it in the corner rather than down in
         // the page's own header band.
         float right_x = p0.x + width - 16.f;
-        const bool show_back =
-            hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms;
+        const bool show_back = hub.show_mods_page || hub.show_netplay ||
+                               hub.library_nav != retcomm::hub::LibraryNav::Platforms;
         if (show_back) {
             const char* back_label = "Back";
             const float back_w =
@@ -1361,6 +1328,7 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
             ImGui::SetCursorScreenPos(ImVec2(right_x, btn_y));
             if (ImGui::Button(back_label, ImVec2(back_w, kMenuH))) {
                 if (hub.show_mods_page) hub.show_mods_page = false;
+                else if (hub.show_netplay) hub.show_netplay = false;
                 else if (hub.library_nav == retcomm::hub::LibraryNav::Detail)
                     go_back_to_titles(hub);
                 else go_home(hub);
@@ -3019,6 +2987,12 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
         if (ImGui::Button("Add/Scan Files", item_sz)) {
             close_nav_drawer(hub);
             hub.pending_open_library = true;
+        }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (ImGui::Button("Netplay", item_sz)) {
+            close_nav_drawer(hub);
+            close_settings_pages(hub);
+            hub.show_netplay = true;
         }
         ImGui::PopStyleVar();
 
@@ -13391,6 +13365,10 @@ int main(int argc, char** argv) {
             ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_mods_page(hub, th);
             ImGui::EndChild();
+        } else if (hub.show_netplay) {
+            ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            retcomm::hub::draw_netplay_page(hub, th, window);
+            ImGui::EndChild();
         } else if (hub.show_library_panel) {
             ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_library_panel(hub, th, window);
@@ -14022,6 +14000,9 @@ int main(int argc, char** argv) {
     // Before the GL context goes: the session owns a texture and a runner.
     play.reset();
 #endif
+
+    // Leave any netplay room and stop its threads (bounded: a second at most).
+    retcomm::hub::netplay_shutdown();
 
     // Self-update / hard-reset apply scripts wait on this PID. Prefer a fast
     // exit over a graceful join that can hang on prefetch/launch workers and

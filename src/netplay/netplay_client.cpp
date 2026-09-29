@@ -13,7 +13,7 @@ namespace {
 constexpr std::size_t kChatRing = 400;
 constexpr std::size_t kTraceRing = 60;
 constexpr int kRecvTickMs = 200;
-constexpr long long kPingEveryMs = 20000;
+constexpr long long kPingEveryMs = 10000;
 
 long long steady_ms() {
     using namespace std::chrono;
@@ -99,6 +99,12 @@ void LobbyClient::set_game(const std::string& game_name, const std::string& game
     outbound_.push_back(list_msg().dump());
 }
 
+void LobbyClient::set_display_name(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mu_);
+    cfg_.display_name = name;
+    outbound_.push_back(hello_msg().dump());
+}
+
 void LobbyClient::request_list() {
     std::lock_guard<std::mutex> lk(mu_);
     outbound_.push_back(list_msg().dump());
@@ -122,13 +128,43 @@ void LobbyClient::create(const std::string& name, const std::string& password, i
     outbound_.push_back(m.dump());
 }
 
+void LobbyClient::create_for(const std::string& game_name, const std::string& game_version,
+                             const std::string& name, const std::string& password, int max_slots,
+                             bool allow_spectators, const json& match_caps) {
+    std::lock_guard<std::mutex> lk(mu_);
+    json m = {{"op", "create"},
+              {"name", name},
+              {"game_name", game_name},
+              {"game_version", game_version},
+              {"max_slots", max_slots < 2 ? 2 : max_slots},
+              {"allow_spectators", allow_spectators},
+              {"host_bind", "0.0.0.0:7777"}};
+    if (!cfg_.display_name.empty()) m["display_name"] = cfg_.display_name;
+    if (!password.empty()) m["password"] = password;
+    if (match_caps.is_object() && !match_caps.empty()) m["match_caps"] = match_caps;
+    pending_room_name_ = name;
+    pending_max_slots_ = max_slots < 2 ? 2 : max_slots;
+    outbound_.push_back(m.dump());
+}
+
 void LobbyClient::join(const std::string& lobby_id, const std::string& password) {
+    std::string game, version;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        game = cfg_.game_name;
+        version = cfg_.game_version;
+    }
+    join_as(lobby_id, password, game, version);
+}
+
+void LobbyClient::join_as(const std::string& lobby_id, const std::string& password,
+                          const std::string& game_name, const std::string& game_version) {
     std::lock_guard<std::mutex> lk(mu_);
     json m = {{"op", "join"},
               {"lobby_id", lobby_id},
               {"guest_bind", "0.0.0.0:7778"},
-              {"game_name", cfg_.game_name},
-              {"game_version", cfg_.game_version}};
+              {"game_name", game_name},
+              {"game_version", game_version}};
     if (!cfg_.display_name.empty()) m["display_name"] = cfg_.display_name;
     if (!password.empty()) m["password"] = password;
     if (!cfg_.disc_fp.empty()) m["disc_fp"] = cfg_.disc_fp;
@@ -160,6 +196,27 @@ void LobbyClient::kick(int slot) { queue({{"op", "kick"}, {"slot", slot}}); }
 
 void LobbyClient::move_slot(int from_slot, int to_slot) {
     queue({{"op", "move"}, {"from_slot", from_slot}, {"to_slot", to_slot}});
+}
+
+void LobbyClient::seat_move(int to_slot) { queue({{"op", "seat_move"}, {"to_slot", to_slot}}); }
+
+void LobbyClient::seat_swap_request(int target_slot) {
+    queue({{"op", "seat_swap_request"}, {"target_slot", target_slot}});
+}
+
+void LobbyClient::seat_swap_answer(bool accept, const std::string& asker_player_id) {
+    queue({{"op", "seat_swap_answer"}, {"accept", accept}, {"asker_player_id", asker_player_id}});
+}
+
+void LobbyClient::set_blocks(const std::vector<std::string>& accounts) {
+    queue({{"op", "set_blocks"}, {"accounts", accounts}});
+}
+
+void LobbyClient::chat_report(const std::vector<std::string>& mids, const std::string& reason,
+                              const std::string& note) {
+    json m = {{"op", "chat_report"}, {"mids", mids}, {"reason", reason}};
+    if (!note.empty()) m["note"] = note;
+    queue(m);
 }
 
 void LobbyClient::send_raw(const json& msg) { queue(msg); }
@@ -308,6 +365,7 @@ void LobbyClient::handle(const json& m) {
                 mem.display_name = str_or(s, "display_name");
                 mem.country = str_or(s, "country");
                 mem.ready = bool_or(s, "ready");
+                mem.account = str_or(s, "account");
                 mem.is_local = !mem.player_id.empty() && mem.player_id == snap_.player_id;
                 mem.is_host = host.empty() ? mem.slot == 0 : mem.player_id == host;
                 if (mem.is_local) snap_.local_slot = mem.slot;
@@ -335,7 +393,10 @@ void LobbyClient::handle(const json& m) {
         line.from = str_or(m, "from");
         line.from_player_id = str_or(m, "from_player_id");
         line.text = str_or(m, "text");
-        line.is_system = line.from.empty();
+        line.mid = str_or(m, "mid");
+        line.from_account = str_or(m, "from_account");
+        line.country = str_or(m, "country");
+        line.is_system = line.from.empty() || bool_or(m, "system");
         line.is_local = !line.from_player_id.empty() && line.from_player_id == snap_.player_id;
         push_chat(op == "chat" ? snap_.room_chat : snap_.server_chat, std::move(line));
         return;
@@ -352,6 +413,28 @@ void LobbyClient::handle(const json& m) {
         snap_.launch_pending = true;
         snap_.launch = m;
         snap_.session_id = m.value("session_id", snap_.session_id);
+        return;
+    }
+    if (op == "seat_swap_ask") {
+        snap_.swap_ask.asker_player_id = str_or(m, "asker_player_id");
+        snap_.swap_ask.asker_name = str_or(m, "asker_name");
+        snap_.swap_ask.from_slot = int_or(m, "from_slot", -1);
+        snap_.swap_ask.target_slot = int_or(m, "target_slot", -1);
+        ++snap_.swap_ask.seq;
+        return;
+    }
+    if (op == "seat_swap_result") {
+        snap_.swap_result.accepted = bool_or(m, "accept");
+        ++snap_.swap_result.seq;
+        return;
+    }
+    if (op == "chat_report_ok") {
+        ++snap_.report_ok_seq;
+        return;
+    }
+    if (op == "pong") {
+        if (ping_sent_ms_) snap_.rtt_ms = static_cast<int>(steady_ms() - ping_sent_ms_);
+        ping_sent_ms_ = 0;
         return;
     }
     if (op == "need_mods") {
@@ -384,7 +467,8 @@ void LobbyClient::run() {
         snap_.transport_error.clear();
     }
 
-    long long last_ping = steady_ms();
+    // First ping soon after connecting, so the round trip shows early.
+    long long last_ping = steady_ms() - kPingEveryMs + 1500;
     std::string msg;
     bool alive = true;
     while (alive && !stop_) {
@@ -412,6 +496,10 @@ void LobbyClient::run() {
         }
         if (steady_ms() - last_ping > kPingEveryMs) {
             last_ping = steady_ms();
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                ping_sent_ms_ = last_ping;
+            }
             if (!ws.send_text(R"({"op":"ping"})", &err)) {
                 alive = false;
                 break;

@@ -49,13 +49,16 @@ struct OnlinePlayer {
 
 struct Member {
     int slot = -1;
-    std::string player_id, display_name, country;
+    std::string player_id, display_name, country, account;
     bool ready = false, is_host = false, is_local = false, is_spectator = false;
 };
 
 struct ChatLine {
     std::uint64_t seq = 0;  // monotonic across both rings
     std::string from, from_player_id, text;
+    std::string mid;           // the server's message id: what a report names
+    std::string from_account;  // opaque account id; empty for a guest
+    std::string country;
     bool is_system = false, is_local = false;
 };
 
@@ -87,6 +90,21 @@ struct Snapshot {
     bool launch_pending = false;
     nlohmann::json launch;
 
+    // A seated player asked to swap seats with us (seat_swap_ask); answer
+    // with seat_swap_answer. seq bumps per ask.
+    struct SwapAsk {
+        std::string asker_player_id, asker_name;
+        int from_slot = -1, target_slot = -1;
+        std::uint64_t seq = 0;
+    } swap_ask;
+    // The answer to our own seat_swap_request.
+    struct SwapResult {
+        bool accepted = false;
+        std::uint64_t seq = 0;
+    } swap_result;
+    std::uint64_t report_ok_seq = 0;  // chat_report_ok count
+    int rtt_ms = -1;                  // lobby server round trip, from ping/pong
+
     // Last server error{code}
     std::string last_error_code, last_error_detail;
     std::uint64_t error_seq = 0;
@@ -110,10 +128,21 @@ public:
 
     // Commands: queued to the worker, applied in order.
     void set_game(const std::string& game_name, const std::string& game_version);
+    // A guest's new name, announced with a fresh hello (a signed-in player's
+    // name is the server's and is not changed here).
+    void set_display_name(const std::string& name);
     void request_list();
     void create(const std::string& name, const std::string& password, int max_slots,
                 const nlohmann::json& match_caps);
+    // A room for a game other than the connection's scope (the hub's
+    // cross-game browser): the room is created for, or joined as, exactly
+    // this game_name / game_version, which the server checks.
+    void create_for(const std::string& game_name, const std::string& game_version,
+                    const std::string& name, const std::string& password, int max_slots,
+                    bool allow_spectators, const nlohmann::json& match_caps);
     void join(const std::string& lobby_id, const std::string& password);
+    void join_as(const std::string& lobby_id, const std::string& password,
+                 const std::string& game_name, const std::string& game_version);
     void leave();
     void close_room();
     void set_ready(bool ready);
@@ -121,7 +150,15 @@ public:
     void server_chat(const std::string& text);
     void start_match();
     void kick(int slot);
-    void move_slot(int from_slot, int to_slot);
+    void move_slot(int from_slot, int to_slot);       // host
+    void seat_move(int to_slot);                      // self, to an empty seat
+    void seat_swap_request(int target_slot);          // self, onto a player
+    void seat_swap_answer(bool accept, const std::string& asker_player_id);
+    void set_blocks(const std::vector<std::string>& accounts);
+    // reason: harassment | hate_speech | threats | sexual_content | spam |
+    // cheating_claim | other (recomp-ui's list).
+    void chat_report(const std::vector<std::string>& mids, const std::string& reason,
+                     const std::string& note);
     void send_raw(const nlohmann::json& msg);
 
 private:
@@ -139,6 +176,7 @@ private:
     std::deque<std::string> outbound_;
     std::string pending_room_name_;
     int pending_max_slots_ = 0;
+    long long ping_sent_ms_ = 0;
     bool session_rejected_ = false;
     std::uint64_t chat_seq_ = 0;
     std::atomic<bool> stop_{false};
