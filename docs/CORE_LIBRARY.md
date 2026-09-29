@@ -34,32 +34,23 @@ core instead of getting a twin row.
 
 **Registering one.** Registrations are stored in `config.json` as
 `core_titles: [{manifest, name}]`, and merged into the catalog after every
-catalog load (hub and CLI). Ways to add one:
+catalog load (hub and CLI).
 
-- In the hub, on a development build: the drawer's **Generate Local
-  Recomp** makes a port project from one of the player's dumps and registers
-  it (`LOCAL_RECOMP.md`; since 2026-09-28). It replaced **Add Core Title…**,
-  described below because its registrations still load.
-- Until 2026-09-28, the drawer's **Add Core Title…** adopted a **port project**
-  (from 2026-09-27; before that it picked a sidecar). Pick the title app the
-  project built (`tools/build_app.sh`: `<project>/<build>/app/<Name>-<v>-<os>
-  .AppImage|.exe`). The hub walks up from it to the project root -- an n64lle
-  port: `game.toml`, `CMakeLists.txt` and `tools/build_app.sh` -- and reads the
-  payload staged beside the app (`title/title.json`: the generic core, the game
-  package and the ROM's sha256). It then asks to move the whole project folder
-  into the default install root (`default_install_root`, where installed apps
-  live), as `<root>/<project folder name>`; a project already under an install
-  root is added where it is. **Declining adds nothing.** The move is a rename,
-  or a copy then removal across drives; a destination that exists is refused.
-  Build trees inside the project keep the old path in their CMake caches, so
-  they need configuring again. The registration is `core_titles: [{manifest:
-  <title.json>, name, app, project}]`: the row matches the library's ROM by
-  sha256, and **Play runs the title app** (detached, `--rom <the matched ROM>`
-  when there is one), which keeps its settings and saves in its own
-  `<id>-data/` beside it (docs/RELEASES.md, "Title-app mode").
+- **Nothing in the hub adds one any more** (since 2026-09-29). Self-
+  recompilation is being abandoned for n64lle, in favour of distributing the
+  machine-generated source as part of the move to core-based recompilations.
+  So the hub's two ways in are gone: **Generate Local Recomp** (2026-09-28,
+  which scaffolded a port from the player's dump) and **Add Core Title…**
+  (2026-09-25 to 09-28, which adopted a port project the player had built).
+  Registrations either one made still load. A registration with an `app`
+  runs that title app on Play, with `--rom <the matched ROM>` when there is
+  one; the app keeps its settings and saves in its own `<id>-data/` beside it
+  (docs/RELEASES.md, "Title-app mode").
 - On the CLI: `retcomm core add <sidecar.rcore.toml> [--name NAME]`, then
   `retcomm scan`. `retcomm core list` shows each core title, its core and its
   matched ROM.
+- **Uninstall** (Manage Game Data) removes a registration. It touches no
+  files: they were never the launcher's.
 
 **Catalog installs** can carry a core too: a `*.rcore.toml` in an install
 directory whose `[title] id` matches the title makes it a core title
@@ -121,8 +112,7 @@ of his library index, and the Pokémon Stadium core built from n64lle
 - **Failure path.** `retro-hub --play no-such-title` exits 1 with "did not
   start: unknown title: no-such-title".
 - **A normal hub start** with a core title in the catalog runs as before.
-- **Not checked:** the row, its Play button and the Add Core Title dialog on a
-  real screen, and returning to the library after closing a game. These need
+- **Not checked:** the row and its Play button on a real screen, and returning to the library after closing a game. These need
   someone at the desktop.
 
 ## Not built yet

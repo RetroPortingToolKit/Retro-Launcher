@@ -178,11 +178,6 @@ struct Title {
     // An adopted title app (core_titles.hpp): Play runs this executable, with
     // the library's ROM, instead of a core in the hub's window.
     std::string core_app;
-    // A title app the hub generated from the player's dump (config.hpp
-    // CoreTitleRef::generated): its project folder, and the project's copy of
-    // the dump, which Play uses when the library has no match.
-    bool core_generated = false;
-    std::string core_project, core_rom;
 
     bool has_rom_identity() const;
     bool has_bios_identity() const;

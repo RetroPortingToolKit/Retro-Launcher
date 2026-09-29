@@ -29,9 +29,6 @@ struct CoreTitle {
     bool engine_dirty = false;
     fs::path package; // a title app's game package (title.json `package`)
     fs::path app;     // the registration's title app, when it has one
-    // A generated title's (CoreTitleRef::generated): its project and ROM copy.
-    bool generated = false;
-    fs::path project, rom;
 };
 
 // Reads a per-title core's sidecar, or a title app's payload title.json
@@ -39,27 +36,6 @@ struct CoreTitle {
 // game package and the ROM identity). Refuses a generic core's sidecar (no
 // [title]): alone it names no game.
 bool read_core_title(const fs::path& manifest, CoreTitle& out, std::string* error);
-
-// ---- adopting a port project ("Add Core Title…") ------------------------------
-//
-// The player picks the title app a port project built (tools/build_app.sh:
-// <project>/<build>/app/<Name>-<v>-<os>.AppImage|.exe). The project is an
-// n64lle port: game.toml, CMakeLists.txt and tools/build_app.sh at its root.
-// The title is the payload staged beside the app (title/title.json).
-struct AdoptableProject {
-    fs::path root;       // the project folder
-    fs::path app;        // the picked executable, inside root
-    fs::path title_json; // its payload's title.json, inside root
-    CoreTitle title;
-};
-// False with *error saying which part of the structure is missing.
-bool find_adoptable_project(const fs::path& executable, AdoptableProject& out,
-                            std::string* error);
-
-// Moves a folder: a rename when it can, else a copy then removal of the
-// source (another drive, a share). On failure nothing is left at `to` and
-// `from` is untouched.
-bool move_folder(const fs::path& from, const fs::path& to, std::string* error);
 
 // A catalog Title for a registered core title: kind "core", its platform,
 // ROM identity = the manifest's content hashes, core_manifest set.
