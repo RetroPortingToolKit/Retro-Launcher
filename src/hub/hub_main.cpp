@@ -11798,9 +11798,9 @@ void draw_tpak_support(DirectHome& h, HubModel& hub, const Theme& th) {
         ImGui::Separator();
         ImGui::TextColored(th.accent, "%s", rom.label);
         ImGui::SameLine();
+        ImGui::PushTextWrapPos(0.f);
         ImGui::TextColored(th.text_muted, "%s", rom.dump);
         const std::string& p = h.tpak_lib.path[k];
-        ImGui::PushTextWrapPos(0.f);
         ImGui::TextUnformatted(p.empty() ? "Not set" : p.c_str());
         ImGui::PopTextWrapPos();
         if (!h.tpak_note[k].empty()) {

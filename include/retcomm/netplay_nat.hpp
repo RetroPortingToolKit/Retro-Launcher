@@ -9,7 +9,8 @@
 //   2. otherwise learns its public mapping with STUN (RFC 5389) -- reachable
 //      only through a forwarded port or an open NAT, which the guests' probes
 //      then prove or disprove;
-//   3. answers guests' probes (kProbe -> kProbeAck) on that same port.
+//   3. answers guests' probes (kProbe -> kProbeAck) on that same port, from
+//      the moment it binds (a guest may probe while 1 and 2 are running).
 //
 // The guest side probes the advertised endpoint. The lobby server launches
 // the host relay only when every guest's probe succeeded; otherwise its own
@@ -19,7 +20,9 @@
 // (the hub runs them on a worker).
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -100,12 +103,20 @@ public:
 
 private:
     void run(std::string stun_server, bool try_router);
+    // Owns every read of the port from start() on: probes are answered at
+    // once, even while the router and STUN are still being asked (a guest
+    // probes as soon as it joins); anything else goes to the inbox (STUN).
+    void respond();
+    bool inbox_pop(int ms, std::vector<std::uint8_t>* out);
 
     mutable std::mutex mu_;
     Status st_;
     int sock_ = -1;
     std::atomic<bool> stop_{false};
-    std::thread worker_;
+    std::thread worker_, responder_;
+    std::mutex inbox_mu_;
+    std::condition_variable inbox_cv_;
+    std::deque<std::vector<std::uint8_t>> inbox_;
     // What unmap() removes.
     std::string upnp_control_, upnp_service_;
     std::uint16_t mapped_port_ = 0;

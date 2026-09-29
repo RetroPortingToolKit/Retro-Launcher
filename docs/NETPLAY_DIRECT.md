@@ -89,10 +89,17 @@ every peer its own process, 600 frames unless noted, scripted input:
 | **host relay**, against a local recomp-net-server on `feat/host-relay`: the host held port 7790 with `HostPort`, the guest's probe was answered, the server launched `transport: "host"`, the host's runner bound 7790 and the guest dialled it, 300 frames | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
 | the same with the guest's probe failing: the server fell back to its relay | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
 | **Transfer Paks**: two processes running the page's own ingest against the local server, a `tpak` room; the host brought Red, the guest Yellow, each a 32 KiB save. Both assembled both paks (same sha256), the launch carried `--tpak1-*` / `--tpak2-*`, and both runners keyed the same ROM and save hashes | 0 | identical (`44e10f6393ce4fbb` at 280) | 0 |
+| **the hub end to end**: the real `retro-hub` in Direct mode (SDL offscreen driver), a scripted guest and a local server, all in a loopback-only network namespace (no router was asked). The hub hosted a Transfer Pak lobby from its own Host Lobby modal; the guest's probe of the host was answered; the hub's PLAY launched `transport: "host"` (127.0.0.1:7777); the hub's PlaySession ran the match and showed "The match ended" when the guest's 300-frame runner stopped | 0 | the boot digest agreed (`c1255d82`); both keyed the same `tpak2` ROM and save | 0 |
+
+The Direct-mode pages were rendered offscreen from the real binary: the home
+page's Netplay and Transfer Pak Support buttons, the popup empty and with
+three verified dumps, the mode page, the Online browser locked to the title,
+the Host Lobby modal, a Transfer Pak room, the match and its end.
 
 Not established: two hubs with people at them, a match across two networks
-(the host relay needs the server deployed), a real UPnP mapping, and the
-Direct-mode page on a screen.
+(the host relay needs the server deployed), a real UPnP mapping, and play
+with a Transfer Pak actually inserted in a seat (the matches above ran the
+intro, where the game does not read the pak).
 
 ## Order
 

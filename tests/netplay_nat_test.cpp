@@ -156,6 +156,25 @@ int main() {
     fake.join();
     close(stun);
 
+    // A guest probes as soon as it joins, while the host is still asking:
+    // the probe is answered then, not after STUN gives up (a silent server
+    // takes 1.5 s; the probe window is 3 x 400 ms).
+    const int silent = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in qa{};
+    qa.sin_family = AF_INET;
+    qa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(silent, reinterpret_cast<sockaddr*>(&qa), sizeof qa);
+    socklen_t ql = sizeof qa;
+    getsockname(silent, reinterpret_cast<sockaddr*>(&qa), &ql);
+    HostPort early;
+    check(early.start(7799, "127.0.0.1:" + std::to_string(ntohs(qa.sin_port)), &err, false),
+          ("HostPort binds its port again: " + err).c_str());
+    check(!early.status().done, "STUN is still being asked");
+    check(probe_host("127.0.0.1:7799", 3), "a probe during discovery is answered at once");
+    check(!early.status().done, "before discovery finished");
+    early.stop();
+    close(silent);
+
     if (g_failures) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

@@ -1194,7 +1194,7 @@ void seat_row(HubModel& hub, const Theme& th, int slot, const np::Member* m, boo
     if (m && !mine) {
         const char* why = !s.is_host ? "Only the host can kick" : m->is_host ? "Cannot kick the host" : nullptr;
         ImGui::BeginDisabled(why != nullptr);
-        if (danger_button("Kick", th, ImVec2(48, 32))) p.client.kick(slot);
+        if (danger_button("Kick", th, ImVec2(-FLT_MIN, 32))) p.client.kick(slot);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", why ? why : "Kick player");
@@ -1284,7 +1284,7 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
         ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 100.f);
         ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed, 72.f);
-        ImGui::TableSetupColumn("Kick", ImGuiTableColumnFlags_WidthFixed, 56.f);
+        ImGui::TableSetupColumn("Kick", ImGuiTableColumnFlags_WidthFixed, 64.f);
         ImGui::TableHeadersRow();
         const int seats = std::max(s.max_slots, seated);
         for (int slot = 0; slot < seats; ++slot) {
@@ -1304,7 +1304,7 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
         ImGui::TableSetupColumn("Spectator", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 100.f);
         ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed, 72.f);
-        ImGui::TableSetupColumn("Kick", ImGuiTableColumnFlags_WidthFixed, 56.f);
+        ImGui::TableSetupColumn("Kick", ImGuiTableColumnFlags_WidthFixed, 64.f);
         ImGui::TableHeadersRow();
         for (const np::Member& m : s.members)
             if (m.is_spectator) seat_row(hub, th, m.slot, &m, true);
@@ -1382,15 +1382,22 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
             p.host_game = std::clamp(p.host_game, 0, static_cast<int>(games.size()) - 1);
             const Game& g = games[static_cast<size_t>(p.host_game)];
             ImGui::TextUnformatted("Game");
-            ImGui::SetNextItemWidth(430.f);
-            if (ImGui::BeginCombo("##host_game", g.title.c_str())) {
-                for (size_t i = 0; i < games.size(); ++i)
-                    if (ImGui::Selectable(games[i].title.c_str(), p.host_game == static_cast<int>(i)))
-                        p.host_game = static_cast<int>(i);
-                ImGui::EndCombo();
+            if (p.scope) {
+                // Direct mode: this title, and only it.
+                ImGui::TextColored(th.accent, "%s", g.title.c_str());
+            } else {
+                ImGui::SetNextItemWidth(430.f);
+                if (ImGui::BeginCombo("##host_game", g.title.c_str())) {
+                    for (size_t i = 0; i < games.size(); ++i)
+                        if (ImGui::Selectable(games[i].title.c_str(), p.host_game == static_cast<int>(i)))
+                            p.host_game = static_cast<int>(i);
+                    ImGui::EndCombo();
+                }
             }
+            ImGui::PushTextWrapPos(0.f);
             ImGui::TextColored(th.text_muted, "Version %s \xC2\xB7 guests need the same build",
                                g.pin.c_str());
+            ImGui::PopTextWrapPos();
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextUnformatted("Lobby name");
             ImGui::SetNextItemWidth(430.f);
@@ -1735,11 +1742,15 @@ void ingest(HubModel& hub) {
             p.host_endpoint_sent = true;
             if (!hs.endpoint.empty()) p.client.set_host_endpoint(hs.endpoint);
         }
-        if (hs.done) {
-            p.relay_note = "Host relay: " + hs.detail +
-                           (hs.probes_answered ? " Guests reached you (" +
-                                                     std::to_string(hs.probes_answered) + " probe(s))."
-                                               : "");
+        if (hs.probes_answered) {
+            // A probe answered is the proof, whatever the router said: the
+            // guest reached this port at the address the server holds for us.
+            p.relay_note = "Host relay: guests reach this machine directly on UDP port " +
+                           std::to_string(hs.local_port) + " (" +
+                           std::to_string(hs.probes_answered) + " probe(s) answered).";
+            p.relay_note_bad = false;
+        } else if (hs.done) {
+            p.relay_note = "Host relay: " + hs.detail;
             p.relay_note_bad = hs.endpoint.empty();
         }
     }
@@ -1784,6 +1795,13 @@ void ingest(HubModel& hub) {
         for (const np::Member& m : s.members)
             if (!m.is_spectator) members += m.player_id + ",";
         if (!p.pak_ready && p.scope->local_pak) {
+            // A new room: the last room's paks are staging, not keepsakes (a
+            // match copied what it used into its own sandbox), and their
+            // names are player ids that never come back.
+            std::error_code ec;
+            if (!p.scope->pak_dir.empty())
+                for (const auto& e : fs::directory_iterator(p.scope->pak_dir, ec))
+                    if (e.path().extension() == ".sav") fs::remove(e.path(), ec);
             p.my_pak = p.scope->local_pak();
             p.pak_ready = true;
             p.pak_note = p.my_pak.cart < 0 ? p.my_pak.note : std::string();

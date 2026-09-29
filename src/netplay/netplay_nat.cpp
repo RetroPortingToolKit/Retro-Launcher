@@ -394,13 +394,47 @@ bool HostPort::start(std::uint16_t port, const std::string& stun_server, std::st
         st_.detail = "Opening UDP port " + std::to_string(bound) + "\xE2\x80\xA6";
     }
     stop_ = false;
+    {
+        std::lock_guard<std::mutex> lk(inbox_mu_);
+        inbox_.clear();
+    }
+    responder_ = std::thread([this] { respond(); });
     worker_ = std::thread([this, stun_server, try_router] { run(stun_server, try_router); });
+    return true;
+}
+
+void HostPort::respond() {
+    while (!stop_) {
+        std::vector<std::uint8_t> r;
+        sockaddr_in from{};
+        if (!recv_within(sock_, 200, &r, &from)) continue;
+        const std::string m(r.begin(), r.end());
+        if (m.rfind(kProbe, 0) == 0) {
+            const std::string ack = std::string(kProbeAck) + m.substr(std::strlen(kProbe));
+            sendto(sock_, ack.data(), ack.size(), 0, reinterpret_cast<sockaddr*>(&from), sizeof from);
+            std::lock_guard<std::mutex> lk(mu_);
+            ++st_.probes_answered;
+            continue;
+        }
+        std::lock_guard<std::mutex> lk(inbox_mu_);
+        if (inbox_.size() < 32) inbox_.push_back(std::move(r));
+        inbox_cv_.notify_one();
+    }
+}
+
+bool HostPort::inbox_pop(int ms, std::vector<std::uint8_t>* out) {
+    std::unique_lock<std::mutex> lk(inbox_mu_);
+    if (!inbox_cv_.wait_for(lk, std::chrono::milliseconds(ms), [this] { return !inbox_.empty(); }))
+        return false;
+    *out = std::move(inbox_.front());
+    inbox_.pop_front();
     return true;
 }
 
 void HostPort::stop() {
     stop_ = true;
     if (worker_.joinable()) worker_.join();
+    if (responder_.joinable()) responder_.join();
     if (sock_ >= 0) {
         close(sock_);
         sock_ = -1;
@@ -544,8 +578,7 @@ void HostPort::run(std::string stun_server, bool try_router) {
             for (int i = 0; i < 3 && ip.empty() && !stop_; ++i) {
                 sendto(sock_, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof to);
                 std::vector<std::uint8_t> r;
-                sockaddr_in from{};
-                while (recv_within(sock_, 500, &r, &from)) {
+                while (inbox_pop(500, &r)) {
                     if (stun_parse_mapped(r, tx, &ip, &mp)) break;
                 }
             }
@@ -561,19 +594,7 @@ void HostPort::run(std::string stun_server, bool try_router) {
     if (!resolved)
         finish("", "", "Could not find a public address for this machine: the lobby server "
                        "will relay the match.");
-
-    // 4. Answer probes until stopped.
-    while (!stop_) {
-        std::vector<std::uint8_t> r;
-        sockaddr_in from{};
-        if (!recv_within(sock_, 200, &r, &from)) continue;
-        const std::string m(r.begin(), r.end());
-        if (m.rfind(kProbe, 0) != 0) continue;
-        const std::string ack = std::string(kProbeAck) + m.substr(std::strlen(kProbe));
-        sendto(sock_, ack.data(), ack.size(), 0, reinterpret_cast<sockaddr*>(&from), sizeof from);
-        std::lock_guard<std::mutex> lk(mu_);
-        ++st_.probes_answered;
-    }
+    // Probes go on being answered by respond() until stop().
 }
 
 #else // _WIN32: the host relay's network half is not built for Windows yet
