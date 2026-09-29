@@ -43,8 +43,8 @@ contract across the four repositories involved.
 |---|---|
 | Transfer Pak Support popup: Red/Blue/Yellow pickers, size+sha256 against the No-Intro dumps, `platform/n64/transfer_pak.ini` (path + sha256), recheck before a Transfer Pak lobby | **built** (d0514fb) |
 | Direct mode **Netplay** button: the lobby page locked to this title (no game filter); the lobby pin is `<title version>+c<core sha256 10>.p<package sha256 10>`, so only identical builds see each other | **built** |
-| Host Lobby: "Transfer Paks" on/off (`match_caps.tpak`); a Transfer Pak lobby needs all three ROMs set and rechecked, to host and to join (a join without them leaves, saying why) | **built**; PLAY in a Transfer Pak lobby waits on the exchange below |
-| Pak exchange: each seated player's pak (which of the three, save bytes) to every peer before start; remote saves under `<data>/netplay/<session>/` | not built |
+| Host Lobby: "Transfer Paks" on/off (`match_caps.tpak`); a Transfer Pak lobby needs all three ROMs set and rechecked, to host and to join (a join without them leaves, saying why) | **built**; PLAY in a Transfer Pak lobby waits until every seated player's pak has arrived |
+| Pak exchange: each seated player's pak (which of the three carts, its save) goes to every peer before start, over the lobby's opaque `signal` (type `0x5450`, base64 chunks of 12 KiB, sha256 checked on arrival). A remote pak is kept under `<data>/netplay/<title>/paks/<player id>.sav`. At launch each seat's save is copied into the match's sandbox (`session-<id>/saves/tpakN.sav`) with the local ROM for that cart, so the runner's match key holds every seat's ROM and save hash | **built** |
 | Host relay: a Direct-mode room asks for it (`match_caps.relay = "host"`). The host's hub holds the game port while the room waits (`netplay_nat` `HostPort`: UPnP IGD, else NAT-PMP, else STUN), advertises it with `set_host_endpoint` and answers probes; each guest probes it and sends `path_report`; the room says which way it went. At launch the host frees the port and its runner binds it | **built**; UPnP checked read-only against Alex's router (discovery, the WANIPConnection:1 control URL, GetExternalIPAddress); no mapping was added from here |
 | PLAY -> `start` -> `launch` -> a PlaySession in netplay mode: `netplay_runner_args` turns the launch into `--net-*` (transport `sfu`: every peer dials the relay; `host`: guests dial the host); a fresh save sandbox per match (`<data>/netplay/<title>/session-<id>/saves`); the player's NETPLAY options dropped for the core's defaults; the game never pauses (the menu opens over it, the local pad neutral); no save states, no turbo; a runner exit 4 is "The match ended", not a fault | **built** |
 
@@ -88,6 +88,7 @@ every peer its own process, 600 frames unless noted, scripted input:
 
 | **host relay**, against a local recomp-net-server on `feat/host-relay`: the host held port 7790 with `HostPort`, the guest's probe was answered, the server launched `transport: "host"`, the host's runner bound 7790 and the guest dialled it, 300 frames | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
 | the same with the guest's probe failing: the server fell back to its relay | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
+| **Transfer Paks**: two processes running the page's own ingest against the local server, a `tpak` room; the host brought Red, the guest Yellow, each a 32 KiB save. Both assembled both paks (same sha256), the launch carried `--tpak1-*` / `--tpak2-*`, and both runners keyed the same ROM and save hashes | 0 | identical (`44e10f6393ce4fbb` at 280) | 0 |
 
 Not established: two hubs with people at them, a match across two networks
 (the host relay needs the server deployed), a real UPnP mapping, and the

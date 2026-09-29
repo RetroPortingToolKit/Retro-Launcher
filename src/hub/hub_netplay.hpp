@@ -9,6 +9,7 @@
 // Starting a match is not built: no game can yet take a session negotiated
 // outside it, so PLAY says so instead of sending `start`.
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -33,6 +34,18 @@ struct NetplayLaunch {
     std::string host_endpoint;   // host
     std::uint16_t host_port = 0; // host: the LOCAL port it holds (NAT-PMP may map another)
     bool tpak = false;           // a Transfer Pak lobby
+    // Transfer Pak lobbies: every seat's cartridge (this machine's copy of
+    // it) and that seat's save as the room exchanged it. Empty = no pak.
+    std::array<std::string, 4> tpak_rom, tpak_save;
+};
+
+// One player's Transfer Pak, as brought to a match: which of the supported
+// cartridges (hub_core_settings.hpp supported_gb_rom; -1 = none) and the
+// battery save's bytes.
+struct NetplayPak {
+    int cart = -1;
+    std::string save;       // the bytes
+    std::string note;       // why none, when cart is -1
 };
 
 // retro-core-runner's --net-* for a launch (Retro-Runtime docs/CORE_RUNNER.md,
@@ -53,6 +66,11 @@ struct NetplayScope {
     std::function<std::string(const NetplayLaunch&)> launch;
     // True while a match runs here (its runner holds the game port).
     std::function<bool()> match_running;
+    // Transfer Pak lobbies: this player's pak (their first seat's Transfer
+    // Pak), this machine's file for cartridge i, and where received saves go.
+    std::function<NetplayPak()> local_pak;
+    std::function<std::string(int)> cart_rom;
+    std::string pak_dir;
 };
 
 // Fills the page body. Owns the lobby connection, sign-in and LAN discovery,

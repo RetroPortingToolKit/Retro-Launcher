@@ -62,6 +62,15 @@ struct ChatLine {
     bool is_system = false, is_local = false;
 };
 
+// A `signal` another member sent (recomp-net-server WS_LOBBY.md): opaque
+// text the server relays within the room.
+struct SignalMsg {
+    std::uint64_t seq = 0;
+    std::string from_player_id;
+    int type = 0;
+    std::string text;
+};
+
 struct Snapshot {
     ConnState state = ConnState::Disconnected;
     std::string transport_error;  // why state is Failed / Disconnected
@@ -109,6 +118,9 @@ struct Snapshot {
     // Last server error{code}
     std::string last_error_code, last_error_detail;
     std::uint64_t error_seq = 0;
+
+    // Signals received in the room, newest last (a ring; seq is monotonic).
+    std::deque<SignalMsg> signals;
 
     // Raw op trace (newest last), for `retcomm netplay probe --verbose`
     std::deque<std::string> trace;
@@ -166,6 +178,8 @@ public:
     // The launch was taken: clear launch_pending, so a rematch's launch is new.
     void ack_launch();
     void path_report(const std::string& path); // "direct" | "fail"
+    // Opaque text to every other member of the room (to_player_id empty) or one.
+    void signal(int type, const std::string& text, const std::string& to_player_id = {});
     void send_raw(const nlohmann::json& msg);
 
 private:
@@ -186,6 +200,7 @@ private:
     long long ping_sent_ms_ = 0;
     bool session_rejected_ = false;
     std::uint64_t chat_seq_ = 0;
+    std::uint64_t signal_seq_ = 0;
     std::atomic<bool> stop_{false};
     std::thread worker_;
 };

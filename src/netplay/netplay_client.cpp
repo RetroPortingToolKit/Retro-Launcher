@@ -223,6 +223,12 @@ void LobbyClient::set_host_endpoint(const std::string& endpoint) {
     queue({{"op", "set_host_endpoint"}, {"host_endpoint", endpoint}});
 }
 
+void LobbyClient::signal(int type, const std::string& text, const std::string& to_player_id) {
+    json m = {{"op", "signal"}, {"type", type}, {"text", text}};
+    if (!to_player_id.empty()) m["to_player_id"] = to_player_id;
+    queue(m);
+}
+
 void LobbyClient::ack_launch() {
     std::lock_guard<std::mutex> lk(mu_);
     snap_.launch_pending = false;
@@ -248,6 +254,7 @@ void LobbyClient::leave_room_state(const std::string& why) {
     snap_.members.clear();
     snap_.match_caps = json();
     snap_.room_chat.clear();
+    snap_.signals.clear();
     snap_.launch_pending = false;
     snap_.launch = json();
     snap_.room_status = why;
@@ -430,6 +437,16 @@ void LobbyClient::handle(const json& m) {
         snap_.launch_pending = true;
         snap_.launch = m;
         snap_.session_id = m.value("session_id", snap_.session_id);
+        return;
+    }
+    if (op == "signal") {
+        SignalMsg sm;
+        sm.seq = ++signal_seq_;
+        sm.from_player_id = str_or(m, "from_player_id");
+        sm.type = int_or(m, "type");
+        sm.text = str_or(m, "text");
+        snap_.signals.push_back(std::move(sm));
+        while (snap_.signals.size() > 256) snap_.signals.pop_front();
         return;
     }
     if (op == "seat_swap_ask") {

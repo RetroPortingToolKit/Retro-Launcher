@@ -12624,6 +12624,38 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
         return {};
     };
     sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
+    // A Transfer Pak lobby: this player's pak is their first seat's (Gamepads).
+    sc.local_pak = [data, platform]() {
+        retcomm::hub::NetplayPak pak;
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        const retcomm::hub::SeatPak& sp = in.paks[0];
+        if (sp.kind != retcomm::hub::SeatPak::TransferPak || sp.gb_rom.empty()) {
+            pak.note = "no Transfer Pak on your first seat (Gamepads): you play without one.";
+            return pak;
+        }
+        const int cart = retcomm::hub::supported_gb_rom_by_sha256(retcomm::file_sha256_hex(sp.gb_rom));
+        if (cart < 0) {
+            pak.note = fs::path(sp.gb_rom).filename().string() +
+                       " is not Pokemon Red, Blue or Yellow (the supported dumps): you play without a pak.";
+            return pak;
+        }
+        std::error_code ec;
+        if (!sp.gb_save.empty() && fs::is_regular_file(sp.gb_save, ec)) {
+            std::ifstream in_save(sp.gb_save, std::ios::binary);
+            pak.save.assign(std::istreambuf_iterator<char>(in_save), {});
+        } else {
+            std::string err;
+            pak.save.assign(retcomm::hub::gb_cart_ram_bytes(sp.gb_rom, &err), '\xFF');
+        }
+        pak.cart = cart;
+        return pak;
+    };
+    sc.cart_rom = [data, platform](int i) {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        return i >= 0 && i < retcomm::hub::kSupportedGbRoms ? lib.path[static_cast<std::size_t>(i)]
+                                                          : std::string();
+    };
+    sc.pak_dir = (data / "netplay" / h.title_key / "paks").string();
     sc.launch = [&h](const retcomm::hub::NetplayLaunch& l) -> std::string {
         std::string err;
         if (retcomm::hub::netplay_runner_args(l, &err).empty()) return err;
@@ -12671,6 +12703,24 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     std::error_code ec;
     fs::remove_all(base / "saves", ec);
     fs::create_directories(base / "saves", ec);
+    // Transfer Pak lobbies: every seat's cartridge and a copy of the save the
+    // room exchanged. The copies are the match's; nobody's real save is
+    // written (host-authoritative, NETPLAY.md §3).
+    if (l.tpak) {
+        for (std::size_t seat = 0; seat < l.tpak_rom.size(); ++seat) {
+            if (l.tpak_rom[seat].empty() || l.tpak_save[seat].empty()) continue;
+            const fs::path copy = base / "saves" / ("tpak" + std::to_string(seat + 1) + ".sav");
+            fs::copy_file(l.tpak_save[seat], copy, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                *why = "Cannot stage seat " + std::to_string(seat + 1) + "'s Transfer Pak save: " +
+                       ec.message();
+                return false;
+            }
+            args.tpak_rom[seat] = l.tpak_rom[seat];
+            args.tpak_save[seat] = copy;
+        }
+        limit_transfer_paks(args, rr);
+    }
     if (!play.start(args, rr.path, base, base / "saves", &err)) {
         *why = "Cannot start the match: " + err;
         return false;

@@ -8,6 +8,8 @@
 #include "retcomm/netplay_client.hpp"
 #include "retcomm/netplay_lan.hpp"
 #include "retcomm/netplay_nat.hpp"
+#include "retcomm/hash.hpp"
+#include "hub/hub_core_settings.hpp"
 
 #include "imgui.h"
 #include <nlohmann/json.hpp>
@@ -364,7 +366,70 @@ struct Page {
     std::future<bool> probe;
     std::string relay_note;
     bool relay_note_bad = false;
+    // Transfer Pak lobbies: the paks the room exchanged, by player.
+    struct PakGot {
+        int seat = -1, cart = -1;
+        std::string save_sha, path; // path: the save, stored under scope->pak_dir
+    };
+    std::map<std::string, PakGot> paks;
+    struct PakParts {
+        int seat = -1, cart = -1, n = 0;
+        std::string save_sha;
+        std::map<int, std::string> parts;
+    };
+    std::map<std::string, PakParts> pak_parts;
+    std::uint64_t signals_seen = 0;
+    std::string pak_members; // the room's player ids when our pak was last sent
+    bool pak_ready = false;
+    NetplayPak my_pak;
+    std::string pak_note;
 };
+
+constexpr int kPakSignal = 0x5450; // "TP"
+constexpr std::size_t kPakChunk = 12288;
+
+const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string b64_encode(const std::string& in) {
+    std::string out;
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
+                           (static_cast<unsigned char>(in[i + 1]) << 8) |
+                           static_cast<unsigned char>(in[i + 2]);
+        out += kB64[v >> 18];
+        out += kB64[(v >> 12) & 63];
+        out += kB64[(v >> 6) & 63];
+        out += kB64[v & 63];
+    }
+    if (i < in.size()) {
+        unsigned v = static_cast<unsigned char>(in[i]) << 16;
+        if (i + 1 < in.size()) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+        out += kB64[v >> 18];
+        out += kB64[(v >> 12) & 63];
+        out += i + 1 < in.size() ? kB64[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+
+bool b64_decode(const std::string& in, std::string* out) {
+    out->clear();
+    unsigned v = 0;
+    int bits = 0;
+    for (char c : in) {
+        if (c == '=') break;
+        const char* at = std::strchr(kB64, c);
+        if (!at || !c) return false;
+        v = (v << 6) | static_cast<unsigned>(at - kB64);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out->push_back(static_cast<char>((v >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
 
 Page& page() {
     static Page p;
@@ -1137,6 +1202,14 @@ void seat_row(HubModel& hub, const Theme& th, int slot, const np::Member* m, boo
     ImGui::PopID();
 }
 
+// Every seated player's pak has arrived (a Transfer Pak lobby's PLAY gate).
+bool paks_complete(const np::Snapshot& s) {
+    const Page& p = page();
+    for (const np::Member& m : s.members)
+        if (!m.is_spectator && !p.paks.count(m.player_id)) return false;
+    return true;
+}
+
 void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     Page& p = page();
     const np::Snapshot& s = p.snap;
@@ -1166,6 +1239,23 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
                            "You're seated from Retro's library. Starting a match from here is "
                            "not built: open the game in its own app (Direct mode) to play, or "
                            "start it from the game's own Netplay menu.");
+    }
+    if (tpak_room && p.scope) {
+        std::string line = "Transfer Paks:";
+        bool all = true;
+        for (const np::Member& m : s.members) {
+            if (m.is_spectator) continue;
+            const auto it = p.paks.find(m.player_id);
+            line += "  P" + std::to_string(m.slot + 1) + " ";
+            if (it == p.paks.end()) {
+                line += "\xE2\x80\xA6";
+                all = false;
+            } else {
+                line += it->second.cart < 0 ? "no pak" : supported_gb_rom(it->second.cart).label;
+            }
+        }
+        ImGui::TextColored(all ? th.good : th.text_muted, "%s", line.c_str());
+        if (!p.pak_note.empty()) ImGui::TextColored(th.warn, "Your pak: %s", p.pak_note.c_str());
     }
     if (p.scope && !p.relay_note.empty())
         ImGui::TextColored(p.relay_note_bad ? th.warn : th.text_muted, "%s", p.relay_note.c_str());
@@ -1248,9 +1338,9 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
         const char* why = seated < 2   ? "Waiting for another player to join"
                           : !p.scope   ? "Open the game in its own app (Direct mode) to play: "
                                          "the library cannot start a match"
-                          : tpak_room  ? "Transfer Pak matches need the pak save exchange, "
-                                         "which is not built yet"
-                                       : nullptr;
+                          : tpak_room && !paks_complete(s)
+                                         ? "Waiting for every player's Transfer Pak"
+                                         : nullptr;
         ImGui::BeginDisabled(why != nullptr);
         if (good_button("PLAY", th, ImVec2(play_w, 46))) {
             p.client.start_match();
@@ -1678,6 +1768,84 @@ void ingest(HubModel& hub) {
         p.relay_note.clear();
     }
 
+    // ---- Transfer Pak lobbies: every seat's pak to every peer ---------------
+    const bool tpak_room = p.scope && s.in_room && s.match_caps.is_object() &&
+                           s.match_caps.value("tpak", false);
+    if (!tpak_room) {
+        if (!p.paks.empty() || !p.pak_members.empty()) {
+            p.paks.clear();
+            p.pak_parts.clear();
+            p.pak_members.clear();
+            p.pak_ready = false;
+        }
+    } else {
+        // Ours: taken once per room, sent to the room whenever its members change.
+        std::string members;
+        for (const np::Member& m : s.members)
+            if (!m.is_spectator) members += m.player_id + ",";
+        if (!p.pak_ready && p.scope->local_pak) {
+            p.my_pak = p.scope->local_pak();
+            p.pak_ready = true;
+            p.pak_note = p.my_pak.cart < 0 ? p.my_pak.note : std::string();
+        }
+        if (p.pak_ready && members != p.pak_members && s.local_slot >= 0) {
+            p.pak_members = members;
+            const std::string sha = p.my_pak.cart >= 0 ? sha256_hex(p.my_pak.save) : std::string();
+            const std::string b64 = p.my_pak.cart >= 0 ? b64_encode(p.my_pak.save) : std::string();
+            const int n = static_cast<int>((b64.size() + kPakChunk - 1) / kPakChunk);
+            for (int i = 0; i < std::max(1, n); ++i) {
+                json m = {{"k", "tpak"}, {"v", 1}, {"seat", s.local_slot}, {"cart", p.my_pak.cart},
+                          {"save", sha}, {"n", n}, {"i", i},
+                          {"d", n ? b64.substr(static_cast<std::size_t>(i) * kPakChunk, kPakChunk) : ""}};
+                p.client.signal(kPakSignal, m.dump());
+            }
+            // Ours, as every peer will hold it.
+            if (p.my_pak.cart >= 0 && !p.scope->pak_dir.empty()) {
+                std::error_code ec;
+                fs::create_directories(p.scope->pak_dir, ec);
+                const fs::path f = fs::path(p.scope->pak_dir) / "mine.sav";
+                std::ofstream(f, std::ios::binary) << p.my_pak.save;
+                p.paks[s.player_id] = {s.local_slot, p.my_pak.cart, sha, f.string()};
+            } else {
+                p.paks[s.player_id] = {s.local_slot, -1, "", ""};
+            }
+        }
+        // Theirs.
+        for (const np::SignalMsg& sm : s.signals) {
+            if (sm.seq <= p.signals_seen) continue;
+            p.signals_seen = sm.seq;
+            if (sm.type != kPakSignal) continue;
+            const json m = json::parse(sm.text, nullptr, false);
+            if (!m.is_object() || m.value("k", "") != "tpak") continue;
+            Page::PakParts& pp = p.pak_parts[sm.from_player_id];
+            const int n = m.value("n", 0), i = m.value("i", 0);
+            if (pp.n != n || pp.save_sha != m.value("save", std::string())) pp = Page::PakParts{};
+            pp.seat = m.value("seat", -1);
+            pp.cart = m.value("cart", -1);
+            pp.n = n;
+            pp.save_sha = m.value("save", std::string());
+            pp.parts[i] = m.value("d", std::string());
+            if (static_cast<int>(pp.parts.size()) < std::max(1, n)) continue;
+            if (pp.cart < 0 || n == 0) {
+                p.paks[sm.from_player_id] = {pp.seat, -1, "", ""};
+                continue;
+            }
+            std::string b64, bytes;
+            for (const auto& [k, v] : pp.parts) b64 += v;
+            if (!b64_decode(b64, &bytes) || sha256_hex(bytes) != pp.save_sha) {
+                p.room_status = "A player's Transfer Pak save arrived damaged; it will be sent again.";
+                pp = Page::PakParts{};
+                p.pak_members.clear(); // resend ours too, so theirs follows
+                continue;
+            }
+            std::error_code ec;
+            fs::create_directories(p.scope->pak_dir, ec);
+            const fs::path f = fs::path(p.scope->pak_dir) / (sm.from_player_id + ".sav");
+            std::ofstream(f, std::ios::binary) << bytes;
+            p.paks[sm.from_player_id] = {pp.seat, pp.cart, pp.save_sha, f.string()};
+        }
+    }
+
     if (s.launch_pending) {
         const long long sid = s.launch.value("session_id", 0LL);
         if (sid != p.launched_session) {
@@ -1702,6 +1870,14 @@ void ingest(HubModel& hub) {
                         if (seat < 0 || seat >= 32) continue;
                         l.occupied |= 1u << seat;
                         if (e.value("player_id", std::string()) == s.player_id) l.seat = seat;
+                    }
+                }
+                if (l.tpak) {
+                    for (const auto& [pid, got] : p.paks) {
+                        if (got.seat < 0 || got.seat >= 4 || got.cart < 0) continue;
+                        l.tpak_rom[static_cast<std::size_t>(got.seat)] =
+                            p.scope->cart_rom ? p.scope->cart_rom(got.cart) : std::string();
+                        l.tpak_save[static_cast<std::size_t>(got.seat)] = got.path;
                     }
                 }
                 if (l.host && l.transport == "host") {
