@@ -7,6 +7,7 @@
 #include "retcomm/netplay_account.hpp"
 #include "retcomm/netplay_client.hpp"
 #include "retcomm/netplay_lan.hpp"
+#include "retcomm/netplay_nat.hpp"
 
 #include "imgui.h"
 #include <nlohmann/json.hpp>
@@ -17,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <functional>
 #include <map>
 #include <memory>
@@ -353,6 +355,15 @@ struct Page {
     const NetplayScope* scope = nullptr;
     long long launched_session = -1;
     bool host_tpak = false;
+    // Host relay (NETPLAY_DIRECT.md): the host holds its game port while the
+    // room waits; guests probe it and report.
+    np::HostPort host_port;
+    bool host_port_open = false;
+    bool host_endpoint_sent = false;
+    std::string probed_endpoint;
+    std::future<bool> probe;
+    std::string relay_note;
+    bool relay_note_bad = false;
 };
 
 Page& page() {
@@ -1156,6 +1167,8 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
                            "not built: open the game in its own app (Direct mode) to play, or "
                            "start it from the game's own Netplay menu.");
     }
+    if (p.scope && !p.relay_note.empty())
+        ImGui::TextColored(p.relay_note_bad ? th.warn : th.text_muted, "%s", p.relay_note.c_str());
     ImGui::PopTextWrapPos();
 
     const float footer_h = 46.f + ImGui::GetStyle().ItemSpacing.y * 2.f;
@@ -1333,7 +1346,10 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
                     p.host_error = p.scope->tpak_problem();
                 if (p.host_error.empty()) {
                     json caps = json::object();
-                    if (p.scope) caps["tpak"] = p.host_tpak;
+                    if (p.scope) {
+                        caps["tpak"] = p.host_tpak;
+                        caps["relay"] = "host"; // the lobby server's relay only as a fallback
+                    }
                     p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max,
                                         p.host_spectators, caps);
                     if (p.filter.empty()) p.scope_dirty = true;
@@ -1611,6 +1627,57 @@ void ingest(HubModel& hub) {
         p.seen_swap_result_seq = s.swap_result.seq;
         p.room_status = s.swap_result.accepted ? "" : "That player kept their seat.";
     }
+    // ---- host relay: the host's port, the guests' probes -------------------
+    const bool relay_room = p.scope && s.in_room && s.match_caps.is_object() &&
+                            s.match_caps.value("relay", std::string()) == "host";
+    const bool playing = p.scope && p.scope->match_running && p.scope->match_running();
+    if (relay_room && s.is_host && !s.launch_pending && !playing) {
+        if (!p.host_port_open) {
+            std::string err;
+            p.host_port_open = p.host_port.start(0, "stun.l.google.com:19302", &err);
+            p.host_endpoint_sent = false;
+            p.relay_note = p.host_port_open ? "Host relay: opening your port\xE2\x80\xA6"
+                                            : "Host relay: " + err + ". The lobby server will relay.";
+            p.relay_note_bad = !p.host_port_open;
+        }
+        const np::HostPort::Status hs = p.host_port.status();
+        if (hs.done && !p.host_endpoint_sent) {
+            p.host_endpoint_sent = true;
+            if (!hs.endpoint.empty()) p.client.set_host_endpoint(hs.endpoint);
+        }
+        if (hs.done) {
+            p.relay_note = "Host relay: " + hs.detail +
+                           (hs.probes_answered ? " Guests reached you (" +
+                                                     std::to_string(hs.probes_answered) + " probe(s))."
+                                               : "");
+            p.relay_note_bad = hs.endpoint.empty();
+        }
+    }
+    if (relay_room && !s.is_host && !s.host_endpoint.empty() && s.host_endpoint != p.probed_endpoint &&
+        !p.probe.valid()) {
+        p.probed_endpoint = s.host_endpoint;
+        const std::string ep = s.host_endpoint;
+        p.probe = std::async(std::launch::async, [ep] { return np::probe_host(ep); });
+        p.relay_note = "Host relay: checking that you can reach the host\xE2\x80\xA6";
+        p.relay_note_bad = false;
+    }
+    if (p.probe.valid() && p.probe.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const bool ok = p.probe.get();
+        p.client.path_report(ok ? "direct" : "fail");
+        p.relay_note = ok ? "Host relay: you reach the host directly."
+                          : "Host relay: the host's port does not answer you, so the lobby "
+                            "server will relay the match.";
+        p.relay_note_bad = !ok;
+    }
+    if (!s.in_room && (p.host_port_open || !p.probed_endpoint.empty())) {
+        // Left the room: give the port (and any router mapping) back.
+        p.host_port.stop();
+        p.host_port.unmap();
+        p.host_port_open = false;
+        p.probed_endpoint.clear();
+        p.relay_note.clear();
+    }
+
     if (s.launch_pending) {
         const long long sid = s.launch.value("session_id", 0LL);
         if (sid != p.launched_session) {
@@ -1637,12 +1704,19 @@ void ingest(HubModel& hub) {
                         if (e.value("player_id", std::string()) == s.player_id) l.seat = seat;
                     }
                 }
+                if (l.host && l.transport == "host") {
+                    // The runner binds the port this held: free it first.
+                    l.host_port = p.host_port.status().local_port;
+                    p.host_port.stop();
+                    p.host_port_open = false;
+                }
                 if (l.seat < 0) {
                     p.room_status = "The match started without you in a player seat "
                                     "(spectating is not built yet).";
                 } else {
                     const std::string why = p.scope->launch(l);
                     p.room_status = why.empty() ? std::string() : "Could not start the match: " + why;
+                    p.client.ack_launch();
                 }
             }
         }
@@ -1757,7 +1831,9 @@ std::vector<std::string> netplay_runner_args(const NetplayLaunch& l, std::string
             if (error) *error = "the host's address '" + l.host_endpoint + "' is not ip:port";
             return {};
         }
-        if (l.host) a.insert(a.end(), {"--net-bind", "0.0.0.0:" + std::to_string(port)});
+        if (l.host)
+            a.insert(a.end(), {"--net-bind",
+                               "0.0.0.0:" + std::to_string(l.host_port ? l.host_port : port)});
         else a.insert(a.end(), {"--net-peer", l.host_endpoint, "--net-bind", "0.0.0.0:0"});
     } else {
         if (error) *error = "the server chose transport '" + l.transport + "', which this hub does not run";
@@ -1768,6 +1844,8 @@ std::vector<std::string> netplay_runner_args(const NetplayLaunch& l, std::string
 
 void netplay_shutdown() {
     Page& p = page();
+    p.host_port.stop();
+    p.host_port.unmap();
     p.client.stop(); // sends leave when seated
     p.lan.stop();
     p.account.shutdown();

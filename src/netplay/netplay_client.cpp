@@ -219,6 +219,19 @@ void LobbyClient::chat_report(const std::vector<std::string>& mids, const std::s
     queue(m);
 }
 
+void LobbyClient::set_host_endpoint(const std::string& endpoint) {
+    queue({{"op", "set_host_endpoint"}, {"host_endpoint", endpoint}});
+}
+
+void LobbyClient::ack_launch() {
+    std::lock_guard<std::mutex> lk(mu_);
+    snap_.launch_pending = false;
+}
+
+void LobbyClient::path_report(const std::string& path) {
+    queue({{"op", "path_report"}, {"path", path}});
+}
+
 void LobbyClient::send_raw(const json& msg) { queue(msg); }
 
 void LobbyClient::leave_room_state(const std::string& why) {
@@ -231,6 +244,7 @@ void LobbyClient::leave_room_state(const std::string& why) {
     snap_.player_count = 0;
     snap_.max_slots = 0;
     snap_.session_id = 0;
+    snap_.host_endpoint.clear();
     snap_.members.clear();
     snap_.match_caps = json();
     snap_.room_chat.clear();
@@ -332,6 +346,7 @@ void LobbyClient::handle(const json& m) {
         snap_.room_name = pending_room_name_;
         snap_.local_slot = int_or(m, "local_slot", -1);
         snap_.session_id = m.value("session_id", 0LL);
+        snap_.host_endpoint = str_or(m, "host_endpoint");
         // created/joined carry no max_slots; lobby_update does. Until then use
         // what we asked for (create) or the row we joined from.
         snap_.max_slots = int_or(m, "max_slots", pending_max_slots_);
@@ -349,6 +364,8 @@ void LobbyClient::handle(const json& m) {
             snap_.player_count = int_or(m, "player_count", snap_.player_count);
             snap_.max_slots = int_or(m, "max_slots", snap_.max_slots);
             snap_.all_ready = bool_or(m, "all_ready");
+            if (const std::string ep = str_or(m, "host_endpoint"); !ep.empty())
+                snap_.host_endpoint = ep;
             const std::string host = str_or(m, "host_player_id");
             if (!host.empty()) snap_.is_host = (host == snap_.player_id);
             const auto caps = m.find("match_caps");

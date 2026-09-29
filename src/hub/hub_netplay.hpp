@@ -31,6 +31,7 @@ struct NetplayLaunch {
     std::string transport;       // "sfu" (the server relays) | "host" (the host does)
     std::string relay_endpoint;  // sfu
     std::string host_endpoint;   // host
+    std::uint16_t host_port = 0; // host: the LOCAL port it holds (NAT-PMP may map another)
     bool tpak = false;           // a Transfer Pak lobby
 };
 
@@ -50,6 +51,8 @@ struct NetplayScope {
     std::function<std::string()> tpak_problem;
     // Start the match; "" when it started, else why not.
     std::function<std::string(const NetplayLaunch&)> launch;
+    // True while a match runs here (its runner holds the game port).
+    std::function<bool()> match_running;
 };
 
 // Fills the page body. Owns the lobby connection, sign-in and LAN discovery,

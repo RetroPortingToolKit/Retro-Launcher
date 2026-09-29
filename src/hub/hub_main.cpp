@@ -11561,6 +11561,7 @@ struct DirectHome {
     retcomm::hub::NetplayScope net_scope;
     bool net_scope_ready = false;
     std::optional<retcomm::hub::NetplayLaunch> net_launch;
+    bool net_playing = false; // a match's PlaySession is running
 };
 
 // SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
@@ -12622,6 +12623,7 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
         if (!retcomm::hub::recheck_tpak_library(lib, &err)) return err;
         return {};
     };
+    sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
     sc.launch = [&h](const retcomm::hub::NetplayLaunch& l) -> std::string {
         std::string err;
         if (retcomm::hub::netplay_runner_args(l, &err).empty()) return err;
@@ -12816,6 +12818,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (play->finished()) {
                 play->shutdown();
                 play.reset();
+                h.net_playing = false;
                 h.session_notes = session_mod_lines(hub.paths.data_dir / "sessions" /
                                                     h.title_key / "core.log");
                 set_direct_status(h, "Session ended.", false);
@@ -12906,6 +12909,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 std::string why;
                 if (start_net_session(*p, h, hub, l, &why)) {
                     play = std::move(p);
+                    h.net_playing = true;
                     set_direct_status(h, "Playing online.", false);
                 } else {
                     set_direct_status(h, why, true);

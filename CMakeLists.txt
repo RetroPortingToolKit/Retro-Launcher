@@ -79,6 +79,7 @@ set(RETCOMM_CORE_SOURCES
     src/netplay/netplay_client.cpp
     src/netplay/netplay_account.cpp
     src/netplay/netplay_lan.cpp
+    src/netplay/netplay_nat.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
@@ -471,6 +472,11 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             add_executable(retcomm-netplay-lan-test tests/netplay_lan_test.cpp)
             target_link_libraries(retcomm-netplay-lan-test PRIVATE retcomm_core)
             add_test(NAME netplay_lan COMMAND retcomm-netplay-lan-test)
+            # The host relay's reachability: UPnP / NAT-PMP / STUN encoders,
+            # and a host port answering a probe over loopback.
+            add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
+            target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
+            add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

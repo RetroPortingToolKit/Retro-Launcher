@@ -45,7 +45,7 @@ contract across the four repositories involved.
 | Direct mode **Netplay** button: the lobby page locked to this title (no game filter); the lobby pin is `<title version>+c<core sha256 10>.p<package sha256 10>`, so only identical builds see each other | **built** |
 | Host Lobby: "Transfer Paks" on/off (`match_caps.tpak`); a Transfer Pak lobby needs all three ROMs set and rechecked, to host and to join (a join without them leaves, saying why) | **built**; PLAY in a Transfer Pak lobby waits on the exchange below |
 | Pak exchange: each seated player's pak (which of the three, save bytes) to every peer before start; remote saves under `<data>/netplay/<session>/` | not built |
-| Host reachability: STUN (the public address) + UPnP-IGD / NAT-PMP (open the port), advertised with `set_host_endpoint` | not built |
+| Host relay: a Direct-mode room asks for it (`match_caps.relay = "host"`). The host's hub holds the game port while the room waits (`netplay_nat` `HostPort`: UPnP IGD, else NAT-PMP, else STUN), advertises it with `set_host_endpoint` and answers probes; each guest probes it and sends `path_report`; the room says which way it went. At launch the host frees the port and its runner binds it | **built**; UPnP checked read-only against Alex's router (discovery, the WANIPConnection:1 control URL, GetExternalIPAddress); no mapping was added from here |
 | PLAY -> `start` -> `launch` -> a PlaySession in netplay mode: `netplay_runner_args` turns the launch into `--net-*` (transport `sfu`: every peer dials the relay; `host`: guests dial the host); a fresh save sandbox per match (`<data>/netplay/<title>/session-<id>/saves`); the player's NETPLAY options dropped for the core's defaults; the game never pauses (the menu opens over it, the local pad neutral); no save states, no turbo; a runner exit 4 is "The match ended", not a fault | **built** |
 
 ### 2. Runner (Retro-Runtime)
@@ -70,7 +70,7 @@ contract across the four repositories involved.
 
 | piece | state |
 |---|---|
-| A host-relay launch: the lobby carries `relay: "host"`; guests probe the host's advertised endpoint in the waiting room (`path_report`); `start` launches `transport: "host"` with `host_endpoint` when every guest reached it, else the SFU as today | not built |
+| A host-relay launch: `match_caps.relay = "host"`; `start` launches `transport: "host"` (no relay_endpoint) when `host_endpoint` is set and every seated guest's `path_report` is a fresh `direct`, else the SFU; `set_host_endpoint` clears stale reports | **built** (branch `feat/host-relay`, unit-tested); not deployed |
 | Deployment to netplay.retcomm.net | Alex's |
 
 ## Measured (2026-09-29)
@@ -86,8 +86,12 @@ every peer its own process, 600 frames unless noted, scripted input:
 | a peer with a different settled epoch | refused at sim 0 (`mod_set_mismatch`) | -- | -- |
 | **live**: two lobby clients made the match on netplay.retcomm.net (`launch`, transport `sfu`), each runner started with `netplay_runner_args`, 300 frames through the server's relay | 2 | identical (`e3fcbe3acbb202d7` at 280), round trip 53-89 ms | 0 |
 
-Not established: two hubs with people at them, a match across two networks,
-and the Direct-mode page on a screen.
+| **host relay**, against a local recomp-net-server on `feat/host-relay`: the host held port 7790 with `HostPort`, the guest's probe was answered, the server launched `transport: "host"`, the host's runner bound 7790 and the guest dialled it, 300 frames | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
+| the same with the guest's probe failing: the server fell back to its relay | 0 | identical (`c7b9d97a0c63242a` at 280) | 0 |
+
+Not established: two hubs with people at them, a match across two networks
+(the host relay needs the server deployed), a real UPnP mapping, and the
+Direct-mode page on a screen.
 
 ## Order
 

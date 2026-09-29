@@ -81,6 +81,7 @@ struct Snapshot {
     std::string lobby_id, room_name;
     int local_slot = -1, player_count = 0, max_slots = 0;
     long long session_id = 0;
+    std::string host_endpoint;  // the host's advertised UDP address (lobby_update)
     std::vector<Member> members;
     nlohmann::json match_caps;
     std::deque<ChatLine> room_chat;
@@ -159,6 +160,12 @@ public:
     // cheating_claim | other (recomp-ui's list).
     void chat_report(const std::vector<std::string>& mids, const std::string& reason,
                      const std::string& note);
+    // Host relay (recomp-net-server WS_LOBBY.md "Host relay"): the host's
+    // reachable address, and a guest's verdict on reaching it.
+    void set_host_endpoint(const std::string& endpoint);
+    // The launch was taken: clear launch_pending, so a rematch's launch is new.
+    void ack_launch();
+    void path_report(const std::string& path); // "direct" | "fail"
     void send_raw(const nlohmann::json& msg);
 
 private:
