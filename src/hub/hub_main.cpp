@@ -30,6 +30,7 @@ constexpr bool kLocalBuild = true;
 
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/hash.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/runtime_update.hpp"
@@ -11341,7 +11342,7 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
 
 // ---- Direct home ------------------------------------------------------------
 
-enum class DirectPage { Home, Mods, Update };
+enum class DirectPage { Home, Mods, Update, Netplay };
 
 // run_direct_home's answer when the player pressed Restart on the Update page:
 // main closes the window and starts the app again (restart_hub).
@@ -11555,6 +11556,11 @@ struct DirectHome {
     std::array<bool, retcomm::hub::kSupportedGbRoms> tpak_bad{};
     int tpak_picking = -1;
     std::shared_ptr<TitleRomPick> tpak_pick;
+    // Netplay (docs/NETPLAY_DIRECT.md): this title's lobby, and a match the
+    // lobby launched, waiting for the loop to start it.
+    retcomm::hub::NetplayScope net_scope;
+    bool net_scope_ready = false;
+    std::optional<retcomm::hub::NetplayLaunch> net_launch;
 };
 
 // SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
@@ -12263,6 +12269,12 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
     ImGui::Dummy(ImVec2(0, 6));
 
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
+    ImGui::BeginDisabled(!have_rom);
+    if (ImGui::Button("Netplay", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Netplay);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(have_rom ? "Play this game online or on your network."
+                                   : "Choose the ROM first: a match runs it.");
     if (h.tpak_supported) {
         if (ImGui::Button("Transfer Pak Support\xE2\x80\xA6", ImVec2(w, 0))) h.tpak_open = true;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
@@ -12582,6 +12594,92 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     return true;
 }
 
+// The lobby identity of this exact build: the title's version plus the core's
+// and the package's sha256, so only players who can simulate identically see
+// each other (recomp-ai-rules NETPLAY.md §4). Worked out once per run.
+void prepare_net_scope(DirectHome& h, HubModel& hub) {
+    if (h.net_scope_ready) return;
+    h.net_scope_ready = true;
+    retcomm::hub::NetplayScope& sc = h.net_scope;
+    sc.title = h.name;
+    sc.game_name = h.name;
+    const std::string version =
+        h.d.title_mode && !h.d.title.version.empty() ? h.d.title.version : "dev";
+    const std::string core_sha = retcomm::file_sha256_hex(h.d.args.core);
+    const std::string pkg_sha =
+        h.d.args.package.empty() ? std::string() : retcomm::file_sha256_hex(h.d.args.package);
+    sc.pin = version + "+c" + core_sha.substr(0, 10) +
+             (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
+    sc.max_slots = 4;
+    sc.tpak_supported = h.tpak_supported;
+    const fs::path data = hub.paths.data_dir;
+    const std::string platform = h.platform;
+    sc.tpak_problem = [data, platform]() -> std::string {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        std::string err;
+        if (!lib.complete())
+            return "Set Pokemon Red, Blue and Yellow in Transfer Pak Support first.";
+        if (!retcomm::hub::recheck_tpak_library(lib, &err)) return err;
+        return {};
+    };
+    sc.launch = [&h](const retcomm::hub::NetplayLaunch& l) -> std::string {
+        std::string err;
+        if (retcomm::hub::netplay_runner_args(l, &err).empty()) return err;
+        h.net_launch = l;
+        return {};
+    };
+    std::fprintf(stderr, "retro-hub: netplay identity %s \"%s\"\n", sc.pin.c_str(),
+                 sc.game_name.c_str());
+}
+
+// A match: the player's session, settled for every peer alike -- a fresh save
+// sandbox per match (every peer starts from blank cartridge saves), only the
+// options that do not change the simulation, no Transfer Pak until the pak
+// exchange exists, and the runner's --net-* flags.
+bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, const HubModel& hub,
+                       const retcomm::hub::NetplayLaunch& l, std::string* why) {
+    const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+    if (rr.path.empty()) {
+        *why = "No usable retro-core-runner was found (" + rr.note + ").";
+        return false;
+    }
+    if (rr.netplay == 0) {
+        *why = "The " + rr.source + " runner at " + rr.path.string() +
+               " was built without netplay ('netplay 1' in --version).";
+        return false;
+    }
+    std::string err;
+    retcomm::hub::PlayArgs args = h.d.args;
+    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    // NETPLAY-flagged options join the match key: each peer's own choice
+    // would only get the match refused, so every peer takes the core's default.
+    if (h.desc_ready && h.desc.ok) {
+        for (const auto& o : h.desc.options)
+            if (o.netplay) args.options.erase(o.key);
+    }
+    args.tpak_rom = {};
+    args.tpak_save = {};
+    args.net_args = retcomm::hub::netplay_runner_args(l, &err);
+    if (args.net_args.empty()) {
+        *why = err;
+        return false;
+    }
+    const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /
+                          ("session-" + std::to_string(l.session_id));
+    std::error_code ec;
+    fs::remove_all(base / "saves", ec);
+    fs::create_directories(base / "saves", ec);
+    if (!play.start(args, rr.path, base, base / "saves", &err)) {
+        *why = "Cannot start the match: " + err;
+        return false;
+    }
+    std::string argv;
+    for (const auto& a : args.net_args) argv += " " + a;
+    std::fprintf(stderr, "retro-hub: netplay match %u, seat %d of %d:%s\n", l.session_id,
+                 l.seat + 1, l.slots, argv.c_str());
+    return true;
+}
+
 int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const DirectPlay& d,
                     HubModel& hub) {
     DirectHome h;
@@ -12748,6 +12846,16 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     open_direct_page(h, hub, DirectPage::Home);
                 else
                     draw_direct_updates(h, hub, th);
+            } else if (h.page == DirectPage::Netplay) {
+                if (draw_direct_subpage_header(th, "Netplay")) {
+                    open_direct_page(h, hub, DirectPage::Home);
+                } else {
+                    prepare_net_scope(h, hub);
+                    ImGui::BeginChild("netplay_page_host", ImVec2(0, 0),
+                                      ImGuiChildFlags_NavFlattened);
+                    retcomm::hub::draw_netplay_page(hub, th, window, &h.net_scope);
+                    ImGui::EndChild();
+                }
             } else {
                 draw_page_header(th, platform_label(h.platform).c_str(), "");
                 const float total = ImGui::GetContentRegionAvail().x;
@@ -12791,6 +12899,19 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (console_was_open && !hub.log_overlay_open) h.focus_pending = true;
 
             if (act == DirectAction::Quit || h.restart) running = false;
+            if (h.net_launch) {
+                const retcomm::hub::NetplayLaunch l = *h.net_launch;
+                h.net_launch.reset();
+                auto p = std::make_unique<retcomm::hub::PlaySession>();
+                std::string why;
+                if (start_net_session(*p, h, hub, l, &why)) {
+                    play = std::move(p);
+                    set_direct_status(h, "Playing online.", false);
+                } else {
+                    set_direct_status(h, why, true);
+                    hub.append_log("netplay: " + why, retcomm::hub::LogLevel::Error);
+                }
+            }
             if (act == DirectAction::Play) {
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string why;

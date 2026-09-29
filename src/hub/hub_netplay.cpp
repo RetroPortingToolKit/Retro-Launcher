@@ -98,8 +98,14 @@ struct Game {
     int max_slots = 2;
 };
 
+const NetplayScope* current_scope();
+
 std::vector<Game> installed_games(const HubModel& hub) {
     std::vector<Game> out;
+    if (const NetplayScope* sc = current_scope()) {
+        out.push_back({"", sc->title, sc->game_name, sc->pin, std::max(2, sc->max_slots)});
+        return out;
+    }
     std::set<std::string> seen;
     for (const TitleRow& r : hub.rows) {
         if (!r.netplay_supported || !r.installed || r.netplay_game_name.empty()) continue;
@@ -119,6 +125,7 @@ const Game* game_by_wire_name(const std::vector<Game>& games, const std::string&
 
 // The catalog's display name for a wire game_name, even when not installed.
 std::string title_for(const HubModel& hub, const std::string& wire) {
+    if (const NetplayScope* sc = current_scope(); sc && sc->game_name == wire) return sc->title;
     for (const TitleRow& r : hub.rows)
         if (r.netplay_supported && r.netplay_game_name == wire) return r.name;
     return wire;
@@ -342,12 +349,18 @@ struct Page {
     int report_reason = 0;
     char report_note[200]{};
     np::Snapshot::SwapAsk swap;
+    // Direct mode (NetplayScope): set by each draw; the launch handled last.
+    const NetplayScope* scope = nullptr;
+    long long launched_session = -1;
+    bool host_tpak = false;
 };
 
 Page& page() {
     static Page p;
     return p;
 }
+
+const NetplayScope* current_scope() { return page().scope; }
 
 std::string lobby_url(const HubModel& hub) { return hub.cfg.resolve_netplay_lobby_url(); }
 
@@ -368,6 +381,7 @@ void ensure_init(HubModel& hub) {
     p.account.restore();
     p.mod.load(hub.paths.data_dir / "netplay" / "moderation.json");
     p.mode_entered_at = now_s();
+    if (p.scope) p.filter = p.scope->game_name; // one game, always
 }
 
 // (Re)connect to the lobby server with what we know now: the session when
@@ -647,6 +661,16 @@ void draw_signin(HubModel& hub, const Theme& th) {
 // The game filter: All games, then the netplay games installed here.
 void draw_filter(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     Page& p = page();
+    if (p.scope) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.accent, "%s", p.scope->title.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(th.text_muted, "\xC2\xB7 %s", p.scope->pin.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("This build's identity: only players with exactly this game, core "
+                              "and package can join.");
+        return;
+    }
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(th.text_muted, "Game");
     ImGui::SameLine();
@@ -713,6 +737,7 @@ void open_host_modal(HubModel& hub, const std::vector<Game>& games) {
     p.host_pw[0] = '\0';
     p.host_max = 2;
     p.host_spectators = false;
+    p.host_tpak = false;
     p.host_error.clear();
     p.open_host = true;
 }
@@ -925,11 +950,17 @@ void draw_online(HubModel& hub, const Theme& th, const std::vector<Game>& games)
 
 void draw_lan(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     Page& p = page();
-    const auto rooms = p.lan.rooms();
+    auto rooms = p.lan.rooms();
+    if (p.scope)
+        rooms.erase(std::remove_if(rooms.begin(), rooms.end(),
+                                   [&](const np::LanRoom& r) {
+                                       return r.game_name != p.scope->game_name;
+                                   }),
+                    rooms.end());
     const float footer_h = 46.f + ImGui::GetStyle().ItemSpacing.y * 2.f;
     ImGui::TextColored(th.accent, "LAN LOBBIES");
     ImGui::SameLine();
-    ImGui::TextColored(th.text_muted, "found on your network, every game");
+    ImGui::TextColored(th.text_muted, p.scope ? "found on your network" : "found on your network, every game");
     const std::string lerr = p.lan.listen_error();
     if (!lerr.empty())
         ImGui::TextColored(th.warn, "Not listening for recomp-net rooms: %s. PlayStation rooms are "
@@ -1113,11 +1144,18 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
         ImGui::SameLine();
         ImGui::TextColored(th.text_muted, "\xC2\xB7 %s %s", game_label.c_str(), version.c_str());
     }
+    const bool tpak_room = s.match_caps.is_object() && s.match_caps.value("tpak", false);
     ImGui::PushTextWrapPos(0.f);
-    ImGui::TextColored(th.text_muted,
-                       "You're seated from Retro. Starting a match from here is not built yet: "
-                       "chat and seats work, and a game must be started from its own Netplay "
-                       "menu.");
+    if (p.scope) {
+        ImGui::TextColored(th.text_muted, "Transfer Paks: %s. The host's PLAY starts the match "
+                                          "here on every player's machine.",
+                           tpak_room ? "on" : "off");
+    } else {
+        ImGui::TextColored(th.text_muted,
+                           "You're seated from Retro's library. Starting a match from here is "
+                           "not built: open the game in its own app (Direct mode) to play, or "
+                           "start it from the game's own Netplay menu.");
+    }
     ImGui::PopTextWrapPos();
 
     const float footer_h = 46.f + ImGui::GetStyle().ItemSpacing.y * 2.f;
@@ -1194,15 +1232,20 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     ImGui::SameLine(0, std::max(ImGui::GetStyle().ItemSpacing.x,
                                 ImGui::GetContentRegionAvail().x - play_w));
     if (s.is_host) {
-        ImGui::BeginDisabled(true);
-        good_button("PLAY", th, ImVec2(play_w, 46));
+        const char* why = seated < 2   ? "Waiting for another player to join"
+                          : !p.scope   ? "Open the game in its own app (Direct mode) to play: "
+                                         "the library cannot start a match"
+                          : tpak_room  ? "Transfer Pak matches need the pak save exchange, "
+                                         "which is not built yet"
+                                       : nullptr;
+        ImGui::BeginDisabled(why != nullptr);
+        if (good_button("PLAY", th, ImVec2(play_w, 46))) {
+            p.client.start_match();
+            p.room_status = "Starting the match\xE2\x80\xA6";
+        }
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", seated < 2
-                                        ? "Waiting for another player to join"
-                                        : "Ready to play, but Retro can't start a match in the "
-                                          "games yet. Host from the game's own Netplay menu to "
-                                          "play.");
+        if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", why);
     } else {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(th.text_muted, "Waiting for the host to start\xE2\x80\xA6");
@@ -1267,6 +1310,14 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
             ImGui::Checkbox("Allow Spectators", &p.host_spectators);
             ImGui::SameLine();
             ImGui::TextColored(th.text_muted, "up to 4, on top of the players");
+            if (p.scope && p.scope->tpak_supported) {
+                ImGui::Checkbox("Transfer Paks", &p.host_tpak);
+                ImGui::SameLine();
+                ImGui::TextColored(th.text_muted, "every player brings Red, Blue and Yellow");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("A Transfer Pak lobby needs all three Game Boy cartridges "
+                                      "set in Transfer Pak Support, on every player's machine.");
+            }
             ImGui::TextUnformatted("Password (optional)");
             ImGui::SetNextItemWidth(430.f);
             ImGui::InputText("##host_pw", p.host_pw, sizeof(p.host_pw), ImGuiInputTextFlags_Password);
@@ -1278,9 +1329,13 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
             if (accent_button("Create Lobby", th, ImVec2(160, 0))) {
                 const std::string name = trim(p.host_name);
                 p.host_error = name_problem(name, "lobby name");
+                if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
+                    p.host_error = p.scope->tpak_problem();
                 if (p.host_error.empty()) {
+                    json caps = json::object();
+                    if (p.scope) caps["tpak"] = p.host_tpak;
                     p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max,
-                                        p.host_spectators, json::object());
+                                        p.host_spectators, caps);
                     if (p.filter.empty()) p.scope_dirty = true;
                     p.status = "Creating lobby\xE2\x80\xA6";
                     ImGui::CloseCurrentPopup();
@@ -1556,10 +1611,41 @@ void ingest(HubModel& hub) {
         p.seen_swap_result_seq = s.swap_result.seq;
         p.room_status = s.swap_result.accepted ? "" : "That player kept their seat.";
     }
-    if (s.launch_pending && !p.saw_launch) {
-        p.saw_launch = true;
-        p.room_status = "The host started the match, but Retro can't launch a game into it yet. "
-                        "Leave, and join from the game's own Netplay menu.";
+    if (s.launch_pending) {
+        const long long sid = s.launch.value("session_id", 0LL);
+        if (sid != p.launched_session) {
+            p.launched_session = sid;
+            if (!p.scope || !p.scope->launch) {
+                p.room_status = "The host started the match, but the library cannot run it. "
+                                "Open the game in its own app (Direct mode) to play.";
+            } else {
+                NetplayLaunch l;
+                l.session_id = static_cast<std::uint32_t>(sid);
+                l.slots = std::max(2, s.launch.value("max_slots", s.max_slots));
+                l.transport = s.launch.value("transport", std::string());
+                l.relay_endpoint = s.launch.value("relay_endpoint", std::string());
+                l.host_endpoint = s.launch.value("host_endpoint", std::string());
+                l.host = s.is_host;
+                l.tpak = s.match_caps.is_object() && s.match_caps.value("tpak", false);
+                l.seat = -1;
+                const auto slots = s.launch.find("slots");
+                if (slots != s.launch.end() && slots->is_array()) {
+                    for (const json& e : *slots) {
+                        const int seat = e.value("slot", -1);
+                        if (seat < 0 || seat >= 32) continue;
+                        l.occupied |= 1u << seat;
+                        if (e.value("player_id", std::string()) == s.player_id) l.seat = seat;
+                    }
+                }
+                if (l.seat < 0) {
+                    p.room_status = "The match started without you in a player seat "
+                                    "(spectating is not built yet).";
+                } else {
+                    const std::string why = p.scope->launch(l);
+                    p.room_status = why.empty() ? std::string() : "Could not start the match: " + why;
+                }
+            }
+        }
     }
 
     // Signed in after connecting as a guest: connect again as the account,
@@ -1569,6 +1655,13 @@ void ingest(HubModel& hub) {
         connect(hub);
 
     // The room is entered and left by seat state, as in recomp-ui.
+    if (s.in_room && !p.was_in_room && p.scope && s.match_caps.is_object() &&
+        s.match_caps.value("tpak", false) && p.scope->tpak_problem) {
+        if (const std::string why = p.scope->tpak_problem(); !why.empty()) {
+            p.client.leave();
+            p.status = "That is a Transfer Pak lobby. " + why;
+        }
+    }
     if (s.in_room && !p.was_in_room) {
         p.view = View::Room;
         p.status.clear();
@@ -1586,9 +1679,11 @@ void ingest(HubModel& hub) {
 
 } // namespace
 
-void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/) {
-    ensure_init(hub);
+void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/,
+                       const NetplayScope* scope) {
     Page& p = page();
+    p.scope = scope;
+    ensure_init(hub);
     ingest(hub);
     const std::vector<Game> games = installed_games(hub);
 
@@ -1634,6 +1729,41 @@ void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/) {
     case View::Room: draw_room(hub, th, games); break;
     }
     draw_modals(hub, th, games);
+}
+
+std::vector<std::string> netplay_runner_args(const NetplayLaunch& l, std::string* error) {
+    // The clock epoch every peer agrees on: fixed, so it needs no negotiation
+    // (a Game Boy cartridge's clock reads guest time from it).
+    constexpr const char* kEpoch = "1700000000";
+    std::vector<std::string> a = {"--net-slot",    std::to_string(l.seat),
+                                  "--net-slots",   std::to_string(l.slots),
+                                  "--net-session", std::to_string(l.session_id),
+                                  "--net-epoch",   kEpoch,
+                                  "--net-delay",   "2"};
+    if (l.occupied) {
+        a.push_back("--net-occupied");
+        a.push_back(std::to_string(l.occupied));
+    }
+    if (l.transport == "sfu") {
+        if (l.relay_endpoint.empty()) {
+            if (error) *error = "the server named no relay";
+            return {};
+        }
+        a.insert(a.end(), {"--net-relay", l.relay_endpoint, "--net-bind", "0.0.0.0:0"});
+    } else if (l.transport == "host") {
+        std::string ip;
+        int port = 0;
+        if (!np::split_endpoint(l.host_endpoint, &ip, &port)) {
+            if (error) *error = "the host's address '" + l.host_endpoint + "' is not ip:port";
+            return {};
+        }
+        if (l.host) a.insert(a.end(), {"--net-bind", "0.0.0.0:" + std::to_string(port)});
+        else a.insert(a.end(), {"--net-peer", l.host_endpoint, "--net-bind", "0.0.0.0:0"});
+    } else {
+        if (error) *error = "the server chose transport '" + l.transport + "', which this hub does not run";
+        return {};
+    }
+    return a;
 }
 
 void netplay_shutdown() {

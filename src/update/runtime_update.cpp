@@ -81,6 +81,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
             out.version = v.version;
             out.game_package = v.game_package;
             out.transfer_pak_seats = v.transfer_pak_seats;
+            out.netplay = v.netplay;
         }
         out.note = "RETRO_CORE_RUNNER names it" + (err.empty() ? "" : " (" + err + ")");
         return out;
@@ -97,6 +98,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
             out.version = v.version;
             out.game_package = v.game_package;
             out.transfer_pak_seats = v.transfer_pak_seats;
+            out.netplay = v.netplay;
             out.source = "dev";
             out.note = "dev runner " + v.version + " (RETRO_HUB_DEV_RUNNER)";
             return out;
@@ -165,6 +167,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
     out.version = best->info.version;
     out.game_package = best->info.game_package;
     out.transfer_pak_seats = best->info.transfer_pak_seats;
+    out.netplay = best->info.netplay;
     out.source = best->source;
     out.note = dev_note + best->source + " runner " + best->info.version;
     for (const auto& s : skipped) out.note += "; skipped " + s;

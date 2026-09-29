@@ -311,6 +311,15 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_VERSION})
         endif()
     endif()
 endif()
+# Netplay in the runner (Retro-Runtime runner/net_session.hpp) needs a
+# recomp-net checkout. A local build finds one beside this repository; a build
+# without it gets a runner that answers `netplay 0` (docs/NETPLAY_DIRECT.md).
+if(NOT DEFINED CACHE{RETRO_RUNTIME_RECOMP_NET_DIR} AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net/include/recomp_net/rb_driver.h")
+    get_filename_component(_rnet "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net" ABSOLUTE)
+    set(RETRO_RUNTIME_RECOMP_NET_DIR "${_rnet}" CACHE PATH
+        "recomp-net checkout: build retro-core-runner with netplay")
+endif()
 add_subdirectory(third_party/Retro-Runtime)
 # The hub starts the runner from its own directory, so in the build tree the
 # runner must land there too, not under third_party/ (where, until this line, a
