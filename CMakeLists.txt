@@ -421,7 +421,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
-                   src/hub/hub_title.cpp src/hub/hub_update.cpp src/hub/hub_local_recomp.cpp)
+                   src/hub/hub_title.cpp src/hub/hub_update.cpp)
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -455,16 +455,6 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
             add_test(NAME hub_update COMMAND retro-hub-update-test
                 ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
-            # "Generate Local Recomp"'s windowless half: finding and staging
-            # dumps, the tools, the scaffold's command line and output, and a
-            # process group that Cancel stops.
-            add_executable(retro-hub-local-recomp-test tests/hub_local_recomp_test.cpp
-                src/hub/hub_local_recomp.cpp)
-            target_include_directories(retro-hub-local-recomp-test PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/src)
-            target_link_libraries(retro-hub-local-recomp-test PRIVATE retcomm_core)
-            add_test(NAME hub_local_recomp COMMAND retro-hub-local-recomp-test
-                ${CMAKE_CURRENT_BINARY_DIR}/hub_local_recomp_test.d)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

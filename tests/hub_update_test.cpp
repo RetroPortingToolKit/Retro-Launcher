@@ -334,60 +334,23 @@ int main(int argc, char** argv) {
               "dev paths and developer options round-trip");
     }
 
-    // ---- adopting a port project (Add Core Title) -------------------------------
+    // ---- a title app's payload registers as a core title -------------------------
     {
-        const fs::path proj = scratch / "projects" / "GameRecomp";
-        write(proj / "game.toml", "[game]\nname = \"Game\"\n");
-        write(proj / "CMakeLists.txt", "project(g)\n");
-        write(proj / "tools" / "build_app.sh", "#!/bin/sh\n");
-        const fs::path appdir = proj / "build-release" / "app";
-        write(appdir / "Game-0.0.1-linux-x86_64.AppImage", "app");
-        write_sidecar(appdir / "title" / "core" / "n64lle_core.so", "0.375.0");
-        write(appdir / "title" / "package" / "game_game.so", "pkg");
-        write(appdir / "title" / "title.json", R"({"schema": 1, "id": "game", "name": "Game",
+        const fs::path title = scratch / "payload" / "title";
+        write_sidecar(title / "core" / "n64lle_core.so", "0.375.0");
+        write(title / "package" / "game_game.so", "pkg");
+        write(title / "title.json", R"({"schema": 1, "id": "game", "name": "Game",
           "version": "0.0.1", "platform": "n64", "core": "core/n64lle_core.so",
           "package": "package/game_game.so", "title_dir": "package",
           "rom": {"sha256": "ABCDEF"}})");
-        retcomm::AdoptableProject ap;
-        std::string err;
-        check(retcomm::find_adoptable_project(appdir / "Game-0.0.1-linux-x86_64.AppImage", ap, &err) &&
-                  ap.root == fs::weakly_canonical(proj) && ap.title.id == "game" &&
-                  ap.title.package.filename() == "game_game.so" &&
-                  ap.title.content_sha256.size() == 1 && ap.title.content_sha256[0] == "abcdef" &&
-                  ap.title.core_id == "n64lle" && ap.title.core_version == "0.375.0",
-              "a built title app inside a port project is found, with its payload");
-        write(scratch / "loose" / "Game.AppImage", "app");
-        check(!retcomm::find_adoptable_project(scratch / "loose" / "Game.AppImage", ap, &err) &&
-                  err.find("not inside a port project") != std::string::npos,
-              "an app outside a port project is refused");
-        write(proj / "elsewhere" / "Game.AppImage", "app");
-        check(!retcomm::find_adoptable_project(proj / "elsewhere" / "Game.AppImage", ap, &err) &&
-                  err.find("title/title.json") != std::string::npos,
-              "an app with no staged payload beside it is refused");
-
         retcomm::CoreTitle ct;
-        check(retcomm::read_core_title(appdir / "title" / "title.json", ct, &err) &&
+        std::string err;
+        check(retcomm::read_core_title(title / "title.json", ct, &err) && ct.id == "game" &&
+                  ct.package.filename() == "game_game.so" && ct.content_sha256.size() == 1 &&
+                  ct.content_sha256[0] == "abcdef" && ct.core_id == "n64lle" &&
+                  ct.core_version == "0.375.0" &&
                   retcomm::title_from_core(ct).rom_identity.sha256.size() == 1,
               "a title.json registers as a core title");
-
-        // Same filesystem: a rename.
-        const fs::path dest = scratch / "apps" / "GameRecomp";
-        check(retcomm::move_folder(proj, dest, &err) && fs::is_regular_file(dest / "game.toml") &&
-                  !fs::exists(proj),
-              "move_folder renames on one filesystem");
-        check(!retcomm::move_folder(scratch / "loose", dest, &err) &&
-                  err.find("already exists") != std::string::npos,
-              "move_folder refuses an existing destination");
-        // Another filesystem, when there is one to try: copy, then remove.
-        const fs::path shm = fs::path("/dev/shm") / ("retro-hub-update-test-" + std::to_string(::getpid()));
-        std::error_code ec;
-        if (fs::is_directory("/dev/shm", ec)) {
-            const bool moved = retcomm::move_folder(dest, shm, &err);
-            check(moved && fs::is_regular_file(shm / "build-release" / "app" / "title" / "title.json") &&
-                      !fs::exists(dest),
-                  "move_folder copies across filesystems and removes the source");
-            fs::remove_all(shm, ec);
-        }
     }
 
     // ---- issue #6: a portable setup's paths are the launcher folder's ------------

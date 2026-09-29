@@ -1,5 +1,4 @@
 #include "retcomm/core_titles.hpp"
-#include "retcomm/fs_util.hpp"
 
 #include "core_manifest.hpp" // Retro-Runtime: retro_core_support
 
@@ -91,12 +90,6 @@ bool read_title_json(const fs::path& json_path, CoreTitle& out, std::string* err
     return true;
 }
 
-bool is_port_root(const fs::path& d) {
-    std::error_code ec;
-    return fs::is_regular_file(d / "game.toml", ec) && fs::is_regular_file(d / "CMakeLists.txt", ec) &&
-           fs::is_regular_file(d / "tools" / "build_app.sh", ec);
-}
-
 } // namespace
 
 bool read_core_title(const fs::path& manifest, CoreTitle& out, std::string* error) {
@@ -145,9 +138,6 @@ Title title_from_core(const CoreTitle& ct) {
     t.install_dir_name = ct.id;
     t.core_manifest = ct.manifest.string();
     t.core_app = ct.app.string();
-    t.core_generated = ct.generated;
-    t.core_project = ct.project.string();
-    t.core_rom = ct.rom.string();
     return t;
 }
 
@@ -161,9 +151,6 @@ void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::
         }
         if (!ref.name.empty()) ct.name = ref.name;
         ct.app = ref.app;
-        ct.generated = ref.generated;
-        ct.project = ref.project;
-        ct.rom = ref.rom;
         auto existing = std::find_if(catalog.titles.begin(), catalog.titles.end(),
                                      [&](const Title& t) { return t.id == ct.id; });
         if (existing != catalog.titles.end()) {
@@ -171,9 +158,6 @@ void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::
             // own identity and art rather than growing a twin.
             existing->core_manifest = ct.manifest.string();
             existing->core_app = ct.app.string();
-            existing->core_generated = ct.generated;
-            existing->core_project = ct.project.string();
-            existing->core_rom = ct.rom.string();
             continue;
         }
         catalog.titles.push_back(title_from_core(ct));
@@ -192,80 +176,8 @@ void unmerge_core_title(Catalog& catalog, const std::string& id) {
         }
         it->core_manifest.clear();
         it->core_app.clear();
-        it->core_generated = false;
-        it->core_project.clear();
-        it->core_rom.clear();
         ++it;
     }
-}
-
-bool find_adoptable_project(const fs::path& executable, AdoptableProject& out,
-                            std::string* error) {
-    auto fail = [&](const std::string& m) {
-        if (error) *error = m;
-        return false;
-    };
-    std::error_code ec;
-    const fs::path app = fs::weakly_canonical(fs::absolute(executable), ec);
-    if (ec || !fs::is_regular_file(app, ec))
-        return fail(executable.string() + " is not a file");
-    // The project: the nearest folder above the app with a port's shape.
-    fs::path root;
-    for (fs::path d = app.parent_path(); !d.empty(); d = d.parent_path()) {
-        if (is_port_root(d)) {
-            root = d;
-            break;
-        }
-        if (d == d.parent_path()) break;
-    }
-    if (root.empty())
-        return fail(app.filename().string() + " is not inside a port project: no folder above "
-                    "it has game.toml, CMakeLists.txt and tools/build_app.sh (an n64lle port "
-                    "scaffolded by its tools/new_project).");
-    // Its payload: title/ beside the app, where tools/build_app.sh stages it.
-    const fs::path title_json = app.parent_path() / "title" / "title.json";
-    if (!fs::is_regular_file(title_json, ec))
-        return fail("no title/title.json beside " + app.filename().string() +
-                    ": pick the app tools/build_app.sh built, in its app/ folder beside the "
-                    "staged payload.");
-    CoreTitle ct;
-    std::string err;
-    if (!read_title_json(title_json, ct, &err)) return fail(err);
-    out.root = root;
-    out.app = app;
-    out.title_json = title_json;
-    out.title = ct;
-    out.title.app = app;
-    return true;
-}
-
-bool move_folder(const fs::path& from, const fs::path& to, std::string* error) {
-    std::error_code ec;
-    if (fs::exists(to, ec)) {
-        if (error) *error = to.string() + " already exists";
-        return false;
-    }
-    fs::create_directories(to.parent_path(), ec);
-    retcomm::robust_rename(from, to, ec);
-    if (!ec) return true;
-    // Another filesystem (a second drive, a share): copy, then remove.
-    ec.clear();
-    fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
-    if (ec) {
-        const std::string why = ec.message();
-        std::error_code ec2;
-        fs::remove_all(to, ec2);
-        if (error) *error = "cannot copy " + from.string() + " to " + to.string() + ": " + why;
-        return false;
-    }
-    fs::remove_all(from, ec);
-    if (ec) {
-        if (error)
-            *error = "copied to " + to.string() + ", but the original could not be removed (" +
-                     ec.message() + "); remove " + from.string() + " yourself";
-        return true; // the new copy is complete and is the one registered
-    }
-    return true;
 }
 
 fs::path core_manifest_for(const Title& t, const fs::path& install_dir) {

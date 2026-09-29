@@ -324,185 +324,7 @@ size_t HubModel::refresh_orphan_installs() {
     return n;
 }
 
-// ---- Generate Local Recomp (hub_local_recomp.hpp, docs/LOCAL_RECOMP.md) ------
-
-local_recomp::Tools HubModel::local_recomp_tools() const {
-    local_recomp::Tools t;
-    std::error_code ec;
-    const fs::path exe = exe_dir.empty() ? fs::path() : fs::weakly_canonical(exe_dir, ec);
-    // This hub's own prefix when it is one (scripts/build-local.sh's output);
-    // otherwise the checkout above it makes one.
-    if (local_recomp::is_title_app_hub_prefix(exe)) t.hub_prefix = exe;
-    t.launcher = local_recomp::launcher_checkout_above(exe);
-    t.n64lle = !cfg.n64lle_checkout.empty() ? cfg.n64lle_checkout
-                                            : local_recomp::n64lle_beside(t.launcher);
-    return t;
-}
-
-void HubModel::open_local_recomp() {
-    LocalRecompUi& ui = local_recomp_ui;
-    ui.open = true;
-    ui.focus_pending = true;
-    const auto state = local_recomp_gen.snapshot().state;
-    // A generation keeps its page until its result has been seen.
-    if (state != local_recomp::Generator::State::Idle) {
-        ui.page = LocalRecompUi::Page::Progress;
-        return;
-    }
-    ui.page = LocalRecompUi::Page::Platform;
-    ui.confirm.reset();
-    ui.added_id.clear();
-    ui.register_error.clear();
-}
-
-void HubModel::scan_local_recomp_roms() {
-    LocalRecompUi& ui = local_recomp_ui;
-    if (ui.scan_cancel) ui.scan_cancel->store(true);
-    ui.roms.clear();
-    ui.scan_problems.clear();
-    ui.scanned = false;
-    ui.scan_roots = cfg.platform_roots(ui.platform);
-    auto cancel = std::make_shared<std::atomic<bool>>(false);
-    ui.scan_cancel = cancel;
-    const std::vector<fs::path> roots = ui.scan_roots;
-    ui.scan = std::async(std::launch::async, [roots, cancel]() {
-        LocalRecompUi::ScanResult r;
-        r.roms = local_recomp::find_n64_roms(roots, cancel.get(), &r.problems);
-        return r;
-    });
-}
-
-bool HubModel::start_local_recomp(const local_recomp::RomCandidate& rom, std::string* error) {
-    const local_recomp::Tools tools = local_recomp_tools();
-    if (const std::string why = local_recomp::tools_problem(tools); !why.empty()) {
-        if (error) *error = why;
-        return false;
-    }
-    local_recomp::Request r;
-    r.rom = rom;
-    r.tools = tools;
-    r.dest_dir = resolve_default_install_root(cfg, paths);
-    r.staging_dir = paths.data_dir / "local-recomp" / "staging";
-    {
-        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        char stamp[32];
-        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::localtime(&now));
-        r.log_path = paths.data_dir / "logs" / (std::string("local-recomp-") + stamp + ".log");
-    }
-    for (const CoreTitleRef& ref : cfg.core_titles) {
-        CoreTitle ct;
-        if (!read_core_title(ref.manifest, ct, nullptr)) continue;
-        for (const auto& h : ct.content_sha256)
-            r.existing.emplace_back(h, ref.name.empty() ? ct.name : ref.name);
-    }
-    append_log("Generate Local Recomp: " + rom.label + " -> " + r.dest_dir.string() + " (log " +
-               r.log_path.string() + ")");
-    if (!local_recomp_gen.start(std::move(r))) {
-        if (error) *error = "a local recomp is already being generated";
-        return false;
-    }
-    local_recomp_ui.page = LocalRecompUi::Page::Progress;
-    local_recomp_ui.added_id.clear();
-    local_recomp_ui.register_error.clear();
-    set_status("Generating a local recomp of " + rom.label + "…");
-    return true;
-}
-
-void HubModel::poll_local_recomp() {
-    LocalRecompUi& ui = local_recomp_ui;
-    if (ui.scan.valid() && ui.scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        LocalRecompUi::ScanResult found = ui.scan.get();
-        ui.roms = std::move(found.roms);
-        ui.scan_problems = std::move(found.problems);
-        for (const auto& p : ui.scan_problems)
-            append_log("Generate Local Recomp: " + p, LogLevel::Warn);
-        ui.scanned = true;
-    }
-
-    const local_recomp::Generator::Snapshot snap = local_recomp_gen.snapshot();
-    using State = local_recomp::Generator::State;
-    auto toast = [&](const std::string& m) {
-        {
-            std::lock_guard<std::mutex> lock(mu);
-            toast_message = m;
-        }
-        toast_pending.store(true);
-    };
-    // With the dialog hidden, the status line and a toast carry it.
-    if (snap.state == State::Running && snap.phase != ui.phase_shown) {
-        ui.phase_shown = snap.phase;
-        set_status("Local recomp: " + snap.phase);
-    }
-    if (snap.state != ui.last_state) {
-        ui.last_state = snap.state;
-        if (snap.state == State::Failed) {
-            append_log("Generate Local Recomp failed: " + snap.error + " (log " +
-                           snap.log_path.string() + ")",
-                       LogLevel::Error);
-            set_status("Local recomp failed");
-            if (!ui.open) toast("Local recomp failed: " + snap.error);
-        } else if (snap.state == State::Cancelled) {
-            append_log("Generate Local Recomp cancelled");
-            set_status("Local recomp cancelled");
-        }
-    }
-    if (snap.state != State::Succeeded || !ui.added_id.empty() || !ui.register_error.empty())
-        return;
-    // The job worker reloads cfg and rebuilds the catalog; register between jobs.
-    if (job_running.load()) return;
-
-    CoreTitle ct;
-    std::string err;
-    if (!read_core_title(snap.app.title_json, ct, &err)) {
-        ui.register_error = err;
-        append_log("Generate Local Recomp: " + err, LogLevel::Error);
-        return;
-    }
-    CoreTitleRef ref;
-    ref.manifest = snap.app.title_json;
-    ref.name = ct.name;
-    ref.app = snap.app.app;
-    ref.project = snap.project;
-    ref.generated = true;
-    ref.rom = snap.app.rom;
-    cfg = load_app_config(paths.config_path);
-    auto same = std::find_if(cfg.core_titles.begin(), cfg.core_titles.end(),
-                             [&](const CoreTitleRef& r) {
-                                 std::error_code ec;
-                                 return fs::equivalent(r.manifest, ref.manifest, ec);
-                             });
-    if (same != cfg.core_titles.end()) *same = ref;
-    else cfg.core_titles.push_back(ref);
-    save_app_config(paths.config_path, cfg);
-
-    // Saves kept by an earlier uninstall of this title go back beside its app.
-    const fs::path kept = paths.data_dir / "local-recomp" / "kept" / (ct.id + "-data");
-    const fs::path data = ref.app.parent_path() / (ct.id + "-data");
-    std::error_code ec;
-    if (fs::is_directory(kept, ec) && !fs::exists(data, ec)) {
-        std::string merr;
-        if (move_folder(kept, data, &merr))
-            append_log("Restored the saves kept from its last uninstall: " + data.string());
-        else
-            append_log("Kept saves stay in " + kept.string() + ": " + merr, LogLevel::Warn);
-    }
-
-    apply_core_titles();
-    append_log("Local recomp " + ct.name + " (" + ct.id + ", " + ct.core_id + " " +
-                   ct.core_version + (ct.engine_dirty ? ", dev build" : "") + "): project " +
-                   ref.project.string() + ", app " + ref.app.string(),
-               LogLevel::Good);
-    refresh_rows(false);
-    if (!ct.platform.empty()) {
-        scans_platform_filter = ct.platform;
-        start_job(HubJob::ScanRoms);
-    }
-    ui.added_id = ct.id;
-    set_status("Added " + ct.name);
-    if (!ui.open) toast("Added " + ct.name + " to your Nintendo 64 library");
-}
-
-bool HubModel::remove_core_title(const Title& t, bool keep_saves, std::string* message) {
+bool HubModel::remove_core_title(const Title& t, std::string* message) {
     auto say = [&](const std::string& m) {
         if (message) *message = m;
     };
@@ -519,46 +341,11 @@ bool HubModel::remove_core_title(const Title& t, bool keep_saves, std::string* m
         say(name + " is not a registered core title");
         return false;
     }
-    std::string note;
-    if (ref->generated && !ref->project.empty()) {
-        std::error_code ec;
-        const fs::path project = ref->project;
-        // Only ever a port project, and never an install root itself.
-        const bool port = fs::is_regular_file(project / "game.toml", ec) &&
-                          fs::is_regular_file(project / "CMakeLists.txt", ec) &&
-                          fs::is_regular_file(project / "tools" / "build_app.sh", ec);
-        bool is_root = false;
-        for (const InstallRootEntry& r : effective_install_roots(c, paths))
-            if (fs::equivalent(r.path, project, ec)) is_root = true;
-        if (fs::exists(project, ec) && (!port || is_root)) {
-            say("refusing to delete " + project.string() + ": it is not a port project");
-            return false;
-        }
-        if (keep_saves && !ref->app.empty()) {
-            const fs::path data = ref->app.parent_path() / (id + "-data");
-            const fs::path kept = paths.data_dir / "local-recomp" / "kept" / (id + "-data");
-            if (fs::is_directory(data, ec)) {
-                fs::remove_all(kept, ec);
-                std::string merr;
-                if (!move_folder(data, kept, &merr)) {
-                    say("could not keep the saves (" + merr + "); nothing was removed");
-                    return false;
-                }
-                note = "; saves kept in " + kept.string();
-            }
-        }
-        fs::remove_all(project, ec);
-        if (ec) {
-            say("could not delete " + project.string() + ": " + ec.message());
-            return false;
-        }
-        note = "; deleted " + project.string() + note;
-    }
     c.core_titles.erase(ref);
     save_app_config(paths.config_path, c);
     cfg = c;
     unmerge_core_title(catalog, id);
-    say("Removed " + name + note);
+    say("Removed " + name + " from the library; its files were not touched");
     return true;
 }
 
@@ -649,7 +436,6 @@ void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {
             std::string core_err;
             row.core_manifest = cm.string();
             row.core_app = t.core_app;
-            row.core_generated = t.core_generated;
             if (read_core_title(cm, ct, &core_err)) {
                 std::error_code lec;
                 row.installed = fs::is_regular_file(ct.library, lec);
@@ -1352,13 +1138,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 // when one is bound (the app checks it; without one it asks).
                 if (do_launch && !t->core_app.empty()) {
                     do_launch = false;
-                    fs::path rom = boot_disc_rom(library, *t);
-                    // A generated title keeps its own copy of the dump: the
-                    // library's may be zipped or byte-swapped, so unmatched.
-                    std::error_code rom_ec;
-                    if (rom.empty() && !t->core_rom.empty() &&
-                        fs::is_regular_file(t->core_rom, rom_ec))
-                        rom = t->core_rom;
+                    const fs::path rom = boot_disc_rom(library, *t);
                     std::vector<std::string> args;
                     if (!rom.empty()) args = {"--rom", rom.string()};
                     std::string err;
@@ -1829,12 +1609,11 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     append_log("unknown title: " + title_id);
                     break;
                 }
-                // A registered core title is its registration (and, when the hub
-                // generated it, its project folder), not an install.
-                if (!t->core_app.empty() || t->core_generated) {
+                // A registered core title is its registration, not an install.
+                if (!t->core_manifest.empty()) {
                     const std::string name = t->name, id = t->id, platform = t->platform;
                     std::string msg;
-                    const bool ok = remove_core_title(*t, j != HubJob::UninstallPurge, &msg);
+                    const bool ok = remove_core_title(*t, &msg);
                     append_log(msg, ok ? LogLevel::Good : LogLevel::Error);
                     if (ok) {
                         std::lock_guard<std::mutex> lock(mu);
