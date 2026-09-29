@@ -29,6 +29,9 @@ struct CoreTitle {
     bool engine_dirty = false;
     fs::path package; // a title app's game package (title.json `package`)
     fs::path app;     // the registration's title app, when it has one
+    // A generated title's (CoreTitleRef::generated): its project and ROM copy.
+    bool generated = false;
+    fs::path project, rom;
 };
 
 // Reads a per-title core's sidecar, or a title app's payload title.json
@@ -61,6 +64,10 @@ bool move_folder(const fs::path& from, const fs::path& to, std::string* error);
 // A catalog Title for a registered core title: kind "core", its platform,
 // ROM identity = the manifest's content hashes, core_manifest set.
 Title title_from_core(const CoreTitle& ct);
+
+// Undoes merge_core_titles for one title: a title only a registration made
+// leaves the catalog; a catalog title a core attached to loses the core.
+void unmerge_core_title(Catalog& catalog, const std::string& id);
 
 // Adds every registered core title to `catalog`. Where the catalog already has
 // a title with the same id, that title gains the core (core_manifest) instead

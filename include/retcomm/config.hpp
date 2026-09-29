@@ -44,6 +44,12 @@ struct CoreTitleRef {
     // An adopted port project (hub "Add Core Title…", core_titles.hpp): the
     // title app Play runs, and the project folder it was built in.
     fs::path app, project;
+    // Made by the hub's "Generate Local Recomp" (docs/LOCAL_RECOMP.md): the
+    // project is the launcher's, so uninstalling it deletes the folder. `rom`
+    // is the project's own copy of the dump, which Play hands the app when the
+    // library has no match (the library's may be zipped or byte-swapped).
+    bool generated = false;
+    fs::path rom;
 };
 
 // User config (~/.config/retcomm/config.json). RomM/ES-style library layout:
@@ -89,6 +95,9 @@ struct AppConfig {
     // a core, runner and hub binary used in place of the bundled or installed
     // ones. Empty = the default. Installing a release of one clears its path.
     std::string dev_core_path, dev_runner_path, dev_hub_path;
+    // The n64lle source checkout "Generate Local Recomp" scaffolds from
+    // (development builds). Empty = the one beside this hub's own checkout.
+    fs::path n64lle_checkout;
     // After a catalog update introduces titles that have no ROM binding yet,
     // re-bind them from cached hashes and then scan the affected platforms, so
     // newly catalogued games appear without a manual Scan Files.

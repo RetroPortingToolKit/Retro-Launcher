@@ -145,6 +145,9 @@ Title title_from_core(const CoreTitle& ct) {
     t.install_dir_name = ct.id;
     t.core_manifest = ct.manifest.string();
     t.core_app = ct.app.string();
+    t.core_generated = ct.generated;
+    t.core_project = ct.project.string();
+    t.core_rom = ct.rom.string();
     return t;
 }
 
@@ -158,6 +161,9 @@ void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::
         }
         if (!ref.name.empty()) ct.name = ref.name;
         ct.app = ref.app;
+        ct.generated = ref.generated;
+        ct.project = ref.project;
+        ct.rom = ref.rom;
         auto existing = std::find_if(catalog.titles.begin(), catalog.titles.end(),
                                      [&](const Title& t) { return t.id == ct.id; });
         if (existing != catalog.titles.end()) {
@@ -165,9 +171,31 @@ void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::
             // own identity and art rather than growing a twin.
             existing->core_manifest = ct.manifest.string();
             existing->core_app = ct.app.string();
+            existing->core_generated = ct.generated;
+            existing->core_project = ct.project.string();
+            existing->core_rom = ct.rom.string();
             continue;
         }
         catalog.titles.push_back(title_from_core(ct));
+    }
+}
+
+void unmerge_core_title(Catalog& catalog, const std::string& id) {
+    for (auto it = catalog.titles.begin(); it != catalog.titles.end();) {
+        if (it->id != id) {
+            ++it;
+            continue;
+        }
+        if (it->kind == "core") {
+            it = catalog.titles.erase(it);
+            continue;
+        }
+        it->core_manifest.clear();
+        it->core_app.clear();
+        it->core_generated = false;
+        it->core_project.clear();
+        it->core_rom.clear();
+        ++it;
     }
 }
 
