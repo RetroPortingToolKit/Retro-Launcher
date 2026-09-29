@@ -112,8 +112,39 @@ Uninstall is in Manage Game Data.
 Add Core Title itself is gone from the drawer; this dialog replaces it.
 `retcomm core add` still registers a sidecar.
 
-## How it was checked
+## How it was checked (2026-09-28)
 
-See the pull request that added it. Nobody has looked at the dialog on a
-screen yet, and nobody has played a generated title from the library. Both
-are Alex's verdicts to give.
+- **Unit test** (`hub_local_recomp`). It covers:
+  - finding dumps, including subfolders, skipped hidden folders, zip
+    entries and an unreadable zip;
+  - converting all three byte orders;
+  - staging from a file and from a zip entry;
+  - refusing a non-image by its content;
+  - finding the checkout and the prefix;
+  - the scaffold's command line;
+  - parsing its output;
+  - finding the app and the ROM copy;
+  - the process runner: exit status, merged output, stdin at EOF, Cancel
+    ending the whole group (grandchild included), and a daemon holding the
+    pipe not keeping it waiting.
+- **One real generation**, driven through `Generator` exactly as the dialog
+  starts it, from a `build/retro-hub` development hub (no prefix, so
+  `scripts/build-local.sh` ran). The input was a stored zip holding Dr.
+  Mario 64 (USA), with n64lle at `ec283481`. It took 332 s:
+  - the scaffold built the core from the checkout;
+  - it harvested, emitted and built the package;
+  - the port's 10 gates passed;
+  - it packaged `Dr. Mario 64-0.0.1-linux-x86_64.AppImage`.
+  - `game.toml` declares four gamepad ports and `[transfer_pak] supported =
+    true`, and the staged copy was removed.
+  - That run found one bug, since fixed: the scaffold names its ROM copy
+    `roms/<slug>.z64`.
+- **Not checked:**
+  - the dialog on a screen, and its gamepad navigation;
+  - registration and the N64 row in the running hub;
+  - Uninstall and the return to Home;
+  - Cancel against a real scaffold (bash's EXIT trap was checked to run on
+    SIGTERM, and the scaffold's rollback lives in that trap);
+  - playing a generated title.
+
+  These are Alex's to see.
