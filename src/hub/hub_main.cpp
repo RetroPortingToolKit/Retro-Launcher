@@ -189,6 +189,12 @@ fs::path platform_icon_path(const std::string& slug) {
     for (char& c : key) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     }
+    // Nintendo 64's card is its controller: the same art the controller
+    // settings draw (assets/src/n64_controller.py), not a second picture.
+    if (key == "n64") {
+        fs::path pad = find_hub_asset_file("controllers", "n64_controller.png");
+        if (!pad.empty()) return pad;
+    }
     fs::path hit = find_hub_asset_file("platforms", (key + ".png").c_str());
     if (!hit.empty()) return hit;
     if (key == "ps1" || key == "ps") {
