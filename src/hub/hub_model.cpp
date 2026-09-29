@@ -361,6 +361,7 @@ void HubModel::scan_local_recomp_roms() {
     ui.roms.clear();
     ui.scan_problems.clear();
     ui.scanned = false;
+    ui.selected = -1;
     ui.scan_roots = cfg.platform_roots(ui.platform);
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     ui.scan_cancel = cancel;

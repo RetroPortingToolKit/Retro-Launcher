@@ -8977,7 +8977,9 @@ void draw_local_recomp(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_
             for (const auto& r : ui.scan_roots) ImGui::TextUnformatted(r.string().c_str());
             ImGui::PopTextWrapPos();
         }
+        // Click (or A) selects; Create, or a double-click, asks to recompile.
         int shown = 0;
+        bool want_confirm = false;
         for (size_t i = 0; i < ui.roms.size(); ++i) {
             const auto& c = ui.roms[i];
             if (!needle.empty()) {
@@ -8988,10 +8990,10 @@ void draw_local_recomp(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_
             }
             ++shown;
             ImGui::PushID(static_cast<int>(i));
-            if (ImGui::Selectable(c.label.c_str(), false, ImGuiSelectableFlags_None)) {
-                ui.confirm = c;
-                start_error.clear();
-                ImGui::OpenPopup(kConfirmId);
+            const bool is_sel = ui.selected == static_cast<int>(i);
+            if (ImGui::Selectable(c.label.c_str(), is_sel, ImGuiSelectableFlags_AllowDoubleClick)) {
+                ui.selected = static_cast<int>(i);
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) want_confirm = true;
             }
             if (!c.entry.empty()) {
                 ImGui::SameLine();
@@ -8999,8 +9001,42 @@ void draw_local_recomp(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_
             }
             ImGui::PopID();
         }
-        // The confirmation lives inside the child: OpenPopup and BeginPopup
-        // must share one ID stack.
+        ImGui::EndChild();
+        const bool have_sel = ui.selected >= 0 && ui.selected < static_cast<int>(ui.roms.size());
+        if (!scanning && ui.scanned) {
+            ImGui::TextColored(th.text_muted, "%d of %zu dumps%s%s%s", shown, ui.roms.size(),
+                               ui.scan_problems.empty()
+                                   ? ""
+                                   : " (some files could not be read: see the console)",
+                               have_sel ? " \xC2\xB7 selected: " : "",
+                               have_sel ? ui.roms[static_cast<size_t>(ui.selected)].label.c_str()
+                                        : "");
+        } else {
+            ImGui::NewLine();
+        }
+        if (ImGui::Button("Back", btn) || back_pressed) {
+            ui.page = Page::Platform;
+            ui.focus_pending = true;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(scanning);
+        if (ImGui::Button("Rescan", btn)) hub.scan_local_recomp_roms();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Close", btn)) close();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!have_sel);
+        if (accent_button("Create", th, btn)) want_confirm = true;
+        ImGui::EndDisabled();
+
+        // The confirmation is opened and drawn at this level (not inside the
+        // list's child or a row's PushID): OpenPopup and BeginPopupModal must
+        // see the same ID stack, or the popup never appears.
+        if (want_confirm && have_sel) {
+            ui.confirm = ui.roms[static_cast<size_t>(ui.selected)];
+            start_error.clear();
+            ImGui::OpenPopup(kConfirmId);
+        }
         ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(std::min(600.f, vp->WorkSize.x - 60.f), 0.f));
         if (ImGui::BeginPopupModal(kConfirmId, nullptr,
@@ -9042,25 +9078,6 @@ void draw_local_recomp(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_
             }
             ImGui::EndPopup();
         }
-        ImGui::EndChild();
-        if (!scanning && ui.scanned) {
-            ImGui::TextColored(th.text_muted, "%d of %zu dumps%s", shown, ui.roms.size(),
-                               ui.scan_problems.empty()
-                                   ? ""
-                                   : " (some files could not be read: see the console)");
-        } else {
-            ImGui::NewLine();
-        }
-        if (ImGui::Button("Back", btn) || back_pressed) {
-            ui.page = Page::Platform;
-            ui.focus_pending = true;
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(scanning);
-        if (ImGui::Button("Rescan", btn)) hub.scan_local_recomp_roms();
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("Close", btn)) close();
     } else { // Page::Progress
         const bool running = snap.state == State::Running;
         ImGui::PushTextWrapPos(0.f);

@@ -647,6 +647,7 @@ struct HubModel {
         std::vector<fs::path> scan_roots;
         bool scanned = false;
         char filter[128]{};
+        int selected = -1; // index into roms: the dump Create will use
         std::optional<local_recomp::RomCandidate> confirm; // "Are you sure?" is up
         std::string added_id;  // registered: the new title's id
         std::string register_error;
