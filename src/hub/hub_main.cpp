@@ -25,6 +25,14 @@ constexpr bool kLocalBuild = false;
 #else
 constexpr bool kLocalBuild = true;
 #endif
+// "Generate Local Recomp" and the Nintendo 64 platform it fills
+// (docs/LOCAL_RECOMP.md): development builds only, where the hub can run
+// n64lle's scaffold (POSIX shell) and play a core. A release shows neither.
+#if defined(RETCOMM_HUB_HAVE_PLAY) && !defined(_WIN32)
+constexpr bool kLocalRecomp = kLocalBuild;
+#else
+constexpr bool kLocalRecomp = false;
+#endif
 
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
@@ -804,6 +812,10 @@ bool title_has_rom_source(const TitleRow& r) { return r.has_rom || r.has_romm; }
 
 // Filter Unsupported Titles: keep rows with a ROM source, or anything already installed.
 bool title_passes_library_filter(const TitleRow& r, const HubModel& hub) {
+    // Nintendo 64 is local recomps only (docs/LOCAL_RECOMP.md): a development
+    // build, and a title app made on this machine. So the platform stays off
+    // Home until one exists, and a release never shows it.
+    if (r.platform == "n64") return kLocalRecomp && !r.core_app.empty();
     if (!hub.cfg.filter_unsupported_titles) return true;
     if (title_has_rom_source(r)) return true;
     if (r.installed || r.install_dir_present || r.has_preserved_state) return true;
@@ -2034,6 +2046,9 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
                 if (i == hub.selected) sel_drawn = true;
             }
             if (!sel_drawn) hub.selected = first_drawn >= 0 ? first_drawn : 0;
+            // Its last title went (an uninstalled local recomp): back to Home,
+            // where the platform no longer is.
+            if (first_drawn < 0 && !plat_filter.empty()) go_home(hub);
         }
 
         // Centre the block of columns and leave the lift room at the top, the
@@ -2598,7 +2613,8 @@ void draw_manage_install_column(HubModel& hub, const TitleRow& row, const Theme&
         if (!retcomm::open_path_in_file_manager(open_dir, &err))
             hub.append_log("Open Folder failed: " + err);
     }
-    if (can_open) {
+    // A core title's folders are its project's, not an install to move.
+    if (can_open && row.core_manifest.empty()) {
         const auto roots = retcomm::effective_install_roots(hub.cfg, hub.paths);
         const bool can_move = roots.size() > 1;
         ImGui::BeginDisabled(!can_move);
@@ -2692,6 +2708,18 @@ void draw_manage_install_column(HubModel& hub, const TitleRow& row, const Theme&
             if (keep_saves_for_id != row.id) {
                 keep_saves_for_id = row.id;
                 keep_saves = true;
+            }
+            if (row.core_generated || !row.core_app.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+                ImGui::TextWrapped(
+                    row.core_generated
+                        ? "Uninstall deletes this local recomp's project: its generated code, "
+                          "game package and app. With Keep save data, its saves are set aside "
+                          "and come back if you generate the same dump again."
+                        : "Uninstall removes it from the library. Its project folder is not "
+                          "Retro's and stays where it is.");
+                ImGui::PopStyleColor();
+                ImGui::Dummy(ImVec2(0, 4));
             }
             if (ImGui::Button("Uninstall", ImVec2(-1, 0))) {
                 hub.start_job(keep_saves ? HubJob::Uninstall : HubJob::UninstallPurge, row.id);
@@ -2999,13 +3027,16 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
             close_nav_drawer(hub);
             hub.pending_open_library = true;
         }
-#if defined(RETCOMM_HUB_HAVE_PLAY)
-        ImGui::Dummy(ImVec2(0, 4.f));
-        if (ImGui::Button("Add Core Title…", item_sz)) {
-            close_nav_drawer(hub);
-            hub.pending_add_core_title = true;
+        if (kLocalRecomp) {
+            ImGui::Dummy(ImVec2(0, 4.f));
+            const bool generating = hub.local_recomp_gen.running();
+            if (ImGui::Button(generating ? "Generating Local Recomp\xE2\x80\xA6###local_recomp"
+                                         : "Generate Local Recomp###local_recomp",
+                              item_sz)) {
+                close_nav_drawer(hub);
+                hub.open_local_recomp();
+            }
         }
-#endif
         ImGui::PopStyleVar();
 
         // Version block pinned to the bottom (was the Menu modal's footer).
@@ -8687,69 +8718,429 @@ void draw_snes_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
 // (click, shift-click, ctrl-click, ctrl+A) and copied with ctrl+C or the Copy
 // button. Long lines scroll horizontally instead of reflowing, which keeps the
 // selection rectangle aligned with what is on screen.
-// "Add Core Title…": adopt the picked title app's port project. Adding it
-// moves the whole project folder into the apps folder, where the launcher
-// manages installed apps; declining adds nothing (HubModel::offer_adoption).
-void draw_adopt_prompt(HubModel& hub, const Theme& th) {
-    constexpr const char* kId = "Add core title";
-    if (hub.adopt_candidate && !ImGui::IsPopupOpen(kId)) ImGui::OpenPopup(kId);
+// "Generate Local Recomp" (docs/LOCAL_RECOMP.md): pick a platform (Nintendo 64
+// alone, for now: n64lle is the one framework that makes a port from a dump),
+// pick one of the player's dumps from that platform's library folders, zips
+// included, agree to a long build, and watch it. The generation runs on its
+// own thread (local_recomp::Generator), so the dialog can be hidden and the
+// hub used meanwhile; a finished one is registered by HubModel::poll_local_recomp.
+// Development builds only.
+
+// The n64lle checkout's folder picker (SDL's dialog answers on another thread).
+struct N64lleFolderPick {
+    std::mutex mu;
+    bool busy = false, answered = false;
+    std::string path, error;
+};
+
+void SDLCALL on_n64lle_folder(void* userdata, const char* const* filelist, int /*filter*/) {
+    auto* ref = static_cast<std::shared_ptr<N64lleFolderPick>*>(userdata);
+    {
+        N64lleFolderPick& p = **ref;
+        std::lock_guard<std::mutex> lock(p.mu);
+        p.busy = false;
+        p.answered = true;
+        p.path.clear();
+        p.error.clear();
+        if (!filelist) p.error = SDL_GetError();
+        else if (filelist[0]) p.path = filelist[0];
+    }
+    delete ref;
+}
+
+std::string mm_ss(double secs) {
+    const int s = static_cast<int>(secs);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%d:%02d", s / 60, s % 60);
+    return buf;
+}
+
+void draw_local_recomp(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Window* window) {
+    using Page = retcomm::hub::HubModel::LocalRecompUi::Page;
+    using State = retcomm::hub::local_recomp::Generator::State;
+    auto& ui = hub.local_recomp_ui;
+    constexpr const char* kId = "Generate Local Recomp###local_recomp";
+    constexpr const char* kConfirmId = "Recompile this ROM?###local_recomp_confirm";
+    static std::shared_ptr<N64lleFolderPick> folder_pick = std::make_shared<N64lleFolderPick>();
+    static std::string start_error;
+
+    // The folder picker's answer, whenever it comes.
+    {
+        std::lock_guard<std::mutex> lock(folder_pick->mu);
+        if (folder_pick->answered) {
+            folder_pick->answered = false;
+            if (!folder_pick->path.empty()) {
+                hub.cfg = retcomm::load_app_config(hub.paths.config_path);
+                hub.cfg.n64lle_checkout = folder_pick->path;
+                retcomm::save_app_config(hub.paths.config_path, hub.cfg);
+            } else if (!folder_pick->error.empty()) {
+                hub.append_log("n64lle folder picker: " + folder_pick->error,
+                               retcomm::hub::LogLevel::Warn);
+            }
+        }
+    }
+
+    if (!ui.open) return;
+    if (!ImGui::IsPopupOpen(kId)) ImGui::OpenPopup(kId);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(std::min(680.f, vp->WorkSize.x - 40.f), 0.f));
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(820.f, vp->WorkSize.x - 40.f),
+                                    std::min(640.f, vp->WorkSize.y - 40.f)));
     if (!ImGui::BeginPopupModal(kId, nullptr,
                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                                    ImGuiWindowFlags_AlwaysAutoResize))
+                                    ImGuiWindowFlags_NoResize))
         return;
-    if (!hub.adopt_candidate) { // added, or declined
+
+    const retcomm::hub::local_recomp::Generator::Snapshot snap = hub.local_recomp_gen.snapshot();
+    auto close = [&] {
+        if (snap.state != State::Running) {
+            hub.local_recomp_gen.reset();
+            ui.page = Page::Platform;
+        }
+        if (ui.scan_cancel) ui.scan_cancel->store(true);
+        ui.open = false;
+        ui.confirm.reset();
+        start_error.clear();
+        hub.hub_refocus_pending = true;
+        request_page_focus(hub);
         ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-        return;
-    }
-    const retcomm::AdoptableProject& a = *hub.adopt_candidate;
-    const bool moving = hub.adopt_job.valid();
-    std::error_code ec;
-    const bool in_place = fs::equivalent(a.root, hub.adopt_dest, ec);
+    };
+    // B / Escape: back a page, or out. Never while the confirmation is up
+    // (it has its own), and never mid-generation (Hide says what it does).
+    const bool back_pressed = !ImGui::IsPopupOpen(kConfirmId) &&
+                              (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                               ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+
     ImGui::SetWindowFontScale(1.3f);
-    ImGui::TextUnformatted(a.title.name.c_str());
+    ImGui::TextUnformatted("Generate Local Recomp");
     ImGui::SetWindowFontScale(1.f);
-    ImGui::TextColored(th.text_muted, "%s \xC2\xB7 %s %s%s", a.title.id.c_str(),
-                       a.title.core_id.c_str(), a.title.core_version.c_str(),
-                       a.title.engine_dirty ? " (dev build)" : "");
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::PushTextWrapPos(0.f);
-    ImGui::TextColored(th.text_muted, "Project");
-    ImGui::TextUnformatted(a.root.string().c_str());
-    ImGui::TextColored(th.text_muted, "App");
-    ImGui::TextUnformatted(a.app.string().c_str());
-    ImGui::Dummy(ImVec2(0, 6));
-    if (in_place) {
-        ImGui::TextUnformatted("It is already in an apps folder, so it is added where it is.");
-    } else {
-        ImGui::TextUnformatted("To add it, Retro moves the whole project folder into the apps "
-                               "folder and manages it there:");
-        ImGui::TextColored(th.accent, "%s", hub.adopt_dest.string().c_str());
-        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-        ImGui::TextUnformatted("Build trees inside it record the old path: configure them again "
-                               "before building (remove the build folder, then run "
-                               "tools/build_app.sh). Not moving it means it is not added.");
-        ImGui::PopStyleColor();
-    }
-    if (!hub.adopt_blocked.empty()) ImGui::TextColored(th.warn, "%s", hub.adopt_blocked.c_str());
-    ImGui::PopTextWrapPos();
-    ImGui::Dummy(ImVec2(0, 8));
-    if (moving) {
-        ImGui::TextDisabled("Moving... (a copy, when the apps folder is on another drive)");
-    } else {
-        ImGui::BeginDisabled(!hub.adopt_blocked.empty());
-        if (accent_button(in_place ? "Add" : "Move & Add", th, ImVec2(170, 0)))
-            hub.accept_adoption();
-        if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+    ImGui::Dummy(ImVec2(0, 4));
+    const ImVec2 btn(170.f, 0.f);
+
+    if (ui.page == Page::Platform) {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.text_muted,
+                           "Recompile one of your own dumps into a native app, on this "
+                           "machine. Choose its platform.");
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0, 8));
+        // One card per platform that can be generated: Nintendo 64 only.
+        const float card_w = 220.f;
+        const fs::path icon = platform_icon_path("n64");
+        const BoxartTexture* tex = icon.empty() ? nullptr : boxart.get("platform:n64", icon);
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float card_h = 200.f;
+        if (ui.focus_pending) {
+            ui.focus_pending = false;
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNavCursorVisible(true);
+        }
+        const bool pressed = ImGui::InvisibleButton("##n64", ImVec2(card_w, card_h),
+                                                    ImGuiButtonFlags_EnableNav);
+        const bool lit = ImGui::IsItemFocused() || ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p0, ImVec2(p0.x + card_w, p0.y + card_h),
+                          ImGui::ColorConvertFloat4ToU32(lit ? th.panel_hovered : th.panel),
+                          th.radius_sm);
+        if (tex && tex->gl_id && tex->width > 0 && tex->height > 0) {
+            const float box_w = card_w - 32.f, box_h = card_h - 70.f;
+            const float s = std::min(box_w / static_cast<float>(tex->width),
+                                     box_h / static_cast<float>(tex->height));
+            const float w = tex->width * s, h = tex->height * s;
+            const ImVec2 a(p0.x + (card_w - w) * 0.5f, p0.y + 14.f + (box_h - h) * 0.5f);
+            dl->AddImage(static_cast<ImTextureID>(tex->gl_id), a, ImVec2(a.x + w, a.y + h));
+        }
+        dl->AddText(ImVec2(p0.x + 16.f, p0.y + card_h - 50.f),
+                    ImGui::ColorConvertFloat4ToU32(th.text), "Nintendo 64");
+        dl->AddText(ImVec2(p0.x + 16.f, p0.y + card_h - 28.f),
+                    ImGui::ColorConvertFloat4ToU32(th.text_muted), "n64lle");
+        if (ImGui::IsItemFocused())
+            dl->AddRect(p0, ImVec2(p0.x + card_w, p0.y + card_h),
+                        ImGui::ColorConvertFloat4ToU32(th.focus), th.radius_sm, 0, 3.f);
+        if (pressed) {
+            ui.platform = "n64";
+            ui.page = Page::Roms;
+            ui.focus_pending = true;
+            ui.filter[0] = '\0';
+            start_error.clear();
+            hub.scan_local_recomp_roms();
+        }
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.text_muted,
+                           "Only Nintendo 64 so far: n64lle is the one framework that makes a "
+                           "port from a dump.");
+        ImGui::PopTextWrapPos();
+        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() -
+                             ImGui::GetStyle().WindowPadding.y);
+        if (ImGui::Button("Close", btn) || back_pressed) close();
+    } else if (ui.page == Page::Roms) {
+        const retcomm::hub::local_recomp::Tools tools = hub.local_recomp_tools();
+        const std::string problem = retcomm::hub::local_recomp::tools_problem(tools);
+        ImGui::TextColored(th.accent, "%s", platform_display_name(ui.platform));
+        ImGui::SameLine();
+        ImGui::TextColored(th.text_muted, "\xC2\xB7 choose a dump");
+
+        // Where the tools are, and where the project will go.
+        if (ImGui::BeginTable("##lr_tools", 3, ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, 150.f);
+            ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("b", ImGuiTableColumnFlags_WidthFixed);
+            auto row = [&](const char* k, const std::string& v, bool bad) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextColored(th.text_muted, "%s", k);
+                ImGui::TableNextColumn();
+                ImGui::PushTextWrapPos(0.f);
+                if (bad) ImGui::TextColored(th.warn, "%s", v.c_str());
+                else ImGui::TextUnformatted(v.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::TableNextColumn();
+            };
+            const bool n64lle_ok = retcomm::hub::local_recomp::is_n64lle_checkout(tools.n64lle);
+            row("n64lle checkout", tools.n64lle.empty() ? "not found" : tools.n64lle.string(),
+                !n64lle_ok);
+            bool busy_pick;
+            {
+                std::lock_guard<std::mutex> lock(folder_pick->mu);
+                busy_pick = folder_pick->busy;
+            }
+            ImGui::BeginDisabled(busy_pick);
+            if (ImGui::SmallButton("Change\xE2\x80\xA6")) {
+                {
+                    std::lock_guard<std::mutex> lock(folder_pick->mu);
+                    folder_pick->busy = true;
+                }
+                const std::string start = tools.n64lle.string();
+                SDL_ShowOpenFolderDialog(on_n64lle_folder,
+                                         new std::shared_ptr<N64lleFolderPick>(folder_pick), window,
+                                         start.empty() ? nullptr : start.c_str(), false);
+            }
+            ImGui::EndDisabled();
+            row("Hub and runner",
+                retcomm::hub::local_recomp::is_title_app_hub_prefix(tools.hub_prefix)
+                    ? "this hub's development build, " + tools.hub_prefix.string()
+                    : (tools.launcher.empty()
+                           ? std::string("no development build found")
+                           : "built from " + tools.launcher.string() +
+                                 " (scripts/build-local.sh)"),
+                !retcomm::hub::local_recomp::is_title_app_hub_prefix(tools.hub_prefix) &&
+                    tools.launcher.empty());
+            row("Core", "n64lle's generic core, built from that checkout", false);
+            row("Project goes in",
+                retcomm::resolve_default_install_root(hub.cfg, hub.paths).string(), false);
+            ImGui::EndTable();
+        }
+        if (!problem.empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(th.warn, "%s", problem.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+
+        if (ui.focus_pending) {
+            ui.focus_pending = false;
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##lr_filter", "Filter dumps", ui.filter, sizeof(ui.filter));
+
+        // The dump list.
+        std::string needle = ui.filter;
+        for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const float footer = ImGui::GetFrameHeightWithSpacing() * 2.f;
+        ImGui::BeginChild("##lr_roms", ImVec2(0, -footer), ImGuiChildFlags_Borders);
+        const bool scanning = ui.scan.valid();
+        if (scanning) {
+            ImGui::TextColored(th.text_muted, "Looking for dumps\xE2\x80\xA6");
+        } else if (ui.scan_roots.empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(th.warn, "No %s library folder.",
+                               platform_display_name(ui.platform));
+            ImGui::TextColored(th.text_muted,
+                               "Put your dumps in a folder named %s under your library root "
+                               "(%s), or map one in Library Settings.",
+                               ui.platform.c_str(),
+                               hub.cfg.library_root.empty() ? "not set"
+                                                            : hub.cfg.library_root.string().c_str());
+            ImGui::PopTextWrapPos();
+        } else if (ui.scanned && ui.roms.empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(th.text_muted,
+                               "No .z64, .n64 or .v64 dumps (loose or in a .zip) under:");
+            for (const auto& r : ui.scan_roots) ImGui::TextUnformatted(r.string().c_str());
+            ImGui::PopTextWrapPos();
+        }
+        int shown = 0;
+        for (size_t i = 0; i < ui.roms.size(); ++i) {
+            const auto& c = ui.roms[i];
+            if (!needle.empty()) {
+                std::string l = c.label;
+                for (char& ch : l)
+                    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (l.find(needle) == std::string::npos) continue;
+            }
+            ++shown;
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(c.label.c_str(), false, ImGuiSelectableFlags_None)) {
+                ui.confirm = c;
+                start_error.clear();
+                ImGui::OpenPopup(kConfirmId);
+            }
+            if (!c.entry.empty()) {
+                ImGui::SameLine();
+                ImGui::TextColored(th.text_muted, "(in zip)");
+            }
+            ImGui::PopID();
+        }
+        // The confirmation lives inside the child: OpenPopup and BeginPopup
+        // must share one ID stack.
+        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(600.f, vp->WorkSize.x - 60.f), 0.f));
+        if (ImGui::BeginPopupModal(kConfirmId, nullptr,
+                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::SetWindowFontScale(1.15f);
+            ImGui::TextUnformatted("Are you sure you want to recompile this ROM?");
+            ImGui::SetWindowFontScale(1.f);
+            ImGui::Dummy(ImVec2(0, 4));
+            if (ui.confirm) ImGui::TextColored(th.accent, "%s", ui.confirm->label.c_str());
+            ImGui::Dummy(ImVec2(0, 4));
+            ImGui::TextColored(th.text_muted,
+                               "This may take 5-10 minutes. Retro builds the code, the game "
+                               "package and a title app for it, with Transfer Pak support on "
+                               "all four controller ports. You can hide this window and keep "
+                               "using Retro meanwhile.");
+            if (!start_error.empty()) ImGui::TextColored(th.warn, "%s", start_error.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Dummy(ImVec2(0, 8));
+            ImGui::BeginDisabled(!problem.empty());
+            if (accent_button("Recompile", th, ImVec2(150, 0)) && ui.confirm) {
+                std::string err;
+                if (hub.start_local_recomp(*ui.confirm, &err)) {
+                    ui.confirm.reset();
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    start_error = err;
+                }
+            }
+            if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(150, 0)) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                ui.confirm.reset();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::EndChild();
+        if (!scanning && ui.scanned) {
+            ImGui::TextColored(th.text_muted, "%d of %zu dumps%s", shown, ui.roms.size(),
+                               ui.scan_problems.empty()
+                                   ? ""
+                                   : " (some files could not be read: see the console)");
+        } else {
+            ImGui::NewLine();
+        }
+        if (ImGui::Button("Back", btn) || back_pressed) {
+            ui.page = Page::Platform;
+            ui.focus_pending = true;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(scanning);
+        if (ImGui::Button("Rescan", btn)) hub.scan_local_recomp_roms();
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Don't add", ImVec2(140, 0)) ||
-            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            hub.decline_adoption();
+        if (ImGui::Button("Close", btn)) close();
+    } else { // Page::Progress
+        const bool running = snap.state == State::Running;
+        ImGui::PushTextWrapPos(0.f);
+        switch (snap.state) {
+        case State::Running:
+            ImGui::TextColored(th.accent, "%s", snap.phase.c_str());
+            ImGui::TextColored(th.text_muted, "%s elapsed. This may take 5-10 minutes.",
+                               mm_ss(snap.elapsed_s).c_str());
+            ImGui::ProgressBar(-1.f * static_cast<float>(ImGui::GetTime()), ImVec2(-FLT_MIN, 6.f),
+                               "");
+            break;
+        case State::Succeeded:
+            if (!ui.added_id.empty()) {
+                const std::string name =
+                    snap.app.app.empty() ? ui.added_id : snap.app.app.stem().string();
+                ImGui::TextColored(th.good, "Done in %s. It is in your Nintendo 64 library.",
+                                   mm_ss(snap.elapsed_s).c_str());
+                ImGui::TextColored(th.text_muted, "App: %s", snap.app.app.string().c_str());
+                ImGui::TextColored(th.text_muted, "Project: %s", snap.project.string().c_str());
+                (void)name;
+            } else if (!ui.register_error.empty()) {
+                ImGui::TextColored(th.warn, "Built, but it could not be added: %s",
+                                   ui.register_error.c_str());
+            } else {
+                ImGui::TextColored(th.text_muted, "Built. Adding it to the library\xE2\x80\xA6");
+            }
+            break;
+        case State::Failed:
+            ImGui::TextColored(th.warn, "It did not build: %s", snap.error.c_str());
+            ImGui::TextColored(th.text_muted,
+                               "The scaffold removes a project that does not build. The whole "
+                               "log is %s",
+                               snap.log_path.string().c_str());
+            break;
+        case State::Cancelled:
+            ImGui::TextColored(th.text_muted, "Cancelled. Nothing half-made was kept.");
+            break;
+        case State::Idle:
+            break;
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0, 4));
+
+        // The output, newest at the bottom, following along while it runs.
+        const float footer = ImGui::GetFrameHeightWithSpacing() + 8.f;
+        ImGui::BeginChild("##lr_log", ImVec2(0, -footer), ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        for (const auto& l : snap.tail) ImGui::TextUnformatted(l.c_str());
+        ImGui::PopStyleColor();
+        if (running && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40.f)
+            ImGui::SetScrollHereY(1.f);
+        ImGui::EndChild();
+        ImGui::Dummy(ImVec2(0, 4));
+
+        if (running) {
+            if (ImGui::Button("Hide", btn) || back_pressed) close();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("It keeps going. Generate Local Recomp in the menu shows it "
+                                  "again.");
+            ImGui::SameLine();
+            if (danger_button("Cancel", th, btn)) hub.local_recomp_gen.cancel();
+        } else if (snap.state == State::Succeeded && !ui.added_id.empty()) {
+            if (ImGui::IsWindowAppearing() || ui.focus_pending) {
+                ui.focus_pending = false;
+                ImGui::SetKeyboardFocusHere();
+            }
+            if (accent_button("Show in Library", th, ImVec2(200, 0))) {
+                const std::string plat = ui.platform.empty() ? "n64" : ui.platform;
+                close();
+                close_settings_pages(hub);
+                enter_platform_titles(hub, plat.c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close", btn) || back_pressed) close();
+        } else if (snap.state == State::Succeeded && ui.register_error.empty()) {
+            ImGui::TextDisabled("Adding\xE2\x80\xA6");
+        } else {
+            if (ImGui::Button("Back to dumps", ImVec2(200, 0))) {
+                hub.local_recomp_gen.reset();
+                ui.page = Page::Roms;
+                ui.focus_pending = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close", btn) || back_pressed) close();
+        }
     }
     ImGui::EndPopup();
 }
@@ -13210,14 +13601,20 @@ int main(int argc, char** argv) {
 
         hub.apply_pending_folder_pick();
         hub.apply_pending_file_pick();
-        if (hub.pending_add_core_title) {
-            hub.pending_add_core_title = false;
-            // The title app a port project built (tools/build_app.sh); the
-            // project around it is what gets adopted (core_titles.hpp).
-            begin_file_pick(hub, window, retcomm::hub::FilePickKind::AddCoreTitle, {},
-                            "Title app", {"AppImage", "appimage", "exe"}, /*allow_many=*/false);
+        if (kLocalRecomp) hub.poll_local_recomp();
+        // An uninstalled core title's row is gone, so its page cannot stay:
+        // back to its platform's grid (and from an empty one, Home).
+        {
+            std::string plat;
+            {
+                std::lock_guard<std::mutex> lock(hub.mu);
+                plat.swap(hub.core_title_removed_platform);
+            }
+            if (!plat.empty() && hub.library_nav == retcomm::hub::LibraryNav::Detail) {
+                hub.library_platform = plat;
+                go_back_to_titles(hub);
+            }
         }
-        hub.poll_adoption();
 
         // First run: the catalog could not be fetched before the wizard picked a
         // data folder, so do it the moment setup finishes.
@@ -13485,7 +13882,7 @@ int main(int argc, char** argv) {
         draw_data_root_dialog(hub, th, window);
         draw_nav_drawer(hub, th, drawer_t);
 
-        draw_adopt_prompt(hub, th);
+        if (kLocalRecomp) draw_local_recomp(hub, th, boxart, window);
         draw_log_overlay(hub, th, window);
 
         // Import / scan toasts.

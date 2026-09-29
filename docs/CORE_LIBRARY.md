@@ -34,10 +34,14 @@ core instead of getting a twin row.
 
 **Registering one.** Registrations are stored in `config.json` as
 `core_titles: [{manifest, name}]`, and merged into the catalog after every
-catalog load (hub and CLI). Two ways to add one:
+catalog load (hub and CLI). Ways to add one:
 
-- In the hub: the drawer's **Add Core Title…** adopts a **port project**
-  (since 2026-09-27; it used to pick a sidecar). Pick the title app the
+- In the hub, on a development build: the drawer's **Generate Local
+  Recomp** makes a port project from one of the player's dumps and registers
+  it (`LOCAL_RECOMP.md`; since 2026-09-28). It replaced **Add Core Title…**,
+  described below because its registrations still load.
+- Until 2026-09-28, the drawer's **Add Core Title…** adopted a **port project**
+  (from 2026-09-27; before that it picked a sidecar). Pick the title app the
   project built (`tools/build_app.sh`: `<project>/<build>/app/<Name>-<v>-<os>
   .AppImage|.exe`). The hub walks up from it to the project root -- an n64lle
   port: `game.toml`, `CMakeLists.txt` and `tools/build_app.sh` -- and reads the
@@ -128,6 +132,4 @@ of his library index, and the Pokémon Stadium core built from n64lle
 - **Per-title options, save choice, and the Transfer Pak cartridge in the
   title page.** The play session starts with the core's defaults and no
   accessories.
-- **Removing a registration from the hub.** For now, edit `core_titles` in
-  `config.json`.
 - **Generic cores with game packages.**

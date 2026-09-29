@@ -336,6 +336,8 @@ AppConfig load_app_config(const fs::path& config_path) {
         cfg.dev_core_path = j.value("dev_core_path", "");
         cfg.dev_runner_path = j.value("dev_runner_path", "");
         cfg.dev_hub_path = j.value("dev_hub_path", "");
+        if (j.contains("n64lle_checkout") && j.at("n64lle_checkout").is_string())
+            cfg.n64lle_checkout = resolve(j.at("n64lle_checkout").get<std::string>());
         if (j.contains("auto_scan_after_catalog_update"))
             cfg.auto_scan_after_catalog_update =
                 j.value("auto_scan_after_catalog_update", true);
@@ -370,6 +372,8 @@ AppConfig load_app_config(const fs::path& config_path) {
                 if (item.contains("app")) r.app = resolve(item.value("app", std::string{}));
                 if (item.contains("project"))
                     r.project = resolve(item.value("project", std::string{}));
+                r.generated = item.value("generated", false);
+                if (item.contains("rom")) r.rom = resolve(item.value("rom", std::string{}));
                 if (!r.manifest.empty()) cfg.core_titles.push_back(std::move(r));
             }
         }
@@ -466,6 +470,8 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
         json e = {{"manifest", store(r.manifest)}, {"name", r.name}};
         if (!r.app.empty()) e["app"] = store(r.app);
         if (!r.project.empty()) e["project"] = store(r.project);
+        if (r.generated) e["generated"] = true;
+        if (!r.rom.empty()) e["rom"] = store(r.rom);
         core_titles.push_back(std::move(e));
     }
 
@@ -485,6 +491,7 @@ bool save_app_config(const fs::path& config_path, const AppConfig& cfg, std::str
               {"dev_core_path", cfg.dev_core_path},
               {"dev_runner_path", cfg.dev_runner_path},
               {"dev_hub_path", cfg.dev_hub_path},
+              {"n64lle_checkout", store(cfg.n64lle_checkout)},
               {"auto_scan_after_catalog_update", cfg.auto_scan_after_catalog_update},
               {"check_updates_before_launch", cfg.check_updates_before_launch},
               {"auto_clean_build_dirs", cfg.auto_clean_build_dirs},

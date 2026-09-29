@@ -5,6 +5,7 @@
 #include "retcomm/catalog.hpp"
 #include "retcomm/config.hpp"
 #include "retcomm/core_titles.hpp"
+#include "hub/hub_local_recomp.hpp"
 #include "retcomm/data_root_migrate.hpp"
 #include "retcomm/install.hpp"
 #include "retcomm/launch.hpp"
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <future>
 #include <mutex>
 #include <set>
@@ -232,6 +234,10 @@ struct TitleRow {
     // sidecar, and "<core id> <version>" for display. Empty otherwise.
     std::string core_manifest;
     std::string core_label;
+    // Its title app, when Play runs one (core_titles.hpp), and whether the hub
+    // generated it ("Generate Local Recomp": uninstalling deletes the project).
+    std::string core_app;
+    bool core_generated = false;
     bool has_rom_identity = false;
     bool romm_ready = false; // base_url + api_token configured
     bool busy = false;
@@ -438,7 +444,6 @@ enum class FilePickKind : int {
     ImportBios,
     ImportTexturePack,
     ExportActivityLog,
-    AddCoreTitle,   // a core's .rcore.toml sidecar (core_titles.hpp)
 };
 
 // Body page: platform cards → title grid for a platform → one title's page.
@@ -622,15 +627,37 @@ struct HubModel {
         fs::path package; // a title app payload's game package
     };
     std::optional<PlayRequest> pending_play;
-    // "Add Core Title…" adopts a port project (core_titles.hpp): the picked
-    // title app's project waits here for the player to agree to move it into
-    // the apps folder; declining adds nothing. Main thread only.
-    std::optional<AdoptableProject> adopt_candidate;
-    fs::path adopt_dest;         // where it goes (== root when already there)
-    std::string adopt_blocked;   // why it cannot go there (the folder exists)
-    std::future<std::string> adopt_job; // the move; "" = done, else why not
-    // Drawer "Add Core Title…": the main loop opens the file dialog (it has the window).
-    bool pending_add_core_title = false;
+    // "Generate Local Recomp" (hub_local_recomp.hpp, docs/LOCAL_RECOMP.md):
+    // the dialog's state, the dump list, and the generation itself. Development
+    // builds only; main thread only, except the generator's own thread.
+    struct LocalRecompUi {
+        enum class Page { Platform, Roms, Progress };
+        bool open = false;
+        bool focus_pending = false;
+        Page page = Page::Platform;
+        std::string platform; // "n64"
+        struct ScanResult {
+            std::vector<local_recomp::RomCandidate> roms;
+            std::vector<std::string> problems;
+        };
+        std::future<ScanResult> scan;
+        std::shared_ptr<std::atomic<bool>> scan_cancel;
+        std::vector<local_recomp::RomCandidate> roms;
+        std::vector<std::string> scan_problems;
+        std::vector<fs::path> scan_roots;
+        bool scanned = false;
+        char filter[128]{};
+        std::optional<local_recomp::RomCandidate> confirm; // "Are you sure?" is up
+        std::string added_id;  // registered: the new title's id
+        std::string register_error;
+        std::string phase_shown; // the phase last put in the status line
+        local_recomp::Generator::State last_state = local_recomp::Generator::State::Idle;
+    };
+    LocalRecompUi local_recomp_ui;
+    // Set by the Uninstall job when a core title's row went away: its
+    // platform, for the main thread to leave that title's page. Guarded by mu.
+    std::string core_title_removed_platform;
+    local_recomp::Generator local_recomp_gen;
     std::string toolchain_current_version;
     std::string toolchain_latest_tag;
     std::string toolchain_status; // short UI line
@@ -697,12 +724,17 @@ struct HubModel {
     // Adds the registered core titles (cfg.core_titles) to `catalog`. Call after
     // every catalog load; see retcomm/core_titles.hpp.
     void apply_core_titles();
-    // Adoption: offer (from the picked executable), accept (move, then add),
-    // decline, and the per-frame check that finishes an accepted move.
-    void offer_adoption(const fs::path& executable);
-    void accept_adoption();
-    void decline_adoption();
-    void poll_adoption();
+    // Generate Local Recomp: where the tools are, the dump list, starting one,
+    // and the per-frame check that registers a finished one as a core title.
+    local_recomp::Tools local_recomp_tools() const;
+    void open_local_recomp();
+    void scan_local_recomp_roms();
+    bool start_local_recomp(const local_recomp::RomCandidate& rom, std::string* error);
+    void poll_local_recomp();
+    // Uninstall of a registered core title: the registration goes, and a
+    // generated one's project folder with it (its app's saves moved aside
+    // first when keep_saves). Worker thread (the Uninstall job).
+    bool remove_core_title(const Title& t, bool keep_saves, std::string* message);
     void refresh_rows(bool check_updates, bool force_github_tags = false);
     // After the catalog gained titles: re-bind them from cached hashes (free),
     // then queue a scan of the affected platforms for anything still unmatched.
