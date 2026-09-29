@@ -12174,6 +12174,7 @@ retcomm::hub::UpdateTarget direct_update_target(const DirectHome& h, const HubMo
     t.core_pinned = h.d.core_given || !h.d.title_mode;
     t.hub_version = retcomm::retcomm_app_version();
     t.hub_commit = RETCOMM_COMMIT[0] ? RETCOMM_COMMIT : "unknown";
+    t.hub_local = kLocalBuild;
     t.core_dev = h.d.core_dev;
     // This hub is the config's dev hub when an older one handed over to it.
     std::error_code ec;
@@ -13284,10 +13285,13 @@ int main(int argc, char** argv) {
                 direct.hub = dev_hub;
                 direct.hub_auto = true;
                 direct.hub_dev = true;
-            } else if (direct.title_mode || RETCOMM_COMMIT[0] != '\0') {
+            } else if (direct.title_mode || (!kLocalBuild && RETCOMM_COMMIT[0] != '\0')) {
                 // An installed newer hub runs this app from now on. In Direct
                 // mode not from a development build, which shares its data dir
-                // with the released launcher (a title app's is its own).
+                // with the released launcher (a title app's is its own). A
+                // development build is any but the CI release: build-local.sh
+                // stamps a commit, and a local build reports the project's
+                // version, so any installed release read as newer and took over.
                 const retcomm::hub::InstalledHub newer = retcomm::hub::newest_installed_hub(
                     up, retcomm::retcomm_app_version(), direct.title_mode);
                 if (!newer.path.empty()) {

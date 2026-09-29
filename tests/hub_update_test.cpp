@@ -227,6 +227,19 @@ int main(int argc, char** argv) {
               "Direct mode from a development build does not update the hub");
     }
     {
+        // build-local.sh stamps a commit, so a local build must be told apart
+        // by hub_local: offered a release, it installs one that then takes
+        // over every start of it (its version is the project's, older).
+        UpdateTarget local = t;
+        local.title_mode = false;
+        local.hub_commit = "b7f454d9208bac0f3c34648698a7bb5dc3cde2eb";
+        local.hub_local = true;
+        const UpdateItem h = update_hub(local, true);
+        check(h.ok && !h.available && !h.installed &&
+                  h.message.find("development") != std::string::npos,
+              "Direct mode from a local build with a commit does not update the hub");
+    }
+    {
         UpdateTarget dev = t;
         dev.title_mode = false;
         dev.hub_dev = true;

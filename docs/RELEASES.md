@@ -309,8 +309,10 @@ What is refused, and said on the row rather than installed:
   whose Direct mode revision is below 4, or that has no Update page
   (`direct_mode.updates` in its manifest, `updates` in its `--version`):
   running it would leave the app no way to update again. In Direct mode (no
-  title), a development build (commit unknown) is never replaced: it shares its
-  data dir with the released launcher.
+  title), a development build -- any build but the CI release
+  (`build local` in `--version`, which `scripts/build-local.sh` makes too,
+  commit and all) -- is never replaced: it shares its data dir with the
+  released launcher.
 - **A runner**, as the runtime updater always has, and not at all while
   `RETRO_CORE_RUNNER` or `--runner` names one.
 
@@ -319,8 +321,9 @@ What is refused, and said on the row rather than installed:
 `--hub` does: same arguments, `--title` for a title app, `RETRO_HUB_APP` so the
 data dir stays beside the app. It does not pass `--runner`; it exports
 `RETRO_HUB_BUNDLED_RUNNER=<its own bundled runner>`, which the updated hub
-counts as bundled, so a runner update still wins. `--check-title`, `--hub` and
-a hub already started by another (`RETRO_HUB_REEXEC`) never hand over. On
+counts as bundled, so a runner update still wins. `--check-title`, `--hub`, a
+hub already started by another (`RETRO_HUB_REEXEC`) and, in Direct mode, a
+local build (`build local`) never hand over. On
 Linux this is `execv`, so an AppImage stays mounted. **Restart now** starts the
 first hub again (`RETRO_HUB_ENTRY`, with the environment it was started in),
 which picks the newest of everything once more.

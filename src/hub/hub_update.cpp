@@ -471,9 +471,16 @@ UpdateItem update_runner(const UpdateTarget& t, bool install) {
 UpdateItem update_hub(const UpdateTarget& t, bool install) {
     UpdateItem item;
     item.current = t.hub_version + (t.hub_dev ? " (dev)" : "");
-    if (!t.hub_dev && !t.title_mode && (t.hub_commit.empty() || t.hub_commit == "unknown")) {
+    // In Direct mode a local build is never replaced: it shares its data dir
+    // with the released launcher, and a release installed there would take
+    // over every later start of it. A local build reports the project's own
+    // version, so any release reads as newer. Asked as hub_local, not by the
+    // commit: build-local.sh stamps one.
+    if (!t.hub_dev && !t.title_mode &&
+        (t.hub_local || t.hub_commit.empty() || t.hub_commit == "unknown")) {
         item.ok = true;
-        item.message = "A development build (no commit recorded); it is updated by building it.";
+        item.message = "A development build (a local build of this repo); it is updated by "
+                       "building it.";
         return item;
     }
     std::string err;

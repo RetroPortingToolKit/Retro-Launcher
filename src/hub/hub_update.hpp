@@ -49,6 +49,10 @@ struct UpdateTarget {
     fs::path package;          // the game package, or empty
     bool core_pinned = false;  // --run-core / --core named it
     std::string hub_version, hub_commit;
+    // Built by anything but the CI release (RETCOMM_RELEASE_BUILD off):
+    // scripts/build-local.sh stamps a commit, so the commit alone cannot tell
+    // a local build from a release.
+    bool hub_local = false;
     // A developer's own build is in use, chosen on the Update page (config
     // dev_core_path / dev_hub_path). A release always replaces one: its row
     // offers the newest release whatever the versions say.
