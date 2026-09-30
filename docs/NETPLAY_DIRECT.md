@@ -65,6 +65,7 @@ contract across the four repositories involved.
 | rev 4 slots from the existing ring (`n64_rb_*`, `keep_tip`), `run_frame_resim` (the VI hook's replay path), `state_hash_parts` (rdram / cpu+rsp / dev+io); ROLLBACK declared | **built** (branch `feat/rcore-rollback`, on main 6ab51977) |
 | `RCORE_INIT_NETPLAY` settles the software rasterizer, `rdp_async` off, the MBC3 on guest time from the session epoch; the config is sealed; mods are cleared; the runner's published rows settle connected bits; cartridge saves start blank in the match's sandbox | **built** |
 | rev 6 row codec: the N64 pad (16 bits incl. C buttons, one stick), `pad_map::unmap` | **built** |
+| A title whose `game.toml` says `[netplay] pixel_path = "free"` (Pokemon Stadium, measured) keeps each player's renderer: the digest leaves out the bytes the RDP drew, the hidden plane and TMEM; the readback probe rolls back with the machine and ends a match on a readback. `video.renderer` is no longer a NETPLAY option; the RDP worker pool stays off in every session | **built** (n64lle `feat/rcore-rollback` b433ad12; evidence in n64lle `docs/evidence/NETPLAY-DETERMINISM-BOUNDARY.md`) |
 
 ### 4. Lobby server (recomp-net-server)
 
@@ -112,9 +113,11 @@ intro, where the game does not read the pak).
 
 ## Known limits, stated up front
 
-- **Speed.** n64lle's netplay configuration forces the software rasterizer.
-  Its measured battle scene runs at about 71% of real time on a Ryzen 7 5700X
-  (n64lle `docs/NETPLAY.md` §5). A match plays, but not at full speed in
-  battles, until that rasterizer is faster or a deterministic GPU path exists.
+- **Speed.** Pokemon Stadium frees its pixel path, so a player with a GPU
+  renderer plays at full speed: a Battle Now field costs 7.1 ms on Vulkan
+  (RTX 3070). A player on the software rasterizer still pays 23.8 ms (70 % of
+  real time), because the rasterizer's worker pool (10.6 ms) forked under
+  rollback and stays off in netplay. A title that has not been measured keeps
+  every player on software.
 - **NAT.** Hosting needs a router that honours UPnP/NAT-PMP, or a forwarded
   port, or an open NAT. Otherwise the server relay carries the match.
