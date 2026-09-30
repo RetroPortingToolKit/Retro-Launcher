@@ -300,7 +300,8 @@ void PlaySession::open_states() {
     const corelink::CoreIdentity& id = link_.identity();
     if (!link_.states_supported()) {
         const std::string why =
-            id.protocol_minor < 1 ? "Save states need a newer retro-core-runner"
+            !corelink::link_has_savestates(id.protocol_minor)
+                ? "Save states need a newer retro-core-runner"
                                   : id.core_id + " has no save states";
         osd_.toast(why, SDL_GetTicksNS(), 3000);
         states_.close();

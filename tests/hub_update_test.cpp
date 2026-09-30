@@ -13,6 +13,7 @@
 #include "retcomm/fs_util.hpp"
 #include "retcomm/hash.hpp"
 #include "retcomm/runtime_update.hpp"
+#include "link_protocol.hpp" // Retro-Runtime corelink: kProtocolMajor
 #include "rcore/rcore.h"
 
 #include <cstdio>
@@ -279,13 +280,14 @@ int main(int argc, char** argv) {
             check(h.ok && !h.installed && h.message.find("Not installed") != std::string::npos,
                   "a hub for another link major is not installed");
         }
-        hub_manifest(1, 0);
+        const int link = static_cast<int>(retro::corelink::kProtocolMajor); // this launcher's
+        hub_manifest(link, 0);
         {
             const UpdateItem h = update_hub(t, true);
             check(h.ok && !h.installed && h.message.find("predates") != std::string::npos,
                   "a hub without the Update page is not installed");
         }
-        hub_manifest(1);
+        hub_manifest(link);
         {
             UpdateTarget same = t;
             same.hub_version = hub_ver;
