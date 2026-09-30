@@ -78,6 +78,8 @@ set(RETCOMM_CORE_SOURCES
     src/netplay/netplay_ws.cpp
     src/netplay/netplay_client.cpp
     src/netplay/netplay_account.cpp
+    src/netplay/netplay_lan.cpp
+    src/netplay/netplay_nat.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
@@ -310,6 +312,15 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_VERSION})
         endif()
     endif()
 endif()
+# Netplay in the runner (Retro-Runtime runner/net_session.hpp) needs a
+# recomp-net checkout. A local build finds one beside this repository; a build
+# without it gets a runner that answers `netplay 0` (docs/NETPLAY_DIRECT.md).
+if(NOT DEFINED CACHE{RETRO_RUNTIME_RECOMP_NET_DIR} AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net/include/recomp_net/rb_driver.h")
+    get_filename_component(_rnet "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net" ABSOLUTE)
+    set(RETRO_RUNTIME_RECOMP_NET_DIR "${_rnet}" CACHE PATH
+        "recomp-net checkout: build retro-core-runner with netplay")
+endif()
 add_subdirectory(third_party/Retro-Runtime)
 # The hub starts the runner from its own directory, so in the build tree the
 # runner must land there too, not under third_party/ (where, until this line, a
@@ -382,6 +393,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
             ${RETCOMM_RC_HUB}
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
@@ -399,6 +411,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
         )
     endif()
     target_include_directories(retro-hub PRIVATE
@@ -455,6 +468,15 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
             add_test(NAME hub_update COMMAND retro-hub-update-test
                 ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
+            # Netplay LAN discovery: both beacons, over loopback.
+            add_executable(retcomm-netplay-lan-test tests/netplay_lan_test.cpp)
+            target_link_libraries(retcomm-netplay-lan-test PRIVATE retcomm_core)
+            add_test(NAME netplay_lan COMMAND retcomm-netplay-lan-test)
+            # The host relay's reachability: UPnP / NAT-PMP / STUN encoders,
+            # and a host port answering a probe over loopback.
+            add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
+            target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
+            add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

@@ -1,4 +1,5 @@
 #include "hub/hub_core_settings.hpp"
+#include "retcomm/hash.hpp"
 #include "retcomm/fs_util.hpp"
 
 #include "transport.hpp" // Retro-Runtime corelink: run_to_completion, path_utf8
@@ -641,6 +642,117 @@ bool save_platform_input(const fs::path& data_dir, const std::string& platform,
     }
     return write_atomically(platform_settings_dir(data_dir, platform) / "input.ini", o.str(),
                             error);
+}
+
+// ---- Transfer Pak Support ------------------------------------------------------
+
+namespace {
+const SupportedGbRom kGbRoms[kSupportedGbRoms] = {
+    {"red", "Pokemon Red", "Pokemon - Red Version (USA, Europe) (SGB Enhanced)",
+     "5ca7ba01642a3b27b0cc0b5349b52792795b62d3ed977e98a09390659af96b7b", 1048576},
+    {"blue", "Pokemon Blue", "Pokemon - Blue Version (USA, Europe) (SGB Enhanced)",
+     "2a951313c2640e8c2cb21f25d1db019ae6245d9c7121f754fa61afd7bee6452d", 1048576},
+    {"yellow", "Pokemon Yellow",
+     "Pokemon - Yellow Version - Special Pikachu Edition (USA, Europe) (CGB+SGB Enhanced)",
+     "8cbaa499397e4f1a679c992ea9382a2dd7942ab398b48c19829c2d9529de47bf", 1048576},
+};
+} // namespace
+
+const SupportedGbRom& supported_gb_rom(int i) {
+    return kGbRoms[std::clamp(i, 0, kSupportedGbRoms - 1)];
+}
+
+int supported_gb_rom_by_sha256(const std::string& sha256) {
+    for (int i = 0; i < kSupportedGbRoms; ++i)
+        if (sha256 == kGbRoms[i].sha256) return i;
+    return -1;
+}
+
+bool TransferPakLibrary::complete() const {
+    for (int i = 0; i < kSupportedGbRoms; ++i)
+        if (path[static_cast<size_t>(i)].empty() || sha256[static_cast<size_t>(i)].empty())
+            return false;
+    return true;
+}
+
+TransferPakLibrary load_tpak_library(const fs::path& data_dir, const std::string& platform) {
+    TransferPakLibrary lib;
+    const fs::path path = platform_settings_dir(data_dir, platform) / "transfer_pak.ini";
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return lib;
+    for_each_ini(read_text(path), [&](const std::string& section, const std::string& key,
+                                      const std::string& value) {
+        for (int i = 0; i < kSupportedGbRoms; ++i) {
+            if (section != kGbRoms[i].key) continue;
+            if (key == "path") lib.path[static_cast<size_t>(i)] = value;
+            else if (key == "sha256") lib.sha256[static_cast<size_t>(i)] = value;
+        }
+    });
+    return lib;
+}
+
+bool save_tpak_library(const fs::path& data_dir, const std::string& platform,
+                       const TransferPakLibrary& lib, std::string* error) {
+    std::ostringstream o;
+    o << "# Retro Launcher: the Game Boy cartridges netplay Transfer Pak lobbies use.\n"
+      << "# Written by Transfer Pak Support; each file was checked against its sha256.\n";
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const std::string& p = lib.path[static_cast<size_t>(i)];
+        if (p.find_first_of("\r\n") != std::string::npos) {
+            if (error) *error = "a Game Boy file path this file cannot hold";
+            return false;
+        }
+        o << "\n[" << kGbRoms[i].key << "]\n";
+        if (!p.empty()) o << "path = " << p << "\nsha256 = " << lib.sha256[static_cast<size_t>(i)] << "\n";
+    }
+    return write_atomically(platform_settings_dir(data_dir, platform) / "transfer_pak.ini",
+                            o.str(), error);
+}
+
+bool verify_supported_gb_rom(int which, const fs::path& file, std::string* sha256,
+                             std::string* error) {
+    const SupportedGbRom& want = supported_gb_rom(which);
+    auto fail = [&](const std::string& m) {
+        if (error) *error = m;
+        return false;
+    };
+    std::error_code ec;
+    const auto size = fs::file_size(file, ec);
+    if (ec) return fail("Cannot read " + file.filename().string() + ".");
+    const std::string sha = retcomm::file_sha256_hex(file);
+    if (sha.empty()) return fail("Cannot read " + file.filename().string() + ".");
+    if (sha256) *sha256 = sha;
+    if (size == want.size && sha == want.sha256) return true;
+    const int other = supported_gb_rom_by_sha256(sha);
+    if (other >= 0)
+        return fail(file.filename().string() + " is " + kGbRoms[other].label + ", not " +
+                    want.label + ".");
+    std::string gb_err;
+    gb_cart_ram_bytes(file, &gb_err);
+    if (!gb_err.empty()) return fail(gb_err + ".");
+    return fail(file.filename().string() + " is not the supported " + want.label + " dump (" +
+                want.dump + ".gb, sha256 " + std::string(want.sha256).substr(0, 12) +
+                "\xE2\x80\xA6). Its sha256 is " + sha.substr(0, 12) + "\xE2\x80\xA6.");
+}
+
+bool recheck_tpak_library(const TransferPakLibrary& lib, std::string* error) {
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const std::string& p = lib.path[static_cast<size_t>(i)];
+        if (p.empty()) {
+            if (error) *error = std::string(kGbRoms[i].label) + " is not set in Transfer Pak Support.";
+            return false;
+        }
+        std::string sha, err;
+        if (!verify_supported_gb_rom(i, p, &sha, &err)) {
+            if (error) *error = std::string(kGbRoms[i].label) + ": " + err;
+            return false;
+        }
+        if (sha != lib.sha256[static_cast<size_t>(i)]) {
+            if (error) *error = std::string(kGbRoms[i].label) + " changed since it was saved; choose it again.";
+            return false;
+        }
+    }
+    return true;
 }
 
 std::size_t gb_cart_ram_bytes(const fs::path& rom, std::string* error) {

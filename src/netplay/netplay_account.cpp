@@ -162,7 +162,8 @@ bool DiscordAccount::restore(AccountInfo* out, std::string* error, bool* rejecte
 }
 
 bool DiscordAccount::login(AccountInfo* out, std::string* error, int timeout_s, bool open_browser,
-                           const std::function<void(const std::string&)>& on_url) {
+                           const std::function<void(const std::string&)>& on_url,
+                           const std::atomic<bool>* cancel) {
     long status = 0;
     std::string body;
     if (!post_json("/auth/discord/start", "{}", &status, &body, error)) return false;
@@ -189,7 +190,13 @@ bool DiscordAccount::login(AccountInfo* out, std::string* error, int timeout_s, 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
     const json poll = {{"code", code}};
     while (std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        for (int i = 0; i < 10; ++i) {
+            if (cancel && cancel->load()) {
+                if (error) *error = "sign-in cancelled";
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
         std::string perr;
         if (!post_json("/auth/discord/poll", poll.dump(), &status, &body, &perr)) continue;
         if (status == 202) continue;  // pending

@@ -13,6 +13,7 @@
 #include "retcomm/fs_util.hpp"
 #include "retcomm/hash.hpp"
 #include "retcomm/runtime_update.hpp"
+#include "rcore/rcore.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -78,7 +79,8 @@ void write_core_manifest(const fs::path& at, const std::string& version, int mod
                                 : sha_override;
     write(at, R"({"schema": 1, "name": "n64lle", "version": ")" + version +
                   R"(", "commit": "abc", "module_abi": )" + std::to_string(module_abi) +
-                  R"(, "rcore_abi": {"major": 0, "minor": 0, "draft_revision": 5},
+                  R"(, "rcore_abi": {"major": 0, "minor": 0, "draft_revision": )" +
+                  std::to_string(RCORE_DRAFT_REVISION) + R"(},
   "core": {"linux-x86_64": {"url": ")" + file_url(archive) + R"(", "archive": ")" +
                   archive.filename().string() + R"(", "sha256": ")" + sha + R"(", "size": )" +
                   std::to_string(fs::file_size(archive)) + R"(, "root": "n64lle-core-)" + version +
@@ -261,7 +263,8 @@ int main(int argc, char** argv) {
         auto hub_manifest = [&](int link_major, int updates = 1) {
             write(hm, R"({"schema": 1, "name": "retro-hub", "version": ")" + hub_ver +
                           R"(", "commit": "", "link_protocol": {"major": )" + std::to_string(link_major) +
-                          R"(, "minor": 0}, "rcore_abi": {"major": 0, "draft_revision": 5},
+                          R"(, "minor": 0}, "rcore_abi": {"major": 0, "draft_revision": )" +
+                          std::to_string(RCORE_DRAFT_REVISION) + R"(},
   "direct_mode": {"cli_revision": 4, "updates": )" + std::to_string(updates) + R"(},
   "platforms": {"linux-x86_64": {"url": ")" + file_url(hub_archive) + R"(", "archive": ")" +
                           hub_archive.filename().string() + R"(", "sha256": ")" +

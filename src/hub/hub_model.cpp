@@ -504,6 +504,9 @@ void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {
             row.netplay_lobby_url = cfg.resolve_netplay_lobby_url(t.netplay.lobby_url);
             row.netplay_max_slots = t.netplay.max_slots;
             row.netplay_joinable = row.installed;
+            row.netplay_pin = normalize_netplay_version(
+                plan.record && !plan.record->source_ref.empty() ? plan.record->source_ref
+                                                                : t.netplay.game_version);
             row.netplay_version_ok =
                 row.installed &&
                 (row.installed_tag.empty() ||

@@ -63,6 +63,11 @@ struct PlayArgs {
     // not persisted).
     PlayPrefs prefs;
     fs::path data_dir;
+    // A netplay match (docs/NETPLAY_DIRECT.md): the runner's --net-* flags.
+    // Empty = offline. In a match the game never pauses (the menu opens over
+    // it and this player's pad goes neutral), and save states and turbo are
+    // off; a match that ends is not a fault.
+    std::vector<std::string> net_args;
 };
 
 class PlaySession {
@@ -105,7 +110,8 @@ private:
     void pump_audio();
     void upload_frame();
     void set_paused(bool paused);
-    bool paused() const { return menu_open_ || states_.is_open(); }
+    // A match never pauses: every peer runs on (recomp-ai-rules NETPLAY.md §6).
+    bool paused() const { return !netplay_ && (menu_open_ || states_.is_open()); }
     void sync_pause();
     void set_volume(int percent);
     void set_show_fps(bool on);
@@ -119,11 +125,13 @@ private:
     void draw_overlay();
     void draw_menu();
     void draw_fault();
+    void draw_match_ended();
     void draw_loading();
 
     corelink::CoreLink link_;
     PlayArgs args_;
     bool menu_open_ = false;
+    bool netplay_ = false;
     bool finished_ = false;
     bool user_quit_ = false;
 

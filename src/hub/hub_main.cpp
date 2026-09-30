@@ -12,6 +12,8 @@
 #include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
 #include "hub/hub_theme.hpp"
+#include "hub/hub_widgets.hpp"
+#include "hub/hub_netplay.hpp"
 
 #if !defined(RETCOMM_COMMIT)
 #define RETCOMM_COMMIT ""
@@ -28,6 +30,7 @@ constexpr bool kLocalBuild = true;
 
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/hash.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/runtime_update.hpp"
@@ -950,46 +953,10 @@ void draw_status_badge_glyph(ImDrawList* dl, const ImVec2& c, float rad, TileSta
     }
 }
 
-bool accent_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.accent_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.accent_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.accent_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.accent_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Play / success actions — muted green fill; bright th.good stays for status text.
 // A button as wide as its label plus the same padding at both ends, so a
 // fixed width never crowds (or clips) the text at one side.
 float padded_button_width(const char* label, float pad = 20.f) {
     return ImGui::CalcTextSize(label).x + 2.f * pad;
-}
-
-bool good_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.good_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.good_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.good_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.good_button_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Destructive actions — muted red fill (mirrors good_button contrast).
-bool danger_button(const char* label, const Theme& /*th*/, const ImVec2& size = ImVec2(0, 0)) {
-    const ImVec4 btn(0.561f, 0.165f, 0.200f, 1.f);       // #8F2A33
-    const ImVec4 hovered(0.655f, 0.220f, 0.255f, 1.f);   // #A73841
-    const ImVec4 active(0.455f, 0.130f, 0.165f, 1.f);    // #74212A
-    const ImVec4 text(0.980f, 0.920f, 0.925f, 1.f);      // #FAEBEB
-    ImGui::PushStyleColor(ImGuiCol_Button, btn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
-    ImGui::PushStyleColor(ImGuiCol_Text, text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
 }
 
 // RomM brand purple (docs.romm.app brand guidelines: #553e98 / #371f69).
@@ -1099,6 +1066,7 @@ void go_back_to_titles(HubModel& hub) {
 void close_settings_pages(HubModel& hub) {
     request_page_focus(hub);
     hub.show_mods_page = false;
+    hub.show_netplay = false; // its connection and seat carry on (hub_netplay.hpp)
     hub.show_library_panel = false;
     hub.show_settings = false;
     hub.show_romm_settings = false;
@@ -1351,8 +1319,8 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         // plus Back, which belongs beside it in the corner rather than down in
         // the page's own header band.
         float right_x = p0.x + width - 16.f;
-        const bool show_back =
-            hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms;
+        const bool show_back = hub.show_mods_page || hub.show_netplay ||
+                               hub.library_nav != retcomm::hub::LibraryNav::Platforms;
         if (show_back) {
             const char* back_label = "Back";
             const float back_w =
@@ -1361,6 +1329,7 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
             ImGui::SetCursorScreenPos(ImVec2(right_x, btn_y));
             if (ImGui::Button(back_label, ImVec2(back_w, kMenuH))) {
                 if (hub.show_mods_page) hub.show_mods_page = false;
+                else if (hub.show_netplay) hub.show_netplay = false;
                 else if (hub.library_nav == retcomm::hub::LibraryNav::Detail)
                     go_back_to_titles(hub);
                 else go_home(hub);
@@ -3019,6 +2988,12 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
         if (ImGui::Button("Add/Scan Files", item_sz)) {
             close_nav_drawer(hub);
             hub.pending_open_library = true;
+        }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (ImGui::Button("Netplay", item_sz)) {
+            close_nav_drawer(hub);
+            close_settings_pages(hub);
+            hub.show_netplay = true;
         }
         ImGui::PopStyleVar();
 
@@ -11367,7 +11342,7 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
 
 // ---- Direct home ------------------------------------------------------------
 
-enum class DirectPage { Home, Mods, Update };
+enum class DirectPage { Home, Mods, Update, Netplay };
 
 // run_direct_home's answer when the player pressed Restart on the Update page:
 // main closes the window and starts the app again (restart_hub).
@@ -11571,6 +11546,22 @@ struct DirectHome {
     std::shared_ptr<DevPick> dev_pick;
     std::string rom_note; // the last pick's result, or why none resolved
     bool rom_note_bad = false;
+    // Transfer Pak Support (a title whose game.toml supports the Transfer Pak):
+    // the three Game Boy cartridges netplay Transfer Pak lobbies need, each
+    // checked by sha256 before it is kept (hub_core_settings.hpp).
+    bool tpak_supported = false;
+    bool tpak_open = false;
+    retcomm::hub::TransferPakLibrary tpak_lib;
+    std::array<std::string, retcomm::hub::kSupportedGbRoms> tpak_note;
+    std::array<bool, retcomm::hub::kSupportedGbRoms> tpak_bad{};
+    int tpak_picking = -1;
+    std::shared_ptr<TitleRomPick> tpak_pick;
+    // Netplay (docs/NETPLAY_DIRECT.md): this title's lobby, and a match the
+    // lobby launched, waiting for the loop to start it.
+    retcomm::hub::NetplayScope net_scope;
+    bool net_scope_ready = false;
+    std::optional<retcomm::hub::NetplayLaunch> net_launch;
+    bool net_playing = false; // a match's PlaySession is running
 };
 
 // SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
@@ -11666,6 +11657,190 @@ void take_title_rom_pick(DirectHome& h) {
                  " and remembered.";
     h.rom_note_bad = false;
     std::fprintf(stderr, "retro-hub: rom: %s (chosen, remembered)\n", path.c_str());
+}
+
+// game.toml `[transfer_pak] supported = true`: the title reads a Game Boy
+// cartridge through a Transfer Pak (n64lle setup_project --transfer-pak).
+bool title_supports_transfer_pak(const fs::path& title_dir) {
+    std::ifstream in(title_dir / "game.toml");
+    std::string line;
+    bool in_section = false;
+    while (std::getline(in, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const auto first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        line = line.substr(first);
+        if (line[0] == '[') {
+            in_section = line.rfind("[transfer_pak]", 0) == 0;
+            continue;
+        }
+        if (!in_section || line.rfind("supported", 0) != 0) continue;
+        const auto eq = line.find('=');
+        return eq != std::string::npos && line.find("true", eq) != std::string::npos;
+    }
+    return false;
+}
+
+void begin_tpak_pick(DirectHome& h, int which) {
+    if (!h.tpak_pick) h.tpak_pick = std::make_shared<TitleRomPick>();
+    TitleRomPick& p = *h.tpak_pick;
+    {
+        std::lock_guard<std::mutex> lock(p.mu);
+        if (p.busy) return;
+        p.busy = true;
+        p.answered = false;
+    }
+    h.tpak_picking = which;
+    p.filter_name = std::string(retcomm::hub::supported_gb_rom(which).label) + " (.gb)";
+    p.filter_pattern = "gb;gbc";
+    p.filters[0].name = p.filter_name.c_str();
+    p.filters[0].pattern = p.filter_pattern.c_str();
+    p.filters[1].name = "All files";
+    p.filters[1].pattern = "*";
+    const std::string& have = h.tpak_lib.path[static_cast<size_t>(which)];
+    const std::string start = have.empty() ? std::string() : fs::path(have).parent_path().string();
+    SDL_ShowOpenFileDialog(on_title_rom_dialog, new std::shared_ptr<TitleRomPick>(h.tpak_pick),
+                           h.window, p.filters, 2, start.empty() ? nullptr : start.c_str(), false);
+}
+
+// The dialog's answer: kept only when it is the supported dump, then saved.
+void take_tpak_pick(DirectHome& h, HubModel& hub) {
+    if (!h.tpak_pick || h.tpak_picking < 0) return;
+    std::string path, error;
+    {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        if (!h.tpak_pick->answered) return;
+        h.tpak_pick->answered = false;
+        path = h.tpak_pick->path;
+        error = h.tpak_pick->error;
+    }
+    const int i = h.tpak_picking;
+    h.tpak_picking = -1;
+    const size_t k = static_cast<size_t>(i);
+    if (path.empty()) {
+        if (!error.empty()) {
+            h.tpak_note[k] = "The file dialog failed: " + error;
+            h.tpak_bad[k] = true;
+        }
+        return;
+    }
+    std::string sha, err;
+    if (!retcomm::hub::verify_supported_gb_rom(i, path, &sha, &err)) {
+        h.tpak_note[k] = err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+    lib.path[k] = path;
+    lib.sha256[k] = sha;
+    if (!retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+        h.tpak_note[k] = "Not saved: " + err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    h.tpak_lib = lib;
+    h.tpak_note[k] = "Verified: sha256 " + sha.substr(0, 16) + "\xE2\x80\xA6";
+    h.tpak_bad[k] = false;
+}
+
+void draw_tpak_support(DirectHome& h, HubModel& hub, const Theme& th) {
+    using retcomm::hub::kSupportedGbRoms;
+    using retcomm::hub::supported_gb_rom;
+    constexpr const char* kId = "Transfer Pak Support###tpak_support";
+    take_tpak_pick(h, hub);
+    if (h.tpak_open) {
+        h.tpak_open = false;
+        h.tpak_lib = retcomm::hub::load_tpak_library(hub.paths.data_dir, h.platform);
+        // Say up front whether what was saved still checks out.
+        for (int i = 0; i < kSupportedGbRoms; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            h.tpak_note[k].clear();
+            h.tpak_bad[k] = false;
+            const std::string& p = h.tpak_lib.path[k];
+            if (p.empty()) continue;
+            std::string sha, err;
+            if (!retcomm::hub::verify_supported_gb_rom(i, p, &sha, &err)) {
+                h.tpak_note[k] = err;
+                h.tpak_bad[k] = true;
+            } else if (sha != h.tpak_lib.sha256[k]) {
+                h.tpak_note[k] = "Changed since it was saved; choose it again.";
+                h.tpak_bad[k] = true;
+            } else {
+                h.tpak_note[k] = "Verified";
+            }
+        }
+        ImGui::OpenPopup(kId);
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->WorkSize.x - 40.f), 0.f));
+    if (!ImGui::BeginPopupModal(kId, nullptr,
+                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextColored(th.text_muted,
+                       "Transfer Pak lobbies need all three cartridges on every player's machine: "
+                       "each player's pak is simulated by everyone. Only these dumps are accepted; "
+                       "each file is checked when you choose it and again before a Transfer Pak "
+                       "lobby.");
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, 6));
+    bool picking = false;
+    if (h.tpak_pick) {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        picking = h.tpak_pick->busy;
+    }
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        const auto& rom = supported_gb_rom(i);
+        ImGui::PushID(i);
+        ImGui::Separator();
+        ImGui::TextColored(th.accent, "%s", rom.label);
+        ImGui::SameLine();
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.text_muted, "%s", rom.dump);
+        const std::string& p = h.tpak_lib.path[k];
+        ImGui::TextUnformatted(p.empty() ? "Not set" : p.c_str());
+        ImGui::PopTextWrapPos();
+        if (!h.tpak_note[k].empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(h.tpak_bad[k] ? th.warn : th.good, "%s", h.tpak_note[k].c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::BeginDisabled(picking);
+        if (ImGui::Button(h.tpak_picking == i ? "Choosing..." : "Choose\xE2\x80\xA6", ImVec2(140, 0)))
+            begin_tpak_pick(h, i);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(p.empty());
+        if (ImGui::Button("Clear", ImVec2(100, 0))) {
+            retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+            lib.path[k].clear();
+            lib.sha256[k].clear();
+            std::string err;
+            if (retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+                h.tpak_lib = lib;
+                h.tpak_note[k].clear();
+            } else {
+                h.tpak_note[k] = "Not saved: " + err;
+                h.tpak_bad[k] = true;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 4));
+    if (h.tpak_lib.complete())
+        ImGui::TextColored(th.good, "All three are set: you can host and join Transfer Pak lobbies.");
+    else
+        ImGui::TextColored(th.text_muted, "Set all three to host or join a Transfer Pak lobby.");
+    if (ImGui::Button("Close", ImVec2(140, 0)) ||
+        (!picking && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 std::string platform_label(const std::string& platform) {
@@ -12095,6 +12270,17 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
     ImGui::Dummy(ImVec2(0, 6));
 
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
+    ImGui::BeginDisabled(!have_rom);
+    if (ImGui::Button("Netplay", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Netplay);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(have_rom ? "Play this game online or on your network."
+                                   : "Choose the ROM first: a match runs it.");
+    if (h.tpak_supported) {
+        if (ImGui::Button("Transfer Pak Support\xE2\x80\xA6", ImVec2(w, 0))) h.tpak_open = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Pokemon Red, Blue and Yellow for Transfer Pak netplay lobbies.");
+    }
     if (!h.session_notes.empty()) {
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextColored(th.text_muted, "Last session");
@@ -12409,6 +12595,143 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     return true;
 }
 
+// The lobby identity of this exact build: the title's version plus the core's
+// and the package's sha256, so only players who can simulate identically see
+// each other (recomp-ai-rules NETPLAY.md §4). Worked out once per run.
+void prepare_net_scope(DirectHome& h, HubModel& hub) {
+    if (h.net_scope_ready) return;
+    h.net_scope_ready = true;
+    retcomm::hub::NetplayScope& sc = h.net_scope;
+    sc.title = h.name;
+    sc.game_name = h.name;
+    const std::string version =
+        h.d.title_mode && !h.d.title.version.empty() ? h.d.title.version : "dev";
+    const std::string core_sha = retcomm::file_sha256_hex(h.d.args.core);
+    const std::string pkg_sha =
+        h.d.args.package.empty() ? std::string() : retcomm::file_sha256_hex(h.d.args.package);
+    sc.pin = version + "+c" + core_sha.substr(0, 10) +
+             (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
+    sc.max_slots = 4;
+    sc.tpak_supported = h.tpak_supported;
+    const fs::path data = hub.paths.data_dir;
+    const std::string platform = h.platform;
+    sc.tpak_problem = [data, platform]() -> std::string {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        std::string err;
+        if (!lib.complete())
+            return "Set Pokemon Red, Blue and Yellow in Transfer Pak Support first.";
+        if (!retcomm::hub::recheck_tpak_library(lib, &err)) return err;
+        return {};
+    };
+    sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
+    // A Transfer Pak lobby: this player's pak is their first seat's (Gamepads).
+    sc.local_pak = [data, platform]() {
+        retcomm::hub::NetplayPak pak;
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        const retcomm::hub::SeatPak& sp = in.paks[0];
+        if (sp.kind != retcomm::hub::SeatPak::TransferPak || sp.gb_rom.empty()) {
+            pak.note = "no Transfer Pak on your first seat (Gamepads): you play without one.";
+            return pak;
+        }
+        const int cart = retcomm::hub::supported_gb_rom_by_sha256(retcomm::file_sha256_hex(sp.gb_rom));
+        if (cart < 0) {
+            pak.note = fs::path(sp.gb_rom).filename().string() +
+                       " is not Pokemon Red, Blue or Yellow (the supported dumps): you play without a pak.";
+            return pak;
+        }
+        std::error_code ec;
+        if (!sp.gb_save.empty() && fs::is_regular_file(sp.gb_save, ec)) {
+            std::ifstream in_save(sp.gb_save, std::ios::binary);
+            pak.save.assign(std::istreambuf_iterator<char>(in_save), {});
+        } else {
+            std::string err;
+            pak.save.assign(retcomm::hub::gb_cart_ram_bytes(sp.gb_rom, &err), '\xFF');
+        }
+        pak.cart = cart;
+        return pak;
+    };
+    sc.cart_rom = [data, platform](int i) {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        return i >= 0 && i < retcomm::hub::kSupportedGbRoms ? lib.path[static_cast<std::size_t>(i)]
+                                                          : std::string();
+    };
+    sc.pak_dir = (data / "netplay" / h.title_key / "paks").string();
+    sc.launch = [&h](const retcomm::hub::NetplayLaunch& l) -> std::string {
+        std::string err;
+        if (retcomm::hub::netplay_runner_args(l, &err).empty()) return err;
+        h.net_launch = l;
+        return {};
+    };
+    std::fprintf(stderr, "retro-hub: netplay identity %s \"%s\"\n", sc.pin.c_str(),
+                 sc.game_name.c_str());
+}
+
+// A match: the player's session, settled for every peer alike -- a fresh save
+// sandbox per match (every peer starts from blank cartridge saves), only the
+// options that do not change the simulation, no Transfer Pak until the pak
+// exchange exists, and the runner's --net-* flags.
+bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, const HubModel& hub,
+                       const retcomm::hub::NetplayLaunch& l, std::string* why) {
+    const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+    if (rr.path.empty()) {
+        *why = "No usable retro-core-runner was found (" + rr.note + ").";
+        return false;
+    }
+    if (rr.netplay == 0) {
+        *why = "The " + rr.source + " runner at " + rr.path.string() +
+               " was built without netplay ('netplay 1' in --version).";
+        return false;
+    }
+    std::string err;
+    retcomm::hub::PlayArgs args = h.d.args;
+    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    // NETPLAY-flagged options join the match key: each peer's own choice
+    // would only get the match refused, so every peer takes the core's default.
+    if (h.desc_ready && h.desc.ok) {
+        for (const auto& o : h.desc.options)
+            if (o.netplay) args.options.erase(o.key);
+    }
+    args.tpak_rom = {};
+    args.tpak_save = {};
+    args.net_args = retcomm::hub::netplay_runner_args(l, &err);
+    if (args.net_args.empty()) {
+        *why = err;
+        return false;
+    }
+    const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /
+                          ("session-" + std::to_string(l.session_id));
+    std::error_code ec;
+    fs::remove_all(base / "saves", ec);
+    fs::create_directories(base / "saves", ec);
+    // Transfer Pak lobbies: every seat's cartridge and a copy of the save the
+    // room exchanged. The copies are the match's; nobody's real save is
+    // written (host-authoritative, NETPLAY.md §3).
+    if (l.tpak) {
+        for (std::size_t seat = 0; seat < l.tpak_rom.size(); ++seat) {
+            if (l.tpak_rom[seat].empty() || l.tpak_save[seat].empty()) continue;
+            const fs::path copy = base / "saves" / ("tpak" + std::to_string(seat + 1) + ".sav");
+            fs::copy_file(l.tpak_save[seat], copy, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                *why = "Cannot stage seat " + std::to_string(seat + 1) + "'s Transfer Pak save: " +
+                       ec.message();
+                return false;
+            }
+            args.tpak_rom[seat] = l.tpak_rom[seat];
+            args.tpak_save[seat] = copy;
+        }
+        limit_transfer_paks(args, rr);
+    }
+    if (!play.start(args, rr.path, base, base / "saves", &err)) {
+        *why = "Cannot start the match: " + err;
+        return false;
+    }
+    std::string argv;
+    for (const auto& a : args.net_args) argv += " " + a;
+    std::fprintf(stderr, "retro-hub: netplay match %u, seat %d of %d:%s\n", l.session_id,
+                 l.seat + 1, l.slots, argv.c_str());
+    return true;
+}
+
 int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const DirectPlay& d,
                     HubModel& hub) {
     DirectHome h;
@@ -12416,6 +12739,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     h.d = d;
     h.window = window;
     h.title_dir = direct_title_dir(d.args);
+    h.tpak_supported = title_supports_transfer_pak(h.title_dir);
     h.title_key = d.title_key.empty() ? direct_title_key(d.args) : d.title_key;
     h.platform = rcore_manifest_platform(d.args.core);
     if (h.platform.empty() && d.title_mode) h.platform = d.title.platform;
@@ -12544,6 +12868,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (play->finished()) {
                 play->shutdown();
                 play.reset();
+                h.net_playing = false;
                 h.session_notes = session_mod_lines(hub.paths.data_dir / "sessions" /
                                                     h.title_key / "core.log");
                 set_direct_status(h, "Session ended.", false);
@@ -12574,6 +12899,16 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     open_direct_page(h, hub, DirectPage::Home);
                 else
                     draw_direct_updates(h, hub, th);
+            } else if (h.page == DirectPage::Netplay) {
+                if (draw_direct_subpage_header(th, "Netplay")) {
+                    open_direct_page(h, hub, DirectPage::Home);
+                } else {
+                    prepare_net_scope(h, hub);
+                    ImGui::BeginChild("netplay_page_host", ImVec2(0, 0),
+                                      ImGuiChildFlags_NavFlattened);
+                    retcomm::hub::draw_netplay_page(hub, th, window, &h.net_scope);
+                    ImGui::EndChild();
+                }
             } else {
                 draw_page_header(th, platform_label(h.platform).c_str(), "");
                 const float total = ImGui::GetContentRegionAvail().x;
@@ -12588,6 +12923,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 act = draw_direct_actions(h, hub, th);
                 ImGui::EndChild();
                 draw_direct_update_prompt(h, hub, th);
+                if (h.tpak_supported) draw_tpak_support(h, hub, th);
             }
             // B / Escape backs out of a page, unless something in front owns it
             // or the settings page holds edits (Save or Cancel decides those).
@@ -12616,6 +12952,20 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (console_was_open && !hub.log_overlay_open) h.focus_pending = true;
 
             if (act == DirectAction::Quit || h.restart) running = false;
+            if (h.net_launch) {
+                const retcomm::hub::NetplayLaunch l = *h.net_launch;
+                h.net_launch.reset();
+                auto p = std::make_unique<retcomm::hub::PlaySession>();
+                std::string why;
+                if (start_net_session(*p, h, hub, l, &why)) {
+                    play = std::move(p);
+                    h.net_playing = true;
+                    set_direct_status(h, "Playing online.", false);
+                } else {
+                    set_direct_status(h, why, true);
+                    hub.append_log("netplay: " + why, retcomm::hub::LogLevel::Error);
+                }
+            }
             if (act == DirectAction::Play) {
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string why;
@@ -13391,6 +13741,10 @@ int main(int argc, char** argv) {
             ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_mods_page(hub, th);
             ImGui::EndChild();
+        } else if (hub.show_netplay) {
+            ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            retcomm::hub::draw_netplay_page(hub, th, window);
+            ImGui::EndChild();
         } else if (hub.show_library_panel) {
             ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_library_panel(hub, th, window);
@@ -14022,6 +14376,9 @@ int main(int argc, char** argv) {
     // Before the GL context goes: the session owns a texture and a runner.
     play.reset();
 #endif
+
+    // Leave any netplay room and stop its threads (bounded: a second at most).
+    retcomm::hub::netplay_shutdown();
 
     // Self-update / hard-reset apply scripts wait on this PID. Prefer a fast
     // exit over a graceful join that can hang on prefetch/launch workers and

@@ -1,5 +1,12 @@
 # Netplay UX plan — hub-hosted lobbies
 
+> **Superseded in part, 2026-09-29.** Alex's brief of that date replaced §1's
+> scope. The page now offers **LAN / Direct IP as well as Online**, mirroring
+> recomp-ui's mode page. It has **no per-game-only view**: the browser lists
+> **every game's** rooms, with a filter of installed games. Starting a match
+> from the hub waits on the games (§5.6). What was built is `NETPLAY.md`, which
+> is authoritative where the two differ.
+
 Branch `netplay-ux`. Status: **phase 0 built and verified (2026-09-13); phases
 1–4 not started.** Written 2026-09-13 from a read of the hub, recomp-ui,
 recomp-net, and recomp-net-server as they stand. File:line references are to

@@ -116,6 +116,8 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.options = args.options;
     spec.tpak_roms = args.tpak_rom;
     spec.env = args.env;
+    spec.extra_args = args.net_args;
+    netplay_ = !args.net_args.empty();
     for (std::size_t seat = 0; seat < args.tpak_save.size(); ++seat)
         if (!args.tpak_rom[seat].empty() && !args.tpak_save[seat].empty())
             spec.save_files["tpak" + std::to_string(seat + 1)] = args.tpak_save[seat];
@@ -290,6 +292,11 @@ void PlaySession::save_prefs() {
 // The hotkey's way in; the pad chord opens it in poll_states_pad(). A core
 // without savestates, or a runner from before link 1.1, gets a toast instead.
 void PlaySession::open_states() {
+    if (netplay_) {
+        osd_.toast("Save states are off during a netplay match", SDL_GetTicksNS(), 3000);
+        states_.close();
+        return;
+    }
     const corelink::CoreIdentity& id = link_.identity();
     if (!link_.states_supported()) {
         const std::string why =
@@ -362,6 +369,15 @@ void PlaySession::grant(std::uint64_t) {
     rcore_pad pads[RCORE_MAX_SEATS];
     fill_pads(pads);
     guard_.apply(pads, kSeats);
+    // In a match, a player in the menu holds nothing (the game runs on).
+    if (netplay_ && (menu_open_ || states_.is_open())) {
+        for (rcore_pad& p : pads) {
+            const std::uint32_t connected = p.connected;
+            p = rcore_pad{};
+            p.struct_size = sizeof(rcore_pad);
+            p.connected = connected;
+        }
+    }
     link_.grant(pads);
 }
 
@@ -575,7 +591,7 @@ void PlaySession::tick() {
     // Turbo while its key or combo is held, and never behind a menu. Worked
     // out before the Ended check, so a game that stops mid-turbo gets its
     // vsync back (set_turbo_running).
-    turbo_ = (turbo_key_ || turbo_pad_) && ready && !paused();
+    turbo_ = (turbo_key_ || turbo_pad_) && ready && !paused() && !netplay_;
     if (turbo_ != turbo_running_) set_turbo_running(turbo_);
     osd_.set_turbo(turbo_);
     if (link_.state() == corelink::LinkState::Ended) {
@@ -627,6 +643,7 @@ void PlaySession::draw() {
             break;
         case corelink::LinkState::Ended:
             if (user_quit_) finished_ = true;
+            else if (netplay_ && link_.exit_code() == 4) draw_match_ended();
             else draw_fault();
             break;
         case corelink::LinkState::Ready:
@@ -759,6 +776,26 @@ void PlaySession::draw_fault() {
     ImGui::EndChild();
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     if (ImGui::Button("Close", ImVec2(220, 0))) finished_ = true;
+    ImGui::End();
+}
+
+// The runner ends a match with exit 4 and one sentence (refused, a player
+// gone): an ordinary end, not the fault screen.
+void PlaySession::draw_match_ended() {
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, disp.y * 0.5f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(560.f, disp.x * 0.9f), 0.f), ImGuiCond_Always);
+    ImGui::Begin("The match ended", nullptr,
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+    std::string why = link_.exit_reason();
+    if (why.rfind("netplay: ", 0) == 0) why = why.substr(9);
+    if (!why.empty()) why[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(why[0])));
+    ImGui::TextWrapped("%s.", why.empty() ? "The match is over" : why.c_str());
+    ImGui::Dummy(ImVec2(0, 6));
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    if (ImGui::Button("Back to the lobby", ImVec2(220, 0))) finished_ = true;
     ImGui::End();
 }
 

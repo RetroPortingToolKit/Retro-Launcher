@@ -255,73 +255,9 @@ struct TitleRow {
     int netplay_max_slots = 2;
     bool netplay_joinable = false;     // installed + supported
     bool netplay_version_ok = false;   // installed_tag matches catalog pin (advisory)
-};
-
-enum class NetplayView : int {
-    Hidden = 0,
-    Browser, // cross-game room list
-    Room,    // seated in a lobby
-};
-
-struct NetplayRoomRow {
-    std::string lobby_id;
-    std::string name;
-    std::string game_name;
-    std::string game_version;
-    std::string catalog_id; // resolved via game_name when possible
-    int players = 0;
-    int max_slots = 2;
-    bool has_password = false;
-    bool joinable_locally = false; // matching install available
-};
-
-struct NetplaySlot {
-    int slot = 0;
-    std::string player_id;
-    std::string display_name;
-    bool ready = false;
-};
-
-struct NetplayLobbyState {
-    NetplayView view = NetplayView::Hidden;
-    std::string lobby_url;
-    std::string display_name;
-    bool connected = false;
-    std::string status;
-    std::string filter_catalog_id; // empty = all netplay titles
-
-    std::vector<NetplayRoomRow> rooms;
-
-    // Active room (after create/join)
-    std::string lobby_id;
-    std::string room_name;
-    std::string game_name;
-    std::string game_version;
-    std::string catalog_id;
-    bool is_host = false;
-    int local_slot = -1;
-    std::string session_id;
-    std::string host_endpoint;
-    std::string guest_endpoint;
-    std::vector<NetplaySlot> slots;
-    std::string match_caps_json; // opaque server echo
-
-    // Host create draft
-    std::string create_catalog_id;
-    char create_room_name[128]{};
-    char create_password[64]{};
-    int create_udp_port = 7777;
-};
-
-// Future handoff into LaunchMode::Netplay (env + spawn).
-struct NetplayLaunchRequest {
-    std::string catalog_id;
-    bool is_host = false;
-    int local_slot = 0;
-    std::string session_id;
-    std::string peer_endpoint;
-    std::string lobby_url;
-    std::string match_caps_json;
+    // The version this machine's build sends as game_version: the installed
+    // build's source ref, normalised; the catalog pin when not installed.
+    std::string netplay_pin;
 };
 
 struct PlatformFolderEdit {
@@ -490,6 +426,7 @@ struct HubModel {
     // Mods is a full-window page, not a popup: it is a list you work down with
     // a detail column beside it, which a floating dialog had no room for.
     bool show_mods_page = false;
+    bool show_netplay = false; // the Netplay page (hub_netplay.cpp)
     bool pending_open_library = false; // Drawer Add/Scan Files → open the page next frame
     // Add/Scan Files is a full-window page like the settings pages, not a
     // modal: it is a place you work in (pick platforms, import several files,
@@ -538,7 +475,6 @@ struct HubModel {
     RommSettingsDraft romm_settings;
     PsxSettingsDraft psx_settings;
     SnesSettingsDraft snes_settings;
-    NetplayLobbyState netplay;
 
     mutable std::mutex mu;
     std::string status; // last job/status line (also mirrored into log_lines)
