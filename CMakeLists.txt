@@ -420,8 +420,8 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
-                   src/hub/hub_title.cpp src/hub/hub_update.cpp)
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_picture.cpp
+                   src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp)
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -438,6 +438,18 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${RETCOMM_HUB_SDL_TARGET})
         add_test(NAME hub_core_settings COMMAND retro-hub-settings-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
+        # The picture's scaling (hub_picture.hpp), rendered through ImGui's GL3
+        # backend into an offscreen framebuffer and read back; the PNGs stay in
+        # the output directory. Needs a GL 3.2 context: skipped without one.
+        add_executable(retro-hub-picture-test tests/hub_picture_render_test.cpp
+            src/hub/hub_picture.cpp)
+        target_include_directories(retro-hub-picture-test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+        target_link_libraries(retro-hub-picture-test PRIVATE retcomm_imgui retro_corelink
+            ${RETCOMM_HUB_SDL_TARGET})
+        add_test(NAME hub_picture COMMAND retro-hub-picture-test
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_picture_test.d)
+        set_tests_properties(hub_picture PROPERTIES SKIP_RETURN_CODE 77)
         # Title-app mode's windowless half: title.json, the data dir beside
         # the app, the ROM checks, mods.toml in the state dir.
         add_executable(retro-hub-title-test tests/hub_title_test.cpp src/hub/hub_title.cpp)

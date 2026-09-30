@@ -90,6 +90,8 @@ header's **n64lle Config** -- writes these, and every play path reads them
 | `<data dir>/platform/<platform>/options.ini` | option values for every title |
 | `<data dir>/platform/<platform>/options/<stem>.ini` | one title's overrides; `--opt` wins over both |
 | `<data dir>/platform/<platform>/core_description.txt` | the last `--describe`, so the page can label things with no core at hand |
+| `<data dir>/platform/<platform>/display.ini` | the hub's display settings (`[display]`) for every title: how it scales the picture, never passed to the core |
+| `<data dir>/platform/<platform>/display/<stem>.ini` | one title's display overrides |
 
 Opened from Direct mode's home page, the page is that one title's: its System
 tab edits `options/<stem>.ini` only (there is no "All titles" choice), and
@@ -111,6 +113,24 @@ them. Values stored for keys the core no longer declares stay on the System
 tab. Each page's Reset to Default clears that page's options only. **Show
 developer options** (on the Developer page) is saved to `config.json` as soon
 as it is toggled (`show_developer_options`).
+
+**Display (System tab, under the core's options).** How the hub scales the
+core's frame to the window -- presentation only: nothing here reaches the core
+or changes what it computes, so the values live in `display.ini` beside the
+option files, never among them, and are layered the same way (the title's
+over every title's, in the scope the page's **Applies to** edits; Reset to
+Default clears them with the options). Applies the next time a game starts
+(`src/hub/hub_picture.hpp`).
+**Output filter** (`output_filter`): `bilinear`, the default, is the picture
+exactly as the hub always drew it (`GL_LINEAR`); `nearest` gives hard pixel
+edges, uneven when the window is not a whole multiple of the frame;
+`sharp-bilinear` keeps pixels crisp and even and blends only their edges (the
+frame is blown up by the largest whole multiple that fits, with nearest, then
+drawn with `GL_LINEAR`; below 2x it is bilinear). **Integer scale**
+(`integer_scale = 1`) draws only whole multiples of the frame's height,
+letterboxed and on whole pixels; a frame taller than the window is fitted as
+without it. A frame larger than the window (a core rendering above the
+window's resolution) is scaled down through mipmaps in every mode.
 
 **Hotkeys (System tab, right).** The host's in-game shortcuts, the same for
 every core and saved in `<data dir>/play.ini` (`[keys]`, `[combos]`) with the

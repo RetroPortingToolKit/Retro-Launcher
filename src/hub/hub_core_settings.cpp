@@ -985,4 +985,94 @@ bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::stri
     return write_atomically(data_dir / "play.ini", o.str(), error);
 }
 
+// ---- display ------------------------------------------------------------------
+
+namespace {
+fs::path display_path(const fs::path& data_dir, const std::string& platform,
+                      const std::string& title_key) {
+    if (title_key.empty()) return platform_settings_dir(data_dir, platform) / "display.ini";
+    return platform_settings_dir(data_dir, platform) / "display" / (title_key + ".ini");
+}
+
+struct FilterInfo {
+    const char* key;
+    const char* label;
+};
+// Indexed by OutputFilter.
+constexpr FilterInfo kFilters[kOutputFilterCount] = {
+    {"bilinear", "Bilinear"},
+    {"nearest", "Nearest"},
+    {"sharp-bilinear", "Sharp bilinear"},
+};
+} // namespace
+
+const char* output_filter_key(OutputFilter f) { return kFilters[static_cast<int>(f)].key; }
+const char* output_filter_label(OutputFilter f) { return kFilters[static_cast<int>(f)].label; }
+
+bool output_filter_from_key(const std::string& s, OutputFilter& out) {
+    for (int i = 0; i < kOutputFilterCount; ++i) {
+        if (s != kFilters[i].key) continue;
+        out = static_cast<OutputFilter>(i);
+        return true;
+    }
+    return false;
+}
+
+std::map<std::string, std::string> load_display_settings(const fs::path& data_dir,
+                                                         const std::string& platform,
+                                                         const std::string& title_key) {
+    std::map<std::string, std::string> out;
+    const fs::path path = display_path(data_dir, platform, title_key);
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return out;
+    for_each_ini(read_text(path), [&](const std::string& section, const std::string& key,
+                                      const std::string& value) {
+        if (section == "display" && !key.empty()) out[key] = value;
+    });
+    return out;
+}
+
+bool save_display_settings(const fs::path& data_dir, const std::string& platform,
+                           const std::string& title_key,
+                           const std::map<std::string, std::string>& values, std::string* error) {
+    std::ostringstream o;
+    o << "# Retro Launcher display settings for "
+      << (title_key.empty() ? "every " + platform + " title" : title_key) << ".\n"
+      << "# Written by retro-hub's settings page. The hub's own scaling of the\n"
+      << "# picture: never passed to the core. A missing line is inherited.\n"
+      << "#   output_filter = bilinear | nearest | sharp-bilinear\n"
+      << "#   integer_scale = 1 | 0\n\n"
+      << "[display]\n";
+    for (const auto& [k, v] : values) {
+        if (k.find_first_of("=\n\r[") != std::string::npos ||
+            v.find_first_of("\n\r") != std::string::npos) {
+            if (error) *error = "display '" + k + "': a key or value this file cannot hold";
+            return false;
+        }
+        o << k << " = " << v << "\n";
+    }
+    return write_atomically(display_path(data_dir, platform, title_key), o.str(), error);
+}
+
+PictureStyle resolve_picture_style(const std::map<std::string, std::string>& platform,
+                                   const std::map<std::string, std::string>& title,
+                                   std::vector<std::string>* warnings) {
+    PictureStyle s;
+    auto apply = [&](const std::map<std::string, std::string>& layer, const char* where) {
+        for (const auto& [k, v] : layer) {
+            bool ok = true;
+            if (k == kDisplayOutputFilter) ok = output_filter_from_key(v, s.filter);
+            else if (k == kDisplayIntegerScale && (v == "1" || v == "true")) s.integer_scale = true;
+            else if (k == kDisplayIntegerScale && (v == "0" || v == "false")) s.integer_scale = false;
+            else ok = false;
+            if (!ok && warnings)
+                warnings->push_back(std::string("display ") + k + " = '" + v + "' (" + where +
+                                    ") names nothing; left out");
+        }
+    };
+    apply(platform, "every title's");
+    apply(title, "this title's");
+    return s;
+}
+
 } // namespace retcomm::hub

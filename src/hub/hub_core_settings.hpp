@@ -10,6 +10,8 @@
 //   <data_dir>/platform/<platform>/options.ini           option values (every title)
 //   <data_dir>/platform/<platform>/options/<key>.ini     option values (one title)
 //   <data_dir>/platform/<platform>/core_description.txt  the last --describe
+//   <data_dir>/platform/<platform>/display.ini           the hub's scaling of the
+//   <data_dir>/platform/<platform>/display/<key>.ini     picture (every title, one)
 //   <data_dir>/play.ini                                  the overlay's settings
 //                                                        (every core, every title)
 //
@@ -318,5 +320,52 @@ struct PlayPrefs {
 
 PlayPrefs load_play_prefs(const fs::path& data_dir);
 bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::string* error);
+
+// ---- display ------------------------------------------------------------------
+
+// How the hub scales the core's frame to the window (hub_picture.hpp). The
+// hub's, never the core's: presentation only, nothing here reaches the runner.
+// Layered as option values are -- every title of the platform, one title's
+// over it -- but in files of their own, so the runner is never handed a key
+// the core did not declare:
+//   <data_dir>/platform/<platform>/display.ini           [display] every title
+//   <data_dir>/platform/<platform>/display/<key>.ini     [display] one title
+// A key missing from both is the default below: the picture as the hub always
+// drew it.
+enum class OutputFilter : int { Bilinear, Nearest, SharpBilinear };
+constexpr int kOutputFilterCount = 3;
+const char* output_filter_key(OutputFilter f);   // "bilinear" | "nearest" | "sharp-bilinear"
+const char* output_filter_label(OutputFilter f); // "Bilinear" | "Nearest" | "Sharp bilinear"
+bool output_filter_from_key(const std::string& s, OutputFilter& out);
+
+constexpr const char* kDisplayOutputFilter = "output_filter"; // an output_filter_key
+constexpr const char* kDisplayIntegerScale = "integer_scale"; // 1 | 0
+
+struct PictureStyle {
+    OutputFilter filter = OutputFilter::Bilinear;
+    // Whole multiples of the frame's height only, letterboxed (hub_picture.hpp
+    // fit_picture); a frame taller than the window is fitted as usual.
+    bool integer_scale = false;
+    bool operator==(const PictureStyle& o) const {
+        return filter == o.filter && integer_scale == o.integer_scale;
+    }
+    bool operator!=(const PictureStyle& o) const { return !(*this == o); }
+};
+
+// key -> value, only what the player set. An empty title_key is the
+// platform's file.
+std::map<std::string, std::string> load_display_settings(const fs::path& data_dir,
+                                                         const std::string& platform,
+                                                         const std::string& title_key);
+bool save_display_settings(const fs::path& data_dir, const std::string& platform,
+                           const std::string& title_key,
+                           const std::map<std::string, std::string>& values, std::string* error);
+
+// What a session draws with: the defaults, the platform's values over them,
+// the title's over those. A value that names nothing is left out and said in
+// *warnings (the layer below it applies).
+PictureStyle resolve_picture_style(const std::map<std::string, std::string>& platform,
+                                   const std::map<std::string, std::string>& title,
+                                   std::vector<std::string>* warnings = nullptr);
 
 } // namespace retcomm::hub

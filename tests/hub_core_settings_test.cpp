@@ -180,6 +180,47 @@ void test_options(const fs::path& dir) {
           "a value with a newline refused");
 }
 
+// The hub's display settings: their own files, layered like the options, and
+// a value that names nothing falls through to the layer below.
+void test_display(const fs::path& dir) {
+    check(load_display_settings(dir, "n64", "").empty(), "no display file");
+    const PictureStyle none = resolve_picture_style({}, {});
+    check(none.filter == OutputFilter::Bilinear && !none.integer_scale,
+          "the default draws as the hub always did");
+    for (int i = 0; i < kOutputFilterCount; ++i) {
+        OutputFilter f{};
+        const auto want = static_cast<OutputFilter>(i);
+        check(output_filter_from_key(output_filter_key(want), f) && f == want,
+              "each filter's key reads back");
+    }
+    std::string err;
+    check(save_display_settings(dir, "n64", "", {{kDisplayOutputFilter, "nearest"}}, &err),
+          "platform display saves");
+    const std::map<std::string, std::string> t{{kDisplayOutputFilter, "sharp-bilinear"},
+                                               {kDisplayIntegerScale, "1"}};
+    check(save_display_settings(dir, "n64", "pokemonstadiumtest_game", t, &err),
+          "title display saves");
+    check(load_display_settings(dir, "n64", "pokemonstadiumtest_game") == t,
+          "title display round-trip");
+    check(fs::exists(dir / "platform" / "n64" / "display.ini") &&
+              fs::exists(dir / "platform" / "n64" / "display" / "pokemonstadiumtest_game.ini"),
+          "display.ini and display/<key>.ini");
+    check(!load_core_options(dir, "n64", "").count(kDisplayOutputFilter) &&
+              !load_core_options(dir, "n64", "pokemonstadiumtest_game").count(kDisplayOutputFilter),
+          "display values are not core options");
+    const auto plat = load_display_settings(dir, "n64", "");
+    check(resolve_picture_style(plat, {}).filter == OutputFilter::Nearest, "platform layer");
+    const PictureStyle both = resolve_picture_style(plat, t);
+    check(both.filter == OutputFilter::SharpBilinear && both.integer_scale, "title over platform");
+    std::vector<std::string> warnings;
+    const PictureStyle bad = resolve_picture_style(
+        plat, {{kDisplayOutputFilter, "crt"}, {kDisplayIntegerScale, "maybe"}}, &warnings);
+    check(bad.filter == OutputFilter::Nearest && !bad.integer_scale && warnings.size() == 2,
+          "values that name nothing fall through, said");
+    check(!save_display_settings(dir, "n64", "t", {{kDisplayOutputFilter, "a\nb"}}, &err),
+          "a display value with a newline refused");
+}
+
 void write(const fs::path& p, const std::string& body) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << body;
@@ -324,6 +365,7 @@ int main(int argc, char** argv) {
     test_bindings(dir);
     test_seat_plan();
     test_options(dir);
+    test_display(dir);
     test_n64lle_mods(dir);
     test_transfer_pak(dir);
     {

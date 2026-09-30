@@ -93,6 +93,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     args_ = args;
     prefs_ = args.prefs;
     osd_.set_fps_visible(prefs_.show_fps);
+    picture_.set_style(args.picture);
     // A title's save states live with its saves: <save_dir>/states/slotNN.rstate.
     states_dir_ = save_dir / "states";
     {
@@ -545,27 +546,7 @@ void PlaySession::upload_frame() {
     if (!link_.take_frame()) return;
     const corelink::FrameInfo* f = link_.frame_info();
     if (!f || !f->width || !f->height) return;
-    if (!tex_) {
-        glGenTextures(1, &tex_);
-        glBindTexture(GL_TEXTURE_2D, tex_);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, tex_);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    if (f->width != tex_w_ || f->height != tex_h_) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, f->width, f->height, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, link_.frame_pixels());
-        tex_w_ = f->width;
-        tex_h_ = f->height;
-    } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, f->width, f->height, GL_RGBA, GL_UNSIGNED_BYTE,
-                        link_.frame_pixels());
-    }
-    aspect_num_ = f->aspect_num;
-    aspect_den_ = f->aspect_den;
+    picture_.upload(link_.frame_pixels(), f->width, f->height, f->aspect_num, f->aspect_den);
 }
 
 void PlaySession::tick() {
@@ -605,21 +586,9 @@ void PlaySession::draw() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImDrawList* bg = ImGui::GetBackgroundDrawList();
     bg->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(0, 0, 0, 255));
-    if (tex_) {
-        // Letterbox to the core's stated aspect, or square pixels.
-        const float aspect = (aspect_num_ && aspect_den_)
-                                 ? float(aspect_num_) / float(aspect_den_)
-                                 : float(tex_w_) / float(tex_h_);
-        float w = disp.x, h = disp.x / aspect;
-        if (h > disp.y) {
-            h = disp.y;
-            w = disp.y * aspect;
-        }
-        const ImVec2 p0((disp.x - w) * 0.5f, (disp.y - h) * 0.5f);
-        const ImU32 tint = paused() ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE;
-        bg->AddImage((ImTextureID)(intptr_t)tex_, p0, ImVec2(p0.x + w, p0.y + h), ImVec2(0, 0),
-                     ImVec2(1, 1), tint);
-    }
+    // Letterboxed to the core's stated aspect, scaled as the player chose
+    // (hub_picture.hpp).
+    picture_.draw(bg, paused() ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE);
     switch (link_.state()) {
         case corelink::LinkState::Starting:
         case corelink::LinkState::Idle:
@@ -770,10 +739,7 @@ void PlaySession::shutdown() {
         SDL_DestroyAudioStream(audio_);
         audio_ = nullptr;
     }
-    if (tex_) {
-        glDeleteTextures(1, &tex_);
-        tex_ = 0;
-    }
+    picture_.release();
     for (auto& [id, t] : layer_tex_) {
         if (t.tex) glDeleteTextures(1, &t.tex);
     }
