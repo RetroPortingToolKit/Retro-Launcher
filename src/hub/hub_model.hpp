@@ -640,6 +640,13 @@ struct HubModel {
     void append_log(const std::string& line);
     void append_log(const std::string& line, LogLevel level);
     void set_status(const std::string& s);
+    // The disc or ROM Play boots for `t`: the library's boot disc, or the disc
+    // chosen under the button for a multi-disc title.
+    fs::path play_media(const Title& t) const;
+    // A launch of `t` as Play starts it -- its media and the player's BIOS --
+    // for a netplay match or query (docs/NETPLAY_HANDOFF.md). No save: the
+    // game's own match sandbox holds the saves.
+    LaunchOptions play_launch_options(const Title& t) const;
     // Queue a short-lived UI toast (shown on the main thread).
     void show_toast(const std::string& message);
     // Scan apps/ for installs not in the current catalog; store under pending_orphans.

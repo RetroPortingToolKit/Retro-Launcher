@@ -27,11 +27,13 @@ bool set_psxrecomp_settings_disc(const fs::path& settings_path, const fs::path& 
 namespace fs = std::filesystem;
 
 // How Retro boots a title. Default opens the game's dedicated recomp-ui
-// launcher. Netplay is reserved for a future lobby frontend.
+// launcher. Netplay starts a match the hub's lobby negotiated
+// (docs/NETPLAY_HANDOFF.md): the game's launcher runs, but takes the match
+// from LaunchOptions::netplay_record instead of opening a window.
 enum class LaunchMode {
     Default, // dedicated launcher / normal UI (--launcher)
     Direct,  // skip launcher UI when the title supports --no-launcher
-    Netplay, // not implemented yet (generic lobby later)
+    Netplay, // --launcher + RECOMP_NETPLAY_LAUNCH, or --netplay-query
 };
 
 struct LaunchOptions {
@@ -51,6 +53,11 @@ struct LaunchOptions {
     bool save_path_card2_blank = false;
     bool detach = false;
     bool dry_run = false;
+    // LaunchMode::Netplay (docs/NETPLAY_HANDOFF.md), absolute paths, one of:
+    //   netplay_record  the launch record: the game starts that match
+    //   netplay_query   a query: the game answers into "<query>.answer", exits
+    fs::path netplay_record;
+    fs::path netplay_query;
 };
 
 // Whether this install boots straight into the game, skipping the engine's own
@@ -108,6 +115,13 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title,
 // Plan + spawn (unless dry_run). Waits for the child unless detach.
 LaunchResult launch_title(const Paths& paths, const Title& title,
                           const LaunchOptions& opts = {});
+
+// Whether this install's game can take a match the hub negotiated
+// (docs/NETPLAY_HANDOFF.md). Read from the executable, never by running it: a
+// build without the support would not understand --netplay-query and would
+// open its own launcher instead. An AppImage's AppRun is a script, so its
+// payload's usr/bin is read. Remembered per file, size and mtime.
+bool launch_supports_netplay_handoff(const LaunchPlan& plan);
 
 // Starts an app on its own (an adopted title app, core_titles.hpp), detached,
 // in its own directory, with an environment cleaned of this AppImage's.

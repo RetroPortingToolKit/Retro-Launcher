@@ -80,6 +80,7 @@ set(RETCOMM_CORE_SOURCES
     src/netplay/netplay_account.cpp
     src/netplay/netplay_lan.cpp
     src/netplay/netplay_nat.cpp
+    src/netplay/netplay_handoff.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
@@ -477,6 +478,16 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
             target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
             add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
+            # NETPLAY_HANDOFF.md: the launch record, the game's status, and
+            # the build probe that decides whether Retro can start a game.
+            add_executable(retcomm-netplay-handoff-test tests/netplay_handoff_test.cpp)
+            target_link_libraries(retcomm-netplay-handoff-test PRIVATE retcomm_core)
+            add_test(NAME netplay_handoff COMMAND retcomm-netplay-handoff-test
+                ${CMAKE_CURRENT_BINARY_DIR}/netplay_handoff_test.d)
+            # The two-seat, two-game run behind NETPLAY_HANDOFF.md's evidence
+            # (needs a local lobby server and two game builds; not a ctest).
+            add_executable(retcomm-netplay-handoff-drive tools/netplay_handoff_drive.cpp)
+            target_link_libraries(retcomm-netplay-handoff-drive PRIVATE retcomm_core)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

@@ -48,6 +48,7 @@ void LobbyClient::start(const LobbyConfig& cfg) {
         std::lock_guard<std::mutex> lk(mu_);
         cfg_ = cfg;
         snap_ = Snapshot{};
+        snap_.lobby_url = cfg.url;
         snap_.state = ConnState::Connecting;
         outbound_.clear();
         session_rejected_ = false;
@@ -130,7 +131,8 @@ void LobbyClient::create(const std::string& name, const std::string& password, i
 
 void LobbyClient::create_for(const std::string& game_name, const std::string& game_version,
                              const std::string& name, const std::string& password, int max_slots,
-                             bool allow_spectators, const json& match_caps) {
+                             bool allow_spectators, const json& match_caps,
+                             const json& extra) {
     std::lock_guard<std::mutex> lk(mu_);
     json m = {{"op", "create"},
               {"name", name},
@@ -142,6 +144,8 @@ void LobbyClient::create_for(const std::string& game_name, const std::string& ga
     if (!cfg_.display_name.empty()) m["display_name"] = cfg_.display_name;
     if (!password.empty()) m["password"] = password;
     if (match_caps.is_object() && !match_caps.empty()) m["match_caps"] = match_caps;
+    if (extra.is_object())
+        for (auto it = extra.begin(); it != extra.end(); ++it) m[it.key()] = it.value();
     pending_room_name_ = name;
     pending_max_slots_ = max_slots < 2 ? 2 : max_slots;
     outbound_.push_back(m.dump());
@@ -158,7 +162,8 @@ void LobbyClient::join(const std::string& lobby_id, const std::string& password)
 }
 
 void LobbyClient::join_as(const std::string& lobby_id, const std::string& password,
-                          const std::string& game_name, const std::string& game_version) {
+                          const std::string& game_name, const std::string& game_version,
+                          const json& extra) {
     std::lock_guard<std::mutex> lk(mu_);
     json m = {{"op", "join"},
               {"lobby_id", lobby_id},
@@ -168,6 +173,8 @@ void LobbyClient::join_as(const std::string& lobby_id, const std::string& passwo
     if (!cfg_.display_name.empty()) m["display_name"] = cfg_.display_name;
     if (!password.empty()) m["password"] = password;
     if (!cfg_.disc_fp.empty()) m["disc_fp"] = cfg_.disc_fp;
+    if (extra.is_object())
+        for (auto it = extra.begin(); it != extra.end(); ++it) m[it.key()] = it.value();
     pending_room_name_.clear();
     pending_max_slots_ = 0;
     for (const LobbyRow& r : snap_.rooms) {
@@ -253,6 +260,8 @@ void LobbyClient::leave_room_state(const std::string& why) {
     snap_.host_endpoint.clear();
     snap_.members.clear();
     snap_.match_caps = json();
+    snap_.seat_msg = json();
+    snap_.room_msg = json();
     snap_.room_chat.clear();
     snap_.signals.clear();
     snap_.launch_pending = false;
@@ -347,6 +356,8 @@ void LobbyClient::handle(const json& m) {
     }
     if (op == "created" || op == "joined") {
         if (!bool_or(m, "ok", true)) return;  // a refusal arrives as error{} anyway
+        snap_.seat_msg = m;
+        snap_.room_msg = json();
         snap_.in_room = true;
         snap_.is_host = (op == "created");
         snap_.lobby_id = str_or(m, "lobby_id");
@@ -365,6 +376,7 @@ void LobbyClient::handle(const json& m) {
     }
     if (op == "created" || op == "joined" || op == "lobby_update") {
         if (op == "lobby_update") {
+            snap_.room_msg = m;
             if (!snap_.in_room) snap_.in_room = true;
             snap_.lobby_id = str_or(m, "lobby_id");
             snap_.session_id = m.value("session_id", snap_.session_id);
