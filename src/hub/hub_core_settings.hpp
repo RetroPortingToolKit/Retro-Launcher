@@ -55,11 +55,26 @@ struct CoreInputDecl {
     std::string label;
 };
 
+// An accessory type the core takes (rcore_accessory_type): what may be
+// plugged where. From `accessory` records, which a runner from before rev 7
+// never prints -- an absent record means the core declared nothing, and the
+// page offers nothing for it.
+struct CoreAccessoryDecl {
+    std::string id;    // "n64.transfer_pak", "n64.vru"
+    std::string label; // "VRU Microphone"
+    bool content = false, save = false, netplay = false; // RCORE_ACC_FLAG_*
+    std::uint32_t seat_mask = 0, slot_mask = 0;
+};
+constexpr const char* kVruAccessoryId = "n64.vru";
+
 struct CoreDescription {
     bool ok = false;
     std::string core_id, core_version, platforms;
     std::vector<CoreOptionDecl> options;
     std::vector<CoreInputDecl> inputs;
+    std::vector<CoreAccessoryDecl> accessories;
+    // The declared accessory with this id, or null.
+    const CoreAccessoryDecl* accessory(const std::string& id) const;
     // Why ok is false: a runner without --describe, a core that failed to load.
     std::string error;
     // The --describe text it was parsed from, for the cache.
@@ -166,18 +181,25 @@ struct SeatAssign {
     bool operator!=(const SeatAssign& o) const { return !(*this == o); }
 };
 
-// What is plugged into a controller's expansion slot. Only the Transfer Pak
-// so far (a Game Boy cartridge and its save, which the core reads through
-// it); the Controller Pak and Rumble Pak are not implemented yet. Every seat
-// can hold one (retro-core-runner --tpak1-rom .. --tpak4-rom); a runner from
-// before seats 2-4 gets port 1's only (limit_transfer_paks, hub_main.cpp).
+// What is plugged into a controller's expansion slot -- or, for the VRU, into
+// the port itself. The Transfer Pak (a Game Boy cartridge and its save, which
+// the core reads through it) and the VRU Microphone (the seat is the voice
+// unit, as on the console: it reads no pad, and the hub's recognizer speaks
+// to the core through the accessory data link); the Controller Pak and Rumble
+// Pak are not implemented yet. Every seat can hold one (retro-core-runner
+// --tpak1-rom .. --tpak4-rom, --vru1 .. --vru4); a runner from before seats
+// 2-4 gets port 1's Transfer Pak only (limit_transfer_paks, hub_main.cpp).
 struct SeatPak {
-    enum Kind : int { None, TransferPak };
+    enum Kind : int { None, TransferPak, Vru };
     Kind kind = None;
     std::string gb_rom;  // .gb / .gbc, absolute
     std::string gb_save; // .srm, absolute; empty = the game starts without one
+    // Vru: the recording device's name as SDL reports it; empty = the
+    // system default recording device.
+    std::string vru_device;
     bool operator==(const SeatPak& o) const {
-        return kind == o.kind && gb_rom == o.gb_rom && gb_save == o.gb_save;
+        return kind == o.kind && gb_rom == o.gb_rom && gb_save == o.gb_save &&
+               vru_device == o.vru_device;
     }
     bool operator!=(const SeatPak& o) const { return !(*this == o); }
 };
@@ -217,10 +239,14 @@ bool save_platform_input(const fs::path& data_dir, const std::string& platform,
 //   2. Auto seats take the remaining pads in order;
 //   3. Keyboard seats read the keyboard;
 //   4. an Auto port 1 left without a pad reads the keyboard, unless another
-//      seat is set to Keyboard.
+//      seat is set to Keyboard;
+//   5. a seat holding the VRU Microphone reads nothing (vru is set): its pad,
+//      if it had one, goes to the next Auto seat, and the port is sent
+//      connected = 0 (fill_pads_from_input).
 struct SeatPlan {
     int pad = -1;          // index into the connected list, or -1
     bool keyboard = false;
+    bool vru = false;
     bool connected() const { return pad >= 0 || keyboard; }
 };
 std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,

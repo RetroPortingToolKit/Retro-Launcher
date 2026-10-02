@@ -44,7 +44,11 @@ const char* kN64 =
     "input\t0\t1\t0\tControl Stick (left/right)\n"
     "input\t0\t2\t0\tControl Stick (up/down)\n"
     "input\t0\t4\t1\tC-Up\n"
-    "input\t0\t4\t-1\tC-Down\n";
+    "input\t0\t4\t-1\tC-Down\n"
+    // accessory records (runner 2026-10-01): flags as the options spell
+    // theirs, the masks hex as the runner prints them (%x).
+    "accessory\tn64.transfer_pak\tTransfer Pak\tcontent,save,netplay\tf\t1\n"
+    "accessory\tn64.vru\tVRU Microphone\tnetplay\tf\t1\n";
 
 void test_parse_n64() {
     CoreDescription d;
@@ -61,6 +65,14 @@ void test_parse_n64() {
     check(d.options[1].int_max == 1000000 && d.options[1].developer, "int range and flags");
     check(!d.options[2].has_default && d.options[2].default_value.empty(), "no default");
     check(d.inputs.size() == 7, "seven inputs");
+    check(d.accessories.size() == 2, "two accessory types");
+    const CoreAccessoryDecl* vru = d.accessory(kVruAccessoryId);
+    check(vru && vru->label == "VRU Microphone" && vru->netplay && !vru->content && !vru->save,
+          "the VRU: its label, NETPLAY only");
+    check(vru && vru->seat_mask == 0xf && vru->slot_mask == 0x1, "hex masks");
+    check(d.accessories[0].content && d.accessories[0].save && d.accessories[0].netplay,
+          "the Transfer Pak's three flags");
+    check(!d.accessory("n64.rumble"), "an undeclared accessory is null");
 
     check(pad_target_label(PadTarget::South, d) == "A", "South is A");
     check(pad_target_label(PadTarget::West, d) == "B", "West is B");
@@ -73,6 +85,9 @@ void test_parse_n64() {
     check(pad_target_label(PadTarget::East, d) == pad_target_generic_name(PadTarget::East),
           "an undeclared target keeps its generic name");
 }
+
+// The same core described by a runner from before accessory records.
+const char* kN64Old = "describe\t1\ncore\tn64lle\t0.374.0\tn64\ninput\t1\t0\t0\tA\n";
 
 void test_parse_edges() {
     CoreDescription d;
@@ -91,6 +106,16 @@ void test_parse_edges() {
           "no header refused");
     check(!parse_core_description("describe\t1\nvalue\tnope\tx\n", d, &err),
           "an orphan value refused");
+    check(parse_core_description("describe\t1\naccessory\tx\tX\t-\t0x3\t0\n", d, &err) &&
+              d.accessories.size() == 1 && !d.accessories[0].netplay && d.accessories[0].seat_mask == 3,
+          "no flags, a 0x mask");
+    check(parse_core_description("describe\t1\naccessory\tx\tX\t4\t1\t1\n", d, &err) &&
+              d.accessories[0].netplay && !d.accessories[0].content,
+          "a numeric flags field is RCORE_ACC_FLAG_* bits");
+    check(!parse_core_description("describe\t1\naccessory\tx\tX\t-\tzz\t0\n", d, &err),
+          "a mask that is not hex refused");
+    check(parse_core_description(kN64Old, d, &err) && d.accessories.empty(),
+          "a description without accessory records declares none");
 }
 
 void test_bindings(const fs::path& dir) {
@@ -158,6 +183,22 @@ void test_seat_plan() {
     in.seats[0] = {SeatAssign::None, "", ""};
     p = plan_seats(in, {"g2"});
     check(!p[0].connected() && p[3].pad == 0, "None is unplugged; the pad goes to the next Auto");
+
+    // A VRU seat takes no device, whatever its source says: the port is the
+    // voice unit's, and its pad goes on to the next Auto seat.
+    PlatformInput vin;
+    vin.paks[3].kind = SeatPak::Vru;
+    vin.seats[3] = {SeatAssign::Gamepad, "g1", "first"};
+    p = plan_seats(vin, {"g1"});
+    check(p[3].vru && !p[3].connected() && p[0].pad == 0,
+          "a VRU seat's named pad is free for Auto seats; the seat reads nothing");
+    vin.paks[0].kind = SeatPak::Vru;
+    vin.paks[3].kind = SeatPak::None;
+    p = plan_seats(vin, {});
+    check(p[0].vru && !p[0].keyboard && !p[1].keyboard, "port 1 as the VRU gets no keyboard fallback");
+    vin.seats[0] = {SeatAssign::Keyboard, "", ""};
+    p = plan_seats(vin, {});
+    check(!p[0].keyboard, "nor the keyboard it was set to");
 }
 
 void test_options(const fs::path& dir) {
@@ -356,6 +397,26 @@ void test_transfer_pak(const fs::path& dir) {
     check(back.paks[0] == in.paks[0], "seat 1's Transfer Pak reads back");
     check(back.paks[3] == in.paks[3], "seat 4's Transfer Pak reads back");
     check(back.paks[1].kind == SeatPak::None, "a seat without one stays None");
+
+    // The VRU Microphone: pak = vru, its recording device (or default).
+    PlatformInput vin;
+    vin.paks[3] = {SeatPak::Vru, "", "", "ASTRO C40 Mono"};
+    vin.paks[1] = {SeatPak::Vru, "", "", ""};
+    check(save_platform_input(dir, "n64", vin, &err), "input.ini with VRU seats saves");
+    const PlatformInput vback = load_platform_input(dir, "n64");
+    check(vback.paks[3] == vin.paks[3], "seat 4's VRU and its device read back");
+    check(vback.paks[1].kind == SeatPak::Vru && vback.paks[1].vru_device.empty(),
+          "a default device is written as 'default' and read back empty");
+    check(vback.paks[0].kind == SeatPak::None, "the Transfer Pak from before is gone");
+    {
+        std::ifstream in_file(platform_settings_dir(dir, "n64") / "input.ini");
+        std::string text((std::istreambuf_iterator<char>(in_file)), {});
+        check(text.find("pak = vru\nvru_device = ASTRO C40 Mono\n") != std::string::npos,
+              "the keys as documented");
+        check(text.find("vru_device = default\n") != std::string::npos, "default spelled out");
+    }
+    vin.paks[3].vru_device = "a\nb";
+    check(!save_platform_input(dir, "n64", vin, &err), "a device name with a newline refused");
 }
 
 int main(int argc, char** argv) {
