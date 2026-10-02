@@ -9060,6 +9060,9 @@ retcomm::ResolvedRunner resolve_title_runner(const DirectPlay& d, const retcomm:
         rr.version = v.version;
         rr.game_package = v.game_package;
         rr.transfer_pak_seats = v.transfer_pak_seats;
+#if defined(RETCOMM_LINK_ACCESSORY_DATA)
+        rr.accessory_data = v.accessory_data;
+#endif
         rr.note = "--runner names it";
     } else {
         rr.note = "--runner names it (" + err + ")";
@@ -9598,10 +9601,12 @@ std::string rcore_manifest_platform(const fs::path& core) {
 // over both (it is the most specific request). Also the play overlay's
 // settings (play.ini), which the in-game hotkeys write back.
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
-                           const std::string& platform, const std::string& title_key) {
+                           const fs::path& exe_dir, const std::string& platform,
+                           const std::string& title_key) {
     // The overlay's settings are every core's: loaded whatever the platform.
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
     args.data_dir = data_dir;
+    args.exe_dir = exe_dir;
     if (platform.empty()) return;
     std::vector<std::string> warnings;
     args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
@@ -9617,6 +9622,16 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         args.tpak_save[seat] = retro::corelink::utf8_path(pak.gb_save);
         std::fprintf(stderr, "retro-hub: transfer pak, seat %zu: %s, save %s\n", seat + 1,
                      pak.gb_rom.c_str(), pak.gb_save.empty() ? "none" : pak.gb_save.c_str());
+    }
+    // Each seat's VRU Microphone: the seat reads no pad (the runner masks it
+    // too), and its recording device is the session's.
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        const retcomm::hub::SeatPak& pak = args.input.paks[seat];
+        if (pak.kind != retcomm::hub::SeatPak::Vru) continue;
+        args.vru_seat[seat] = true;
+        args.vru_device[seat] = pak.vru_device;
+        std::fprintf(stderr, "retro-hub: VRU microphone, seat %zu: %s\n", seat + 1,
+                     pak.vru_device.empty() ? "default recording device" : pak.vru_device.c_str());
     }
     auto plat = retcomm::hub::load_core_options(data_dir, platform, "");
     auto title = retcomm::hub::load_core_options(data_dir, platform, title_key);
@@ -9667,6 +9682,19 @@ void limit_transfer_paks(retcomm::hub::PlayArgs& args, const retcomm::ResolvedRu
                      seat + 1, rr.source.c_str(), rr.version.c_str(), rr.transfer_pak_seats);
         args.tpak_rom[seat].clear();
         args.tpak_save[seat].clear();
+    }
+    // Likewise a runner from before accessory data (no accessory_data in its
+    // --version) does not take --vruN: the seat plays as an empty port, and
+    // the log says why nobody is listening.
+    if (rr.accessory_data == 0) {
+        for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+            if (!args.vru_seat[seat]) continue;
+            std::fprintf(stderr,
+                         "retro-hub: VRU microphone, seat %zu: left out -- the %s runner %s carries "
+                         "no accessory data; a Retro-Runtime runner with link 2.1 is needed\n",
+                         seat + 1, rr.source.c_str(), rr.version.c_str());
+            args.vru_seat[seat] = false;
+        }
     }
 }
 
@@ -12893,7 +12921,7 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
         return false;
     }
     retcomm::hub::PlayArgs args = h.d.args;
-    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     const fs::path session = hub.paths.data_dir / "sessions" / h.title_key;
     const fs::path saves = hub.paths.data_dir / "saves" / h.title_key;
     std::string err;
@@ -12996,7 +13024,7 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     }
     std::string err;
     retcomm::hub::PlayArgs args = h.d.args;
-    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     // NETPLAY-flagged options join the match key: each peer's own choice
     // would only get the match refused, so every peer takes the core's default.
     if (h.desc_ready && h.desc.ok) {
@@ -13342,7 +13370,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
-    apply_player_settings(args, hub.paths.data_dir, rcore_manifest_platform(d.args.core), stem);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
     std::string err;
     limit_transfer_paks(args, rr);
     if (!play.start(args, runner, session, saves, &err)) {
@@ -13909,7 +13937,7 @@ int main(int argc, char** argv) {
                 args.title_dir = req->title_dir;
                 // The platform's bindings and this title's option values: the
                 // files Direct mode's Controls and Core Settings pages write.
-                apply_player_settings(args, hub.paths.data_dir,
+                apply_player_settings(args, hub.paths.data_dir, hub.exe_dir,
                                       rcore_manifest_platform(args.core), req->title_id);
                 const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
                 const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
