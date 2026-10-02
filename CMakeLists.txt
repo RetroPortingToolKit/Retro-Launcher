@@ -323,6 +323,20 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_RECOMP_NET_DIR} AND
         "recomp-net checkout: build retro-core-runner with netplay")
 endif()
 add_subdirectory(third_party/Retro-Runtime)
+# Accessory data (link 2.1, rcore rev 7): the VRU Microphone's channel. The
+# hub's seam (src/hub/hub_accessory_link.hpp) is live only when the vendored
+# link carries the messages; an older submodule builds a hub whose VRU panel
+# says the link predates accessory data.
+file(STRINGS third_party/Retro-Runtime/corelink/link_protocol.hpp _rr_accessory
+     REGEX "AccessoryData = 69")
+if(_rr_accessory)
+    set(RETCOMM_LINK_ACCESSORY_DATA TRUE)
+    target_compile_definitions(retcomm_core PUBLIC RETCOMM_LINK_ACCESSORY_DATA=1)
+    message(STATUS "retro-hub: Retro-Runtime link carries accessory data (2.1)")
+else()
+    set(RETCOMM_LINK_ACCESSORY_DATA FALSE)
+    message(STATUS "retro-hub: Retro-Runtime link predates accessory data; the VRU is off")
+endif()
 # The hub starts the runner from its own directory, so in the build tree the
 # runner must land there too, not under third_party/ (where, until this line, a
 # stale pre-split copy beside the hub was being run instead).
@@ -435,7 +449,37 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_core_settings.cpp
-                   src/hub/hub_title.cpp src/hub/hub_update.cpp)
+                   src/hub/hub_title.cpp src/hub/hub_update.cpp
+                   src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)
+    # The VRU Microphone's recognizer, Vosk (third_party/vosk/NOTICE.md): never
+    # linked, loaded at runtime from beside the hub, from RETCOMM_VOSK_DIR, or
+    # from the system. RETCOMM_VOSK_DIR names an unpacked vosk release
+    # (vosk-linux-x86_64-<v>, vosk-osx-<v>, vosk-win64-<v>); its library is
+    # copied beside the hub in the build tree and installed with it.
+    set(RETCOMM_VOSK_DIR "" CACHE PATH
+        "An unpacked vosk-api release holding libvosk (optional; loaded at runtime)")
+    target_link_libraries(retro-hub PRIVATE ${CMAKE_DL_LIBS})
+    if(RETCOMM_VOSK_DIR)
+        get_filename_component(_vosk_dir "${RETCOMM_VOSK_DIR}" ABSOLUTE)
+        target_compile_definitions(retro-hub PRIVATE "RETCOMM_VOSK_DIR=\"${_vosk_dir}\"")
+        if(WIN32)
+            file(GLOB _vosk_libs "${_vosk_dir}/*.dll" "${_vosk_dir}/*/*.dll")
+        elseif(APPLE)
+            file(GLOB _vosk_libs "${_vosk_dir}/libvosk.dylib" "${_vosk_dir}/*/libvosk.dylib")
+        else()
+            file(GLOB _vosk_libs "${_vosk_dir}/libvosk.so" "${_vosk_dir}/*/libvosk.so")
+        endif()
+        if(_vosk_libs)
+            foreach(_lib ${_vosk_libs})
+                add_custom_command(TARGET retro-hub POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_lib}" $<TARGET_FILE_DIR:retro-hub>)
+            endforeach()
+            install(FILES ${_vosk_libs} DESTINATION bin)
+            message(STATUS "retro-hub: libvosk from ${_vosk_dir}")
+        else()
+            message(WARNING "RETCOMM_VOSK_DIR=${_vosk_dir} holds no libvosk; the hub will say so at runtime")
+        endif()
+    endif()
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -452,6 +496,15 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${RETCOMM_HUB_SDL_TARGET})
         add_test(NAME hub_core_settings COMMAND retro-hub-settings-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
+        # The VRU Microphone's windowless half: the vocabulary, the core's
+        # dictionary, phrase matching, the speech state machine against
+        # scripted sequences, and the link's accessory message layout.
+        add_executable(retro-hub-vru-test tests/hub_vru_test.cpp src/hub/hub_vru.cpp)
+        target_include_directories(retro-hub-vru-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(retro-hub-vru-test PRIVATE retcomm_core retro_corelink)
+        add_test(NAME hub_vru COMMAND retro-hub-vru-test
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vru_vocabulary.json
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_vru_test.d)
         # Title-app mode's windowless half: title.json, the data dir beside
         # the app, the ROM checks, mods.toml in the state dir.
         add_executable(retro-hub-title-test tests/hub_title_test.cpp src/hub/hub_title.cpp)

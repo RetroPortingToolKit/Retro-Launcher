@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "language": "en-US",
+  "note": "A test fixture for retro-hub-vru-test. The sounds are made up: a real vocabulary is generated locally from the title's ROM (n64lle tools/vru_client.py --vocabulary) and is never checked in.",
+  "entries": [
+    { "text": "Pikachu", "sounds": "0A1B2C3D" },
+    { "text": "pika", "sounds": "0a1b2c3d" },
+    { "text": "Hello", "sounds": "1122" },
+    { "text": "Good morning", "sounds": "3344" },
+    { "text": "Good-bye!", "sounds": "3355" },
+    { "text": "Thunderbolt", "sounds": "77889900" }
+  ]
+}
