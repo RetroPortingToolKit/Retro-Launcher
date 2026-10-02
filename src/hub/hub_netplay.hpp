@@ -62,6 +62,10 @@ struct NetplayScope {
     bool tpak_supported = false;
     // "" when all three Transfer Pak cartridges are set and check out.
     std::function<std::string()> tpak_problem;
+    // "" when this machine's seats can join a match at all; else why not
+    // (a VRU Microphone seat: not available in netplay yet). Shown in the
+    // room, and PLAY is held back by it.
+    std::function<std::string()> match_problem;
     // Start the match; "" when it started, else why not.
     std::function<std::string(const NetplayLaunch&)> launch;
     // True while a match runs here (its runner holds the game port).

@@ -12964,6 +12964,28 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
         return {};
     };
     sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
+    // A VRU seat (a NETPLAY data accessory) cannot join a match yet: its
+    // bytes are not replicated to the peers, and the runner refuses it too.
+    // Asked every frame by the room: input.ini is re-read once a second.
+    struct VruCheck {
+        std::uint64_t at_ns = 0;
+        std::string answer;
+    };
+    sc.match_problem = [data, platform, check = std::make_shared<VruCheck>()]() -> std::string {
+        const std::uint64_t now = SDL_GetTicksNS();
+        if (check->at_ns && now - check->at_ns < 1000000000ull) return check->answer;
+        check->at_ns = now;
+        check->answer.clear();
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+            if (in.paks[static_cast<size_t>(s)].kind != retcomm::hub::SeatPak::Vru) continue;
+            check->answer = "VRU Microphone is not available in netplay yet (player " +
+                            std::to_string(s + 1) +
+                            " holds it: set that seat's Pak to None on the Gamepads tab).";
+            break;
+        }
+        return check->answer;
+    };
     // A Transfer Pak lobby: this player's pak is their first seat's (Gamepads).
     sc.local_pak = [data, platform]() {
         retcomm::hub::NetplayPak pak;
@@ -13033,6 +13055,12 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     }
     args.tpak_rom = {};
     args.tpak_save = {};
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        if (!args.vru_seat[seat]) continue;
+        *why = "VRU Microphone is not available in netplay yet (player " + std::to_string(seat + 1) +
+               " holds it: set that seat's Pak to None on the Gamepads tab).";
+        return false;
+    }
     args.net_args = retcomm::hub::netplay_runner_args(l, &err);
     if (args.net_args.empty()) {
         *why = err;
