@@ -86,7 +86,7 @@ header's **n64lle Config** -- writes these, and every play path reads them
 
 | File | Scope |
 |---|---|
-| `<data dir>/platform/<platform>/input.ini` | the four controller seats (device and maps), the stick deadzone, and each seat's expansion pak (`pak = tpak`, `tpak_rom`, `tpak_save`: a Transfer Pak's Game Boy ROM and `.srm` save, given to the session as that seat's `--tpakN-rom` and save region `tpakN`; `--tpak1-rom` on the command line wins over seat 1's. Every seat can hold one with a runner reporting `transfer_pak_seats 4`; with an older runner the hub leaves seats 2-4 out and logs why), every title of the platform (the core's `.rcore.toml` `platforms`) |
+| `<data dir>/platform/<platform>/input.ini` | the four controller seats (device and maps), the stick deadzone, and each seat's expansion pak (`pak = tpak`, `tpak_rom`, `tpak_save`: a Transfer Pak's Game Boy ROM and `.srm` save, given to the session as that seat's `--tpakN-rom` and save region `tpakN`; `--tpak1-rom` on the command line wins over seat 1's. Every seat can hold one with a runner reporting `transfer_pak_seats 4`; with an older runner the hub leaves seats 2-4 out and logs why; or `pak = vru`, `vru_device` (`default` or the SDL recording device's name): the VRU Microphone, given to the session as `--vruN`, the seat reading no pad -- a runner without `accessory_data 1` in `--version` gets the seat as an empty port and the hub logs why), every title of the platform (the core's `.rcore.toml` `platforms`) |
 | `<data dir>/platform/<platform>/options.ini` | option values for every title |
 | `<data dir>/platform/<platform>/options/<stem>.ini` | one title's overrides; `--opt` wins over both |
 | `<data dir>/platform/<platform>/core_description.txt` | the last `--describe`, so the page can label things with no core at hand |
@@ -130,12 +130,36 @@ PlayStation, Super Nintendo).
 
 **Gamepads tab (N64).** Each seat card shows the controller (rendered from
 `assets/src/n64_controller.svg`) above its device choice, and a **Pak** choice
-under Configure: None, or Transfer Pak (any seat). A Transfer Pak adds a section
+under Configure: None, Transfer Pak (any seat), or VRU Microphone. A Transfer Pak adds a section
 below the cards: **Choose ROM…** and **Choose save…** list the `.gb`/`.gbc`
 and `.srm` files in the library's gb and gbc folders (`library_root` +
 `platform_folders`, any file there, not only indexed titles), and **Create New
 Save…** writes a blank `<name>.srm` beside the chosen ROM, sized from its
 cartridge header (0xFF, as fresh battery RAM reads).
+
+**VRU Microphone (N64).** Offered on a seat only when the described core
+declares the `n64.vru` accessory for it (`accessory` records from
+`--describe`, Retro-Runtime rcore rev 7); otherwise the entry is disabled and
+its tooltip says why. The seat becomes the voice unit: it reads no controller
+(its pad goes to the next Auto seat) and Configure is disabled. Its panel,
+below the cards, picks the recording device (System default, or one SDL
+lists), shows the live level, and has **Test** (the recognizer for six
+seconds, against the title's vocabulary or any English without one), the
+recognizer's state and **Download model**, and the title's vocabulary.
+Recognition is Vosk on this machine (`third_party/vosk/NOTICE.md`): libvosk
+is loaded at runtime from beside the hub, from the build's
+`RETCOMM_VOSK_DIR`, from `<data dir>/vru/`, or through the system loader; the
+English model (`vosk-model-small-en-us-0.15`, about 40 MB) is downloaded into
+`<data dir>/vru/models/`. The vocabulary is the title's phoneme-to-text
+table (schema 1, en-US: the file n64lle's `tools/vru_client.py` takes as
+`--vocabulary`), made locally from the title's ROM and never checked in --
+no tool in either repository writes it yet: `vru_vocabulary.json` beside
+`game.toml`, or the file `game.toml`'s `[vru] vocabulary` names. In play, the
+core's dictionaries arrive over the link's accessory data (link 2.1) and
+the hub answers with `start` / `progress` / `result` / `cancel` at that seat. One
+microphone serves every VRU seat (the first one's device). A VRU seat cannot
+join a netplay match yet: the room says so and the match is refused until
+that seat's Pak is None.
 
 The page is built from what the core declares, asked of the runner with
 `retro-core-runner --describe` (Retro-Runtime `docs/CORE_RUNNER.md`), never

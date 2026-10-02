@@ -6,6 +6,7 @@
 #include "retcomm/config.hpp"
 #include "retcomm/netplay_account.hpp"
 #include "retcomm/netplay_client.hpp"
+#include "retcomm/netplay_handoff.hpp"
 #include "retcomm/netplay_lan.hpp"
 #include "retcomm/netplay_nat.hpp"
 #include "retcomm/hash.hpp"
@@ -25,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -383,6 +385,33 @@ struct Page {
     bool pak_ready = false;
     NetplayPak my_pak;
     std::string pak_note;
+
+    // Library games (docs/NETPLAY_HANDOFF.md): the game this hub starts into
+    // the match its lobby negotiates. Everything the game's own lobby would
+    // send comes from the game (its --netplay-query answer), verbatim.
+    struct LibGame {
+        std::string game_name;    // the room's wire name
+        Title title;              // a copy: the queries run on workers
+        LaunchOptions opts;       // as Play would start it
+        fs::path work_dir;        // <data>/netplay/<title id>
+        bool capable = false;     // the build takes hub matches
+        std::string why;          // !capable: why not, in a sentence
+        std::future<np::QueryAnswer> identity_f;
+        json identity;            // the game's identity answer, once in
+        std::future<np::QueryAnswer> settle_f;
+        fs::path record;          // the running match's launch record
+        bool record_open = false; // still waiting for the game's status
+    };
+    std::unique_ptr<LibGame> lib;
+    // A join or create waiting on the game's identity (its join fields).
+    struct PendingSeat {
+        bool create = false;
+        std::string lobby_id, password, game_name, version, name;
+        int max_slots = 2;
+        bool spectators = false;
+    };
+    std::optional<PendingSeat> pending_seat;
+    double ready_sent_at = -1;
 };
 
 constexpr int kPakSignal = 0x5450; // "TP"
@@ -778,6 +807,90 @@ std::string join_blocker(const HubModel& hub, const std::vector<Game>& games,
     return {};
 }
 
+// ---- library games: the hub starts them into its matches -------------------------------
+
+// Resolves a library game for a room and, when its build can take a hub
+// match, asks it for its identity on a worker. Called on every join or create,
+// so the answer reflects the player's BIOS and settings as they are now.
+std::unique_ptr<Page::LibGame> make_lib_game(HubModel& hub, const Game& g) {
+    auto lib = std::make_unique<Page::LibGame>();
+    lib->game_name = g.game_name;
+    const Title* t = hub.catalog.find(g.catalog_id);
+    if (!t) t = hub.catalog.find_by_netplay_game_name(g.game_name);
+    if (!t) {
+        lib->why = g.title + " is not in the catalog.";
+        return lib;
+    }
+    lib->title = *t;
+    lib->opts = hub.play_launch_options(*t);
+    lib->work_dir = hub.paths.data_dir / "netplay" / t->id;
+    LaunchOptions probe = lib->opts;
+    probe.mode = LaunchMode::Netplay;
+    probe.netplay_query = lib->work_dir / "probe.json";
+    const LaunchPlan plan = plan_launch(hub.paths, *t, probe);
+    if (!plan.ready) {
+        lib->why = "Retro cannot start " + t->name + ": " +
+                   plan.message.substr(0, plan.message.find('\n'));
+        return lib;
+    }
+    if (!launch_supports_netplay_handoff(plan)) {
+        lib->why = "This build of " + t->name +
+                   " cannot be started by Retro: update the game, or start the match "
+                   "from its own Netplay menu.";
+        return lib;
+    }
+    lib->capable = true;
+    json req = {{"v", 1}, {"handoff_query", "identity"}};
+    if (!lib->opts.rom_path.empty()) req["handoff_disc"] = lib->opts.rom_path.string();
+    lib->identity_f = std::async(std::launch::async,
+                                 [paths = hub.paths, title = lib->title, opts = lib->opts,
+                                  dir = lib->work_dir, req]() {
+                                     return np::run_handoff_query(paths, title, opts, req, dir);
+                                 });
+    return lib;
+}
+
+bool future_ready(const std::future<np::QueryAnswer>& f) {
+    return f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
+// The create or join itself, with the fields the game adds to its own.
+void send_seat(const Page::PendingSeat& ps, const json& join_fields) {
+    Page& p = page();
+    const json extra = join_fields.is_object() ? join_fields : json::object();
+    if (ps.create) {
+        json caps = json::object();
+        if (p.lib && p.lib->identity.is_object()) {
+            const json& start = p.lib->identity.value("start", json::object());
+            if (start.is_object() && start.contains("match_caps")) caps = start["match_caps"];
+        }
+        p.client.create_for(ps.game_name, ps.version, ps.name, ps.password, ps.max_slots,
+                            ps.spectators, caps, extra);
+        p.status = "Creating lobby\xE2\x80\xA6";
+    } else {
+        p.client.join_as(ps.lobby_id, ps.password, ps.game_name, ps.version, extra);
+        p.status = "Joining\xE2\x80\xA6";
+    }
+    if (p.filter.empty()) p.scope_dirty = true;
+}
+
+// A join or create from the library: through the game's identity when its
+// build takes hub matches, as before when it does not (it can sit, not play).
+void begin_seat(HubModel& hub, const Game& g, Page::PendingSeat ps) {
+    Page& p = page();
+    if (p.scope) {
+        send_seat(ps, json::object());
+        return;
+    }
+    p.lib = make_lib_game(hub, g);
+    if (!p.lib->capable) {
+        send_seat(ps, json::object());
+        return;
+    }
+    p.pending_seat = std::move(ps);
+    p.status = "Asking " + p.lib->title.name + " for its netplay settings\xE2\x80\xA6";
+}
+
 void join_room(HubModel& hub, const std::vector<Game>& games, const np::LobbyRow& r) {
     Page& p = page();
     const Game* g = nullptr;
@@ -794,9 +907,11 @@ void join_room(HubModel& hub, const std::vector<Game>& games, const np::LobbyRow
         p.open_join_pw = true;
         return;
     }
-    p.client.join_as(r.lobby_id, "", g->game_name, g->pin);
-    if (p.filter.empty()) p.scope_dirty = true;
-    p.status = "Joining\xE2\x80\xA6";
+    Page::PendingSeat ps;
+    ps.lobby_id = r.lobby_id;
+    ps.game_name = g->game_name;
+    ps.version = g->pin;
+    begin_seat(hub, *g, std::move(ps));
 }
 
 void open_host_modal(HubModel& hub, const std::vector<Game>& games) {
@@ -1234,11 +1349,22 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
         ImGui::TextColored(th.text_muted, "Transfer Paks: %s. The host's PLAY starts the match "
                                           "here on every player's machine.",
                            tpak_room ? "on" : "off");
+    } else if (p.lib && p.lib->capable) {
+        ImGui::TextColored(th.text_muted, "The host's PLAY starts %s on every player's machine, "
+                                          "into this match.",
+                           p.lib->title.name.c_str());
     } else {
-        ImGui::TextColored(th.text_muted,
-                           "You're seated from Retro's library. Starting a match from here is "
-                           "not built: open the game in its own app (Direct mode) to play, or "
-                           "start it from the game's own Netplay menu.");
+        ImGui::TextColored(th.warn, "%s",
+                           p.lib && !p.lib->why.empty()
+                               ? p.lib->why.c_str()
+                               : "Retro cannot start this game into a match: update the game, "
+                                 "or start the match from its own Netplay menu.");
+    }
+    // This machine cannot take a seat in any match (a VRU Microphone seat):
+    // said here, before the host's PLAY lands and the launch is refused.
+    if (p.scope && p.scope->match_problem) {
+        if (const std::string mw = p.scope->match_problem(); !mw.empty())
+            ImGui::TextColored(th.warn, "%s", mw.c_str());
     }
     if (tpak_room && p.scope) {
         std::string line = "Transfer Paks:";
@@ -1335,16 +1461,38 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     ImGui::SameLine(0, std::max(ImGui::GetStyle().ItemSpacing.x,
                                 ImGui::GetContentRegionAvail().x - play_w));
     if (s.is_host) {
+        const Page::LibGame* lib = p.scope ? nullptr : p.lib.get();
+        const std::string lib_why =
+            p.scope ? std::string()
+            : !lib  ? std::string("Retro cannot start this game into a match")
+            : !lib->capable ? lib->why
+            : !lib->identity.is_object() ? "Preparing " + lib->title.name + "\xE2\x80\xA6"
+            : lib->settle_f.valid() ? std::string("Settling the match\xE2\x80\xA6")
+                                    : std::string();
+        const std::string match_why =
+            p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
         const char* why = seated < 2   ? "Waiting for another player to join"
-                          : !p.scope   ? "Open the game in its own app (Direct mode) to play: "
-                                         "the library cannot start a match"
+                          : !lib_why.empty() ? lib_why.c_str()
+                          : !match_why.empty() ? match_why.c_str()
                           : tpak_room && !paks_complete(s)
                                          ? "Waiting for every player's Transfer Pak"
                                          : nullptr;
         ImGui::BeginDisabled(why != nullptr);
         if (good_button("PLAY", th, ImVec2(play_w, 46))) {
-            p.client.start_match();
-            p.room_status = "Starting the match\xE2\x80\xA6";
+            if (p.scope) {
+                p.client.start_match();
+                p.room_status = "Starting the match\xE2\x80\xA6";
+            } else {
+                // The game settles the match from the room, as its own PLAY
+                // would; the start message it returns is sent as it is.
+                const json req = np::handoff_settle_request(s);
+                p.lib->settle_f = std::async(
+                    std::launch::async, [paths = hub.paths, title = p.lib->title,
+                                         opts = p.lib->opts, dir = p.lib->work_dir, req]() {
+                        return np::run_handoff_query(paths, title, opts, req, dir);
+                    });
+                p.room_status = "Settling the match\xE2\x80\xA6";
+            }
         }
         ImGui::EndDisabled();
         if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -1441,16 +1589,26 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
                 p.host_error = name_problem(name, "lobby name");
                 if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
                     p.host_error = p.scope->tpak_problem();
-                if (p.host_error.empty()) {
+                if (p.host_error.empty() && p.scope) {
                     json caps = json::object();
-                    if (p.scope) {
-                        caps["tpak"] = p.host_tpak;
-                        caps["relay"] = "host"; // the lobby server's relay only as a fallback
-                    }
+                    caps["tpak"] = p.host_tpak;
+                    caps["relay"] = "host"; // the lobby server's relay only as a fallback
                     p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max,
                                         p.host_spectators, caps);
                     if (p.filter.empty()) p.scope_dirty = true;
                     p.status = "Creating lobby\xE2\x80\xA6";
+                    ImGui::CloseCurrentPopup();
+                } else if (p.host_error.empty()) {
+                    // The library: the room carries the game's own match caps.
+                    Page::PendingSeat ps;
+                    ps.create = true;
+                    ps.game_name = g.game_name;
+                    ps.version = g.pin;
+                    ps.name = name;
+                    ps.password = p.host_pw;
+                    ps.max_slots = p.host_max;
+                    ps.spectators = p.host_spectators;
+                    begin_seat(hub, g, std::move(ps));
                     ImGui::CloseCurrentPopup();
                 }
             }
@@ -1468,9 +1626,15 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
         if (ImGui::Button("Cancel", ImVec2(120, 0)) || cancel_pressed()) ImGui::CloseCurrentPopup();
         ImGui::SameLine();
         if (accent_button("Join", th, ImVec2(120, 0)) || enter) {
-            p.client.join_as(p.join_pw_lobby, p.join_pw, p.join_pw_game, p.join_pw_version);
-            if (p.filter.empty()) p.scope_dirty = true;
-            p.status = "Joining\xE2\x80\xA6";
+            Page::PendingSeat ps;
+            ps.lobby_id = p.join_pw_lobby;
+            ps.password = p.join_pw;
+            ps.game_name = p.join_pw_game;
+            ps.version = p.join_pw_version;
+            if (const Game* g = game_by_wire_name(games, p.join_pw_game))
+                begin_seat(hub, *g, std::move(ps));
+            else
+                send_seat(ps, json::object());
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -1724,6 +1888,64 @@ void ingest(HubModel& hub) {
         p.seen_swap_result_seq = s.swap_result.seq;
         p.room_status = s.swap_result.accepted ? "" : "That player kept their seat.";
     }
+    // ---- library games: identity, ready, settle, the match's status -------
+    if (p.lib && future_ready(p.lib->identity_f)) {
+        np::QueryAnswer qa = p.lib->identity_f.get();
+        if (qa.ok && !qa.answer.contains("error")) {
+            p.lib->identity = qa.answer;
+            p.ready_sent_at = -1;
+            if (p.pending_seat) {
+                send_seat(*p.pending_seat, qa.answer.value("join_fields", json::object()));
+                p.pending_seat.reset();
+            }
+        } else {
+            const std::string why = qa.ok ? qa.answer.value("error", std::string()) : qa.error;
+            p.lib->capable = false;
+            p.lib->why = p.lib->title.name + " could not prepare for netplay: " + why;
+            if (p.pending_seat) {
+                p.pending_seat.reset();
+                p.status = p.lib->why;
+            }
+        }
+    }
+    // Ready, with what the game offers (PSX: its BIOS), whenever the server
+    // has cleared it (it does on every membership change).
+    if (s.in_room && !p.scope && p.lib && p.lib->identity.is_object() &&
+        p.lib->identity.contains("ready")) {
+        bool ready = false;
+        for (const np::Member& m : s.members)
+            if (m.is_local) ready = m.ready;
+        if (!ready && (p.ready_sent_at < 0 || now_s() - p.ready_sent_at > 2.0)) {
+            p.client.send_raw(p.lib->identity["ready"]);
+            p.ready_sent_at = now_s();
+        }
+    }
+    if (p.lib && future_ready(p.lib->settle_f)) {
+        np::QueryAnswer qa = p.lib->settle_f.get();
+        if (qa.ok && qa.answer.contains("start") && qa.answer["start"].is_object()) {
+            p.client.send_raw(qa.answer["start"]);
+            p.room_status = "Starting the match\xE2\x80\xA6";
+        } else {
+            p.room_status = "Cannot start the match: " +
+                            (qa.ok ? qa.answer.value("error", std::string("the game refused"))
+                                   : qa.error);
+        }
+    }
+    if (p.lib && p.lib->record_open) {
+        std::string why;
+        switch (np::read_handoff_status(p.lib->record, &why)) {
+        case np::HandoffState::Pending: break;
+        case np::HandoffState::Started:
+            p.lib->record_open = false;
+            p.room_status = p.lib->title.name + " is playing the match.";
+            break;
+        case np::HandoffState::Refused:
+            p.lib->record_open = false;
+            p.room_status = p.lib->title.name + " did not start the match: " + why;
+            break;
+        }
+    }
+
     // ---- host relay: the host's port, the guests' probes -------------------
     const bool relay_room = p.scope && s.in_room && s.match_caps.is_object() &&
                             s.match_caps.value("relay", std::string()) == "host";
@@ -1868,9 +2090,24 @@ void ingest(HubModel& hub) {
         const long long sid = s.launch.value("session_id", 0LL);
         if (sid != p.launched_session) {
             p.launched_session = sid;
-            if (!p.scope || !p.scope->launch) {
-                p.room_status = "The host started the match, but the library cannot run it. "
-                                "Open the game in its own app (Direct mode) to play.";
+            if (!p.scope) {
+                // A library game: the game takes the match from a launch record.
+                std::string why;
+                if (!p.lib || !p.lib->capable) {
+                    p.room_status = "The host started the match, but " +
+                                    (p.lib && !p.lib->why.empty()
+                                         ? p.lib->why
+                                         : std::string("Retro cannot start this game."));
+                } else if (np::start_handoff_match(hub.paths, p.lib->title, p.lib->opts, s,
+                                                   p.lib->work_dir, &p.lib->record, &why)) {
+                    p.lib->record_open = true;
+                    p.room_status = "Starting " + p.lib->title.name + "\xE2\x80\xA6";
+                } else {
+                    p.room_status = "Could not start the match: " + why;
+                }
+                p.client.ack_launch();
+            } else if (!p.scope->launch) {
+                p.room_status = "The host started the match, but this game cannot run it here.";
             } else {
                 NetplayLaunch l;
                 l.session_id = static_cast<std::uint32_t>(sid);

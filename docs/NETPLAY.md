@@ -11,18 +11,15 @@ Code:
 
 The protocol is recomp-net-server's `docs/WS_LOBBY.md`.
 
-**Not built: starting a match.** No game can yet take a session negotiated
-outside it. Every game starts netplay from its own in-game lobby, which binds
-the UDP port the session then uses. So from the hub:
+**Starting a match** (2026-09-30, branch `feat/netplay-handoff`):
+- **PSX and SNES library games.** The host's PLAY starts the game on every
+  seated player's machine. The game takes the match from a launch record,
+  with everything it needs settled by the game itself:
+  `NETPLAY_HANDOFF.md`. Only builds with the support can do this, and today
+  none is released. For any other build, PLAY says to update the game.
+- **Direct mode** (one core title): `NETPLAY_DIRECT.md`.
 
-- **Online:** you can browse, host, join, move seats and chat.
-- **LAN:** you can see rooms.
-
-What the hub never does is launch a game into a match. PLAY is disabled and
-says so. `start` is never sent, because it would launch the other players'
-games into a session with nobody on our side. Starting from the hub needs a
-settled launch record that the games read (`NETPLAY_UX_PLAN.md` §5.6); that
-work belongs in the games.
+What follows describes the browser and room, which work for every game.
 
 ## Pages
 

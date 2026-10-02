@@ -99,6 +99,12 @@ struct Snapshot {
     // Launch
     bool launch_pending = false;
     nlohmann::json launch;
+    // The server messages that seated us, verbatim: the created/joined reply
+    // and the latest lobby_update. A game started into the match replays them
+    // with the launch (docs/NETPLAY_HANDOFF.md), so it settles from exactly
+    // what the server said rather than from this client's reading of it.
+    nlohmann::json seat_msg, room_msg;
+    std::string lobby_url;  // the server they came from
 
     // A seated player asked to swap seats with us (seat_swap_ask); answer
     // with seat_swap_answer. seq bumps per ask.
@@ -150,12 +156,16 @@ public:
     // A room for a game other than the connection's scope (the hub's
     // cross-game browser): the room is created for, or joined as, exactly
     // this game_name / game_version, which the server checks.
+    // `extra`: fields the game itself would add to its create / join
+    // (NETPLAY_HANDOFF.md join_fields: disc_fp, mod_offer), merged as given.
     void create_for(const std::string& game_name, const std::string& game_version,
                     const std::string& name, const std::string& password, int max_slots,
-                    bool allow_spectators, const nlohmann::json& match_caps);
+                    bool allow_spectators, const nlohmann::json& match_caps,
+                    const nlohmann::json& extra = nlohmann::json::object());
     void join(const std::string& lobby_id, const std::string& password);
     void join_as(const std::string& lobby_id, const std::string& password,
-                 const std::string& game_name, const std::string& game_version);
+                 const std::string& game_name, const std::string& game_version,
+                 const nlohmann::json& extra = nlohmann::json::object());
     void leave();
     void close_room();
     void set_ready(bool ready);
