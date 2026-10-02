@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "en-US",
-  "note": "A test fixture for retro-hub-vru-test. The sounds are made up: a real vocabulary is generated locally from the title's ROM (n64lle tools/vru_client.py --vocabulary) and is never checked in.",
+  "note": "A test fixture for retro-hub-vru-test. The sounds are made up: a real vocabulary (the file n64lle tools/vru_client.py takes as --vocabulary) is made locally from the title's ROM and is never checked in.",
   "entries": [
     { "text": "Pikachu", "sounds": "0A1B2C3D" },
     { "text": "pika", "sounds": "0a1b2c3d" },
