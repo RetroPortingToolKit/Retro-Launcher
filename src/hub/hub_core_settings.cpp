@@ -280,11 +280,53 @@ bool parse_core_description(const std::string& text, CoreDescription& out, std::
             d.axis_direction = static_cast<std::int32_t>(dir);
             d.label = f[4];
             out.inputs.push_back(std::move(d));
+        } else if (kind == "accessory" && f.size() >= 6) {
+            // accessory <id> <label> <flags> <seat_mask> <slot_mask>: flags as
+            // the option records spell theirs (content,save,netplay or -), or
+            // the raw RCORE_ACC_FLAG_* number; the masks as numbers.
+            CoreAccessoryDecl a;
+            a.id = f[1];
+            a.label = f[2];
+            std::int64_t raw = 0;
+            if (parse_i64(f[3], raw)) {
+                a.content = raw & RCORE_ACC_FLAG_CONTENT;
+                a.save = raw & RCORE_ACC_FLAG_SAVE;
+                a.netplay = raw & RCORE_ACC_FLAG_NETPLAY;
+            } else {
+                std::istringstream flags(f[3]);
+                for (std::string fl; std::getline(flags, fl, ',');) {
+                    if (fl == "content") a.content = true;
+                    else if (fl == "save") a.save = true;
+                    else if (fl == "netplay") a.netplay = true;
+                }
+            }
+            // The masks are hex, as the runner prints them (%x; "f" = four
+            // seats), with or without 0x.
+            auto parse_mask = [](const std::string& s, std::uint32_t& v) {
+                try {
+                    size_t used = 0;
+                    const unsigned long x = std::stoul(s, &used, 16);
+                    if (used != s.size() || x > 0xFFFFFFFFul) return false;
+                    v = static_cast<std::uint32_t>(x);
+                    return true;
+                } catch (...) {
+                    return false;
+                }
+            };
+            if (!parse_mask(f[4], a.seat_mask) || !parse_mask(f[5], a.slot_mask))
+                return fail("accessory '" + a.id + "': bad mask");
+            out.accessories.push_back(std::move(a));
         }
     }
     if (!header) return fail("no 'describe' header");
     out.ok = true;
     return true;
+}
+
+const CoreAccessoryDecl* CoreDescription::accessory(const std::string& id) const {
+    for (const CoreAccessoryDecl& a : accessories)
+        if (a.id == id) return &a;
+    return nullptr;
 }
 
 CoreDescription describe_core(const fs::path& runner, const fs::path& core,
@@ -593,11 +635,15 @@ PlatformInput load_platform_input(const fs::path& data_dir, const std::string& p
                 seat.name = value;
             } else if (key == "pak") {
                 in.paks[static_cast<size_t>(n)].kind =
-                    value == "tpak" && n < kTransferPakSeats ? SeatPak::TransferPak : SeatPak::None;
+                    value == "tpak" && n < kTransferPakSeats ? SeatPak::TransferPak
+                    : value == "vru"                         ? SeatPak::Vru
+                                                             : SeatPak::None;
             } else if (key == "tpak_rom") {
                 in.paks[static_cast<size_t>(n)].gb_rom = value;
             } else if (key == "tpak_save") {
                 in.paks[static_cast<size_t>(n)].gb_save = value;
+            } else if (key == "vru_device") {
+                in.paks[static_cast<size_t>(n)].vru_device = value == "default" ? "" : value;
             }
         } else if (rest == ".gamepad" || rest == ".keyboard") {
             read_map_line(in.maps[static_cast<size_t>(n)], rest == ".gamepad", key, value, path,
@@ -637,6 +683,13 @@ bool save_platform_input(const fs::path& data_dir, const std::string& platform,
             o << "pak = tpak\n";
             if (!pak.gb_rom.empty()) o << "tpak_rom = " << pak.gb_rom << "\n";
             if (!pak.gb_save.empty()) o << "tpak_save = " << pak.gb_save << "\n";
+        } else if (pak.kind == SeatPak::Vru) {
+            if (pak.vru_device.find_first_of("\r\n") != std::string::npos) {
+                if (error) *error = "a recording device name this file cannot hold";
+                return false;
+            }
+            o << "pak = vru\nvru_device = " << (pak.vru_device.empty() ? "default" : pak.vru_device)
+              << "\n";
         }
         write_map(o, sec + ".", in.maps[static_cast<size_t>(n)]);
     }
@@ -801,9 +854,13 @@ std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,
                                              const std::vector<std::string>& pad_guids) {
     std::array<SeatPlan, kInputSeats> plan{};
     std::vector<bool> taken(pad_guids.size(), false);
+    // A VRU seat is the microphone's: it takes no device, whatever its source
+    // says, so its pad (if it names one) is free for the Auto seats.
+    auto vru = [&](int n) { return in.paks[static_cast<size_t>(n)].kind == SeatPak::Vru; };
     for (int n = 0; n < kInputSeats; ++n) {
+        if (vru(n)) plan[static_cast<size_t>(n)].vru = true;
         const SeatAssign& seat = in.seats[static_cast<size_t>(n)];
-        if (seat.source != SeatAssign::Gamepad) continue;
+        if (vru(n) || seat.source != SeatAssign::Gamepad) continue;
         for (size_t i = 0; i < pad_guids.size(); ++i) {
             if (!taken[i] && pad_guids[i] == seat.guid) {
                 taken[i] = true;
@@ -814,6 +871,7 @@ std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,
     }
     bool keyboard_seat = false;
     for (int n = 0; n < kInputSeats; ++n) {
+        if (vru(n)) continue;
         const SeatAssign& seat = in.seats[static_cast<size_t>(n)];
         if (seat.source == SeatAssign::Keyboard) {
             plan[static_cast<size_t>(n)].keyboard = true;
@@ -828,7 +886,7 @@ std::array<SeatPlan, kInputSeats> plan_seats(const PlatformInput& in,
             }
         }
     }
-    if (in.seats[0].source == SeatAssign::Auto && plan[0].pad < 0 && !keyboard_seat)
+    if (in.seats[0].source == SeatAssign::Auto && plan[0].pad < 0 && !keyboard_seat && !vru(0))
         plan[0].keyboard = true;
     return plan;
 }
@@ -858,6 +916,8 @@ void fill_pads_from_input(const PlatformInput& in, rcore_pad pads[RCORE_MAX_SEAT
         const SeatPlan& sp = plan[n];
         const InputBindings& b = in.maps[n];
         SDL_Gamepad* g = sp.pad >= 0 ? SDL_GetGamepadFromID(ids[sp.pad]) : nullptr;
+        // No device, or the VRU's port (plan_seats gives it none): the seat
+        // stays connected = 0, as the console reads a port with no pad.
         if (!g && !sp.keyboard) continue;
         rcore_pad& p = pads[n];
         p.connected = 1;

@@ -1360,6 +1360,12 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
                                : "Retro cannot start this game into a match: update the game, "
                                  "or start the match from its own Netplay menu.");
     }
+    // This machine cannot take a seat in any match (a VRU Microphone seat):
+    // said here, before the host's PLAY lands and the launch is refused.
+    if (p.scope && p.scope->match_problem) {
+        if (const std::string mw = p.scope->match_problem(); !mw.empty())
+            ImGui::TextColored(th.warn, "%s", mw.c_str());
+    }
     if (tpak_room && p.scope) {
         std::string line = "Transfer Paks:";
         bool all = true;
@@ -1463,8 +1469,11 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
             : !lib->identity.is_object() ? "Preparing " + lib->title.name + "\xE2\x80\xA6"
             : lib->settle_f.valid() ? std::string("Settling the match\xE2\x80\xA6")
                                     : std::string();
+        const std::string match_why =
+            p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
         const char* why = seated < 2   ? "Waiting for another player to join"
                           : !lib_why.empty() ? lib_why.c_str()
+                          : !match_why.empty() ? match_why.c_str()
                           : tpak_room && !paks_complete(s)
                                          ? "Waiting for every player's Transfer Pak"
                                          : nullptr;

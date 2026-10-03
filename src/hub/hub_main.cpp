@@ -4,6 +4,8 @@
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
 #include "hub/hub_title.hpp"
+#include "hub/hub_vru.hpp"
+#include "hub/hub_vru_mic.hpp"
 #include "hub/hub_update.hpp"
 #include "runner_probe.hpp" // Retro-Runtime: probe_runner
 #include "transport.hpp"    // Retro-Runtime: utf8_args, path_utf8
@@ -9058,6 +9060,9 @@ retcomm::ResolvedRunner resolve_title_runner(const DirectPlay& d, const retcomm:
         rr.version = v.version;
         rr.game_package = v.game_package;
         rr.transfer_pak_seats = v.transfer_pak_seats;
+#if defined(RETCOMM_LINK_ACCESSORY_DATA)
+        rr.accessory_data = v.accessory_data;
+#endif
         rr.note = "--runner names it";
     } else {
         rr.note = "--runner names it (" + err + ")";
@@ -9596,10 +9601,12 @@ std::string rcore_manifest_platform(const fs::path& core) {
 // over both (it is the most specific request). Also the play overlay's
 // settings (play.ini), which the in-game hotkeys write back.
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
-                           const std::string& platform, const std::string& title_key) {
+                           const fs::path& exe_dir, const std::string& platform,
+                           const std::string& title_key) {
     // The overlay's settings are every core's: loaded whatever the platform.
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
     args.data_dir = data_dir;
+    args.exe_dir = exe_dir;
     if (platform.empty()) return;
     std::vector<std::string> warnings;
     args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
@@ -9615,6 +9622,16 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         args.tpak_save[seat] = retro::corelink::utf8_path(pak.gb_save);
         std::fprintf(stderr, "retro-hub: transfer pak, seat %zu: %s, save %s\n", seat + 1,
                      pak.gb_rom.c_str(), pak.gb_save.empty() ? "none" : pak.gb_save.c_str());
+    }
+    // Each seat's VRU Microphone: the seat reads no pad (the runner masks it
+    // too), and its recording device is the session's.
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        const retcomm::hub::SeatPak& pak = args.input.paks[seat];
+        if (pak.kind != retcomm::hub::SeatPak::Vru) continue;
+        args.vru_seat[seat] = true;
+        args.vru_device[seat] = pak.vru_device;
+        std::fprintf(stderr, "retro-hub: VRU microphone, seat %zu: %s\n", seat + 1,
+                     pak.vru_device.empty() ? "default recording device" : pak.vru_device.c_str());
     }
     auto plat = retcomm::hub::load_core_options(data_dir, platform, "");
     auto title = retcomm::hub::load_core_options(data_dir, platform, title_key);
@@ -9665,6 +9682,19 @@ void limit_transfer_paks(retcomm::hub::PlayArgs& args, const retcomm::ResolvedRu
                      seat + 1, rr.source.c_str(), rr.version.c_str(), rr.transfer_pak_seats);
         args.tpak_rom[seat].clear();
         args.tpak_save[seat].clear();
+    }
+    // Likewise a runner from before accessory data (no accessory_data in its
+    // --version) does not take --vruN: the seat plays as an empty port, and
+    // the log says why nobody is listening.
+    if (rr.accessory_data == 0) {
+        for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+            if (!args.vru_seat[seat]) continue;
+            std::fprintf(stderr,
+                         "retro-hub: VRU microphone, seat %zu: left out -- the %s runner %s carries "
+                         "no accessory data; a Retro-Runtime runner with link 2.1 is needed\n",
+                         seat + 1, rr.source.c_str(), rr.version.c_str());
+            args.vru_seat[seat] = false;
+        }
     }
 }
 
@@ -9738,6 +9768,31 @@ struct CoreSettingsPage {
     std::string pak_note;      // the last picker's result or refusal
     bool pak_note_bad = false;
 
+    // The title the page was opened for, when one is known (Direct mode):
+    // where the VRU vocabulary is looked for.
+    fs::path title_dir;
+    // VRU Microphone (Gamepads tab): the microphone runs while a VRU panel
+    // is on screen, for its level meter; Test runs the recognizer against
+    // the title's vocabulary (or any English without one) for a few seconds.
+    struct VruPanel {
+        retcomm::hub::vru::Microphone mic;
+        std::string mic_device;         // the device the mic was started with
+        bool mic_started = false;
+        std::string mic_error;
+        std::uint64_t mic_retry_ns = 0;  // a failed open is tried again then
+        std::uint64_t test_until_ns = 0; // a Test in progress, until
+        std::string test_text;           // what it heard
+        retcomm::hub::vru::ModelDownload download;
+        bool download_was_running = false;
+        std::string download_note;
+        retcomm::hub::vru::Vocabulary vocabulary;
+        std::string vocabulary_note;
+        bool vocabulary_checked = false;
+        std::vector<retcomm::hub::vru::RecordingDevice> devices;
+        std::uint64_t devices_at_ns = 0;
+    };
+    VruPanel vru;
+
     bool dirty() const {
         return input != input_saved || plat_opts != plat_saved || title_opts != title_saved ||
                prefs != prefs_saved;
@@ -9780,10 +9835,14 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
                         const std::string& title_name, const fs::path& core,
                         const fs::path& package,
                         const retcomm::hub::CoreDescription* known = nullptr,
-                        bool direct = false) {
+                        bool direct = false, const fs::path& title_dir = {}) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
     p.platform = platform;
+    p.title_dir = title_dir;
+    p.vru.vocabulary_checked = false;
+    p.vru.test_until_ns = 0;
+    p.vru.test_text.clear();
     p.title_key = title_key;
     p.title_name = title_name;
     p.direct = direct && !title_key.empty();
@@ -9880,8 +9939,15 @@ bool save_core_settings(HubModel& hub, std::string* err) {
     return true;
 }
 
+void stop_vru_panel(CoreSettingsPage& p) {
+    if (p.vru.mic_started) p.vru.mic.stop();
+    p.vru.mic_started = false;
+    p.vru.test_until_ns = 0;
+}
+
 void close_core_settings(HubModel& hub) {
     CoreSettingsPage& p = core_settings_page();
+    stop_vru_panel(p);
     p.input = p.input_saved;
     p.plat_opts = p.plat_saved;
     p.title_opts = p.title_saved;
@@ -11058,6 +11124,241 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
     }
 }
 
+// The VRU Microphone panels, under the seat cards like the Transfer Pak's:
+// the recording device, its level, a Test of the recognizer, the recognizer
+// and model, and the title's vocabulary. The microphone runs while a panel is
+// on screen (meter only); Test puts the recognizer on it for a few seconds.
+void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
+    using retcomm::hub::SeatPak;
+    namespace vru = retcomm::hub::vru;
+    CoreSettingsPage::VruPanel& v = p.vru;
+    bool any = false;
+    for (const SeatPak& pak : p.input.paks) any = any || pak.kind == SeatPak::Vru;
+    if (!any) {
+        stop_vru_panel(p);
+        return;
+    }
+    const std::uint64_t now = SDL_GetTicksNS();
+    const fs::path& data = hub.paths.data_dir;
+    // The devices, once a second: a USB microphone plugged in shows up.
+    if (v.devices.empty() || now - v.devices_at_ns > 1000000000ull) {
+        v.devices = vru::recording_devices();
+        v.devices_at_ns = now;
+    }
+    // The recognizer and the model, as they stand on disk.
+    vru::VoskLibrary& lib = vru::VoskLibrary::get();
+    const bool lib_ok = lib.load(hub.exe_dir, data);
+    const bool model_ok = vru::vosk_model_present(data);
+    if (v.download_was_running && !v.download.running()) {
+        v.download_was_running = false;
+        v.download_note = v.download.finished_ok()
+                              ? "Model downloaded to " + vru::vosk_model_dir(data).string() + "."
+                              : "Download failed: " + v.download.error();
+        hub.append_log("VRU: " + v.download_note);
+    }
+    // The vocabulary, once per page opening.
+    if (!v.vocabulary_checked) {
+        v.vocabulary_checked = true;
+        v.vocabulary = vru::Vocabulary{};
+        if (p.title_dir.empty()) {
+            v.vocabulary_note = "checked when a title is played (none is open here)";
+        } else {
+            const fs::path path = vru::vocabulary_path(p.title_dir);
+            std::string err;
+            if (vru::load_vocabulary(path, v.vocabulary, &err))
+                v.vocabulary_note = std::to_string(v.vocabulary.entries.size()) + " entries, " +
+                                    std::to_string(v.vocabulary.all_names().size()) +
+                                    " phrases, from " + path.string();
+            else
+                v.vocabulary_note = err + " at " + path.string();
+        }
+    }
+    // One VRU seat drives the one microphone: the first seat set to it.
+    int first = -1, last = -1;
+    for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+        if (p.input.paks[static_cast<size_t>(s)].kind != SeatPak::Vru) continue;
+        if (first < 0) first = s;
+        last = s;
+    }
+    const std::string& device = p.input.paks[static_cast<size_t>(first)].vru_device;
+    if (v.mic_started && v.mic_device == device && !v.mic.running()) {
+        // The worker ended on its own (the device would not open, or went
+        // away): its last word is the reason; another try in a moment.
+        v.mic_error = v.mic.recognizer_status();
+        v.mic_started = false;
+        v.mic_retry_ns = now + 2000000000ull;
+    }
+    if (!v.mic_started && (v.mic_device != device || now >= v.mic_retry_ns)) {
+        vru::Microphone::Config c;
+        c.device = device;
+        c.model_dir = vru::vosk_model_dir(data);
+        c.exe_dir = hub.exe_dir;
+        c.data_dir = data;
+        v.mic_started = v.mic.start(c, &v.mic_error);
+        v.mic_device = device;
+        v.mic_retry_ns = now + 2000000000ull;
+        v.test_until_ns = 0;
+    }
+    // A Test ends: the recognizer comes off (meter only).
+    if (v.test_until_ns && now >= v.test_until_ns) {
+        v.test_until_ns = 0;
+        v.mic.set_grammar({}, false);
+    }
+    if (v.test_until_ns) {
+        for (const vru::SpeechEvent& e : v.mic.take_events()) {
+            if (e.kind == vru::SpeechEvent::Final)
+                v.test_text = e.text.empty() ? "nothing recognized" : "heard: " + e.text;
+        }
+        const std::string partial = v.mic.partial();
+        if (!partial.empty() && v.test_text.rfind("heard: ", 0) != 0) v.test_text = partial + "\xE2\x80\xA6";
+    }
+
+    ImGui::Dummy(ImVec2(0, th.spacing_md));
+    ImGui::Separator();
+    ImGui::TextColored(th.text_muted, "VRU MICROPHONE");
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped("The port is the voice unit: it reads no controller. In the game, hold Z on "
+                       "controller 1 and speak; the recognizer hears the phrases the game is "
+                       "listening for and answers through the VRU. Recognition is Vosk, on this "
+                       "machine; the English model is downloaded once.");
+    ImGui::PopStyleColor();
+
+    const float gap = th.spacing_md;
+    float cardw = 0.f;
+    const int cols = seat_grid(ImGui::GetContentRegionAvail().x, gap, &cardw);
+    for (int s = 0; s <= last; ++s) {
+        if (s % cols) ImGui::SameLine(0, gap);
+        else if (s) ImGui::Dummy(ImVec2(0, gap));
+        SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+        if (pak.kind != SeatPak::Vru) {
+            ImGui::Dummy(ImVec2(cardw, 1.f));
+            continue;
+        }
+        ImGui::PushID(s);
+        ImGui::BeginChild("vru", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                                                       ImGuiChildFlags_NavFlattened);
+        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
+        ImGui::TextColored(th.text_muted, "Microphone");
+        ImGui::SetNextItemWidth(-1.f);
+        {
+            std::string preview = pak.vru_device.empty() ? "System default" : pak.vru_device;
+            bool listed = pak.vru_device.empty();
+            for (const vru::RecordingDevice& d : v.devices) listed = listed || d.name == pak.vru_device;
+            if (!listed) preview += " (not connected)";
+            if (ImGui::BeginCombo("##vrudev", preview.c_str())) {
+                if (ImGui::Selectable("System default", pak.vru_device.empty())) pak.vru_device.clear();
+                for (size_t i = 0; i < v.devices.size(); ++i) {
+                    const std::string item = v.devices[i].name + "##dev" + std::to_string(i);
+                    if (ImGui::Selectable(item.c_str(), pak.vru_device == v.devices[i].name))
+                        pak.vru_device = v.devices[i].name;
+                }
+                if (v.devices.empty()) ImGui::TextColored(th.text_muted, "No recording device found.");
+                ImGui::EndCombo();
+            }
+        }
+        if (s != first) {
+            ImGui::TextColored(th.text_muted, "One microphone serves every VRU seat; player %d's is the "
+                                              "one that runs.", first + 1);
+        }
+        // The level, live.
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(th.text_muted, "Level");
+        {
+            const int level = v.mic_started ? v.mic.level() : 0;
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, level >= 12 ? th.good : th.accent_dim);
+            ImGui::ProgressBar(static_cast<float>(level) / 100.f, ImVec2(-1.f, 10.f), "");
+            ImGui::PopStyleColor();
+            if (!v.mic_started && !v.mic_error.empty()) ImGui::TextColored(th.warn, "%s", v.mic_error.c_str());
+            else if (v.mic_started && v.mic.device_fell_back())
+                ImGui::TextColored(th.warn, "Not connected: the system default is used.");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+        // Test: the recognizer on the microphone for a few seconds.
+        const bool can_test = v.mic_started && lib_ok && model_ok && s == first;
+        ImGui::BeginDisabled(!can_test || v.test_until_ns != 0);
+        if (ImGui::Button(v.test_until_ns ? "Listening\xE2\x80\xA6" : "Test", ImVec2(110.f, 0))) {
+            v.test_until_ns = now + 6ull * 1000000000ull;
+            v.test_text.clear();
+            if (v.vocabulary.loaded()) v.mic.set_grammar(v.vocabulary.all_names(), false);
+            else v.mic.set_grammar({}, true);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(!v.mic_started ? "The microphone is not open."
+                              : !lib_ok      ? "libvosk is not loaded."
+                              : !model_ok    ? "Download the model first."
+                              : s != first   ? "Test runs on player %zu's panel."
+                              : v.vocabulary.loaded()
+                                  ? "Say one of the title's %zu phrases; the recognizer shows what it heard."
+                                  : "No vocabulary: say anything in English; the recognizer shows what it heard.",
+                              s != first ? static_cast<size_t>(first + 1) : v.vocabulary.all_names().size());
+        if (s == first && v.test_until_ns) {
+            ImGui::SameLine();
+            const std::string st = v.mic.recognizer_status();
+            ImGui::TextColored(st == "ready" ? th.text_muted : th.warn, "%s",
+                               st == "ready" ? "speak now" : st.c_str());
+        }
+        if (s == first && !v.test_text.empty()) ImGui::TextWrapped("%s", v.test_text.c_str());
+        ImGui::Dummy(ImVec2(0, 4));
+        // The recognizer, and its model.
+        ImGui::TextColored(th.text_muted, "Recognizer");
+        if (!lib_ok) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.warn);
+            ImGui::TextWrapped("%s", lib.error().c_str());
+            ImGui::PopStyleColor();
+        } else if (!model_ok) {
+            ImGui::TextWrapped("libvosk %s; model %s not downloaded.",
+                               retro::corelink::utf8_path(lib.path()).filename().string().c_str(),
+                               vru::kVoskModelName);
+        } else {
+            ImGui::TextWrapped("ready: libvosk %s, model %s.",
+                               retro::corelink::utf8_path(lib.path()).filename().string().c_str(),
+                               vru::kVoskModelName);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && lib_ok)
+            ImGui::SetTooltip("%s\n%s", lib.path().c_str(), vru::vosk_model_dir(data).string().c_str());
+        if (!model_ok && s == first) {
+            if (v.download.running()) {
+                const std::uint64_t got = v.download.downloaded(), total = v.download.total();
+                char buf[64];
+                if (v.download.unpacking()) std::snprintf(buf, sizeof buf, "unpacking\xE2\x80\xA6");
+                else if (total) std::snprintf(buf, sizeof buf, "%.1f / %.1f MB", got / 1048576.0, total / 1048576.0);
+                else std::snprintf(buf, sizeof buf, "%.1f MB", got / 1048576.0);
+                ImGui::ProgressBar(total ? static_cast<float>(got) / static_cast<float>(total) : 0.f,
+                                   ImVec2(-1.f, 0.f), buf);
+            } else if (accent_button("Download model", th, ImVec2(160.f, 0))) {
+                std::string err;
+                if (v.download.start(data, &err)) {
+                    v.download_was_running = true;
+                    v.download_note.clear();
+                    hub.append_log(std::string("VRU: downloading ") + vru::kVoskModelUrl);
+                } else {
+                    v.download_note = err;
+                }
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("%s (about 40 MB, Apache-2.0) into %s", vru::kVoskModelUrl,
+                                  vru::vosk_models_dir(data).string().c_str());
+        }
+        if (!v.download_note.empty() && s == first) {
+            ImGui::PushStyleColor(ImGuiCol_Text, v.download.finished_ok() ? th.text_muted : th.warn);
+            ImGui::TextWrapped("%s", v.download_note.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(th.text_muted, "Vocabulary");
+        ImGui::PushStyleColor(ImGuiCol_Text, v.vocabulary.loaded() ? th.text : th.warn);
+        ImGui::TextWrapped("%s%s", v.vocabulary.loaded() ? "" : "not found: ", v.vocabulary_note.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("The title's phoneme-to-text table, generated locally from its ROM "
+                              "(vru_vocabulary.json beside game.toml, or game.toml's [vru] vocabulary). "
+                              "Without it the game's words cannot be named, so nothing is recognized.");
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+}
+
 void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
                             BoxartCache& boxart) {
     using namespace retcomm::hub;
@@ -11103,13 +11404,26 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
                 ImGui::Dummy(ImVec2(0, 2));
             }
         }
+        const bool vru_seat = p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru;
         ImGui::SetNextItemWidth(-1.f);
-        draw_core_seat_source_combo(p, s, pads);
+        if (vru_seat) {
+            // The port is the voice unit's: no controller reads here, as on
+            // the console (the pad, if any, goes to the next Auto seat).
+            ImGui::BeginDisabled();
+            if (ImGui::BeginCombo("##src", "VRU Microphone (no controller)")) ImGui::EndCombo();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("This port holds the VRU Microphone, so it reads no controller. "
+                                  "Set Pak to None to give it a controller again.");
+        } else {
+            draw_core_seat_source_combo(p, s, pads);
+        }
         ImGui::Dummy(ImVec2(0, 4));
 
         const float cw = ImGui::GetContentRegionAvail().x;
         const float half = (cw - th.spacing_sm) * 0.5f;
         constexpr float btnh = 32.f;
+        ImGui::BeginDisabled(vru_seat);
         if (ImGui::Button("Configure", ImVec2(half, btnh))) {
             cancel_core_capture(p);
             p.status.clear();
@@ -11117,13 +11431,15 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             p.map_keyboard = p.input.seats[static_cast<size_t>(s)].source == SeatAssign::Keyboard ||
                              (plan[static_cast<size_t>(s)].keyboard);
         }
+        ImGui::EndDisabled();
         ImGui::SameLine(0, th.spacing_sm);
         {
             const SeatPlan& sp = plan[static_cast<size_t>(s)];
             std::string st = "no device";
-            if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
+            if (sp.vru) st = "voice unit";
+            else if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
             else if (sp.keyboard) st = "keyboard";
-            const bool on = sp.connected();
+            const bool on = sp.connected() || sp.vru;
             const float sw = 18.f + ImGui::CalcTextSize(st.c_str()).x;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btnh - ImGui::GetTextLineHeight()) * 0.5f);
@@ -11148,21 +11464,45 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::SetNextItemWidth(-1.f);
-            const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak" : "None";
+            const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak"
+                              : pak.kind == SeatPak::Vru       ? "VRU Microphone"
+                                                               : "None";
+            // The VRU is offered only when the described core declares the
+            // n64.vru accessory for this seat (an older core: the entry stays,
+            // disabled, and says why), the way Transfer Pak support is read
+            // from what the title declares.
+            const retcomm::hub::CoreAccessoryDecl* vru_decl =
+                p.desc.ok ? p.desc.accessory(retcomm::hub::kVruAccessoryId) : nullptr;
+            const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
             if (ImGui::BeginCombo("##pak", (std::string("Pak: ") + now).c_str())) {
                 if (ImGui::Selectable("None", pak.kind == SeatPak::None)) pak.kind = SeatPak::None;
                 if (ImGui::Selectable("Transfer Pak", pak.kind == SeatPak::TransferPak))
                     pak.kind = SeatPak::TransferPak;
+                ImGui::BeginDisabled(!vru_here && pak.kind != SeatPak::Vru);
+                if (ImGui::Selectable("VRU Microphone", pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
+                ImGui::EndDisabled();
+                if (!vru_here && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(
+                        !p.desc_ready ? "Waiting for the core to describe itself."
+                        : !p.desc.ok  ? "No core description: the VRU is offered once a core "
+                                        "that declares it has described itself."
+                        : !vru_decl   ? "%s %s does not declare the VRU Microphone (n64.vru). "
+                                        "A newer core is needed."
+                                      : "%s %s does not take the VRU on this port.",
+                        p.desc.core_id.c_str(), p.desc.core_version.c_str());
                 ImGui::EndCombo();
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak for now; "
-                                  "the Controller Pak and Rumble Pak are not implemented yet.");
+                ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak, or the "
+                                  "VRU Microphone (the port becomes the voice unit; Hey You, "
+                                  "Pikachu! has it on port 4). The Controller Pak and Rumble Pak "
+                                  "are not implemented yet.");
         }
         ImGui::EndChild();
         ImGui::PopID();
     }
     draw_transfer_pak_section(hub, p, th, boxart);
+    draw_vru_section(hub, p, th);
     ImGui::EndChild();
     draw_core_configure_modal(p, th, boxart);
 }
@@ -12260,7 +12600,7 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         auto open_tab = [&](bool gamepads) {
             open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core,
                                h.d.args.package, h.desc_ready ? &h.desc : nullptr,
-                               /*direct=*/true);
+                               /*direct=*/true, h.title_dir);
             core_settings_page().gamepads_tab = gamepads;
         };
         if (ImGui::Button("System", ImVec2(half, 0))) open_tab(false);
@@ -12581,7 +12921,7 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
         return false;
     }
     retcomm::hub::PlayArgs args = h.d.args;
-    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     const fs::path session = hub.paths.data_dir / "sessions" / h.title_key;
     const fs::path saves = hub.paths.data_dir / "saves" / h.title_key;
     std::string err;
@@ -12624,6 +12964,28 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
         return {};
     };
     sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
+    // A VRU seat (a NETPLAY data accessory) cannot join a match yet: its
+    // bytes are not replicated to the peers, and the runner refuses it too.
+    // Asked every frame by the room: input.ini is re-read once a second.
+    struct VruCheck {
+        std::uint64_t at_ns = 0;
+        std::string answer;
+    };
+    sc.match_problem = [data, platform, check = std::make_shared<VruCheck>()]() -> std::string {
+        const std::uint64_t now = SDL_GetTicksNS();
+        if (check->at_ns && now - check->at_ns < 1000000000ull) return check->answer;
+        check->at_ns = now;
+        check->answer.clear();
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+            if (in.paks[static_cast<size_t>(s)].kind != retcomm::hub::SeatPak::Vru) continue;
+            check->answer = "VRU Microphone is not available in netplay yet (player " +
+                            std::to_string(s + 1) +
+                            " holds it: set that seat's Pak to None on the Gamepads tab).";
+            break;
+        }
+        return check->answer;
+    };
     // A Transfer Pak lobby: this player's pak is their first seat's (Gamepads).
     sc.local_pak = [data, platform]() {
         retcomm::hub::NetplayPak pak;
@@ -12684,7 +13046,7 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     }
     std::string err;
     retcomm::hub::PlayArgs args = h.d.args;
-    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     // NETPLAY-flagged options join the match key: each peer's own choice
     // would only get the match refused, so every peer takes the core's default.
     if (h.desc_ready && h.desc.ok) {
@@ -12693,6 +13055,12 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     }
     args.tpak_rom = {};
     args.tpak_save = {};
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        if (!args.vru_seat[seat]) continue;
+        *why = "VRU Microphone is not available in netplay yet (player " + std::to_string(seat + 1) +
+               " holds it: set that seat's Pak to None on the Gamepads tab).";
+        return false;
+    }
     args.net_args = retcomm::hub::netplay_runner_args(l, &err);
     if (args.net_args.empty()) {
         *why = err;
@@ -13030,7 +13398,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
-    apply_player_settings(args, hub.paths.data_dir, rcore_manifest_platform(d.args.core), stem);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
     std::string err;
     limit_transfer_paks(args, rr);
     if (!play.start(args, runner, session, saves, &err)) {
@@ -13597,7 +13965,7 @@ int main(int argc, char** argv) {
                 args.title_dir = req->title_dir;
                 // The platform's bindings and this title's option values: the
                 // files Direct mode's Controls and Core Settings pages write.
-                apply_player_settings(args, hub.paths.data_dir,
+                apply_player_settings(args, hub.paths.data_dir, hub.exe_dir,
                                       rcore_manifest_platform(args.core), req->title_id);
                 const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
                 const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
@@ -14379,6 +14747,8 @@ int main(int argc, char** argv) {
 
     // Leave any netplay room and stop its threads (bounded: a second at most).
     retcomm::hub::netplay_shutdown();
+    // The settings page's VRU microphone, before SDL's audio goes.
+    stop_vru_panel(core_settings_page());
 
     // Self-update / hard-reset apply scripts wait on this PID. Prefer a fast
     // exit over a graceful join that can hang on prefetch/launch workers and
