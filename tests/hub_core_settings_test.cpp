@@ -249,6 +249,133 @@ void test_n64lle_mods(const fs::path& dir) {
     check(r.packages.empty(), "a duplicate id shows neither copy");
 }
 
+// Options in an n64lle package (n64lle docs/MODDING.md 5.5): read for the page,
+// and written into the `options` line of the package's mods.toml section.
+void test_n64lle_options(const fs::path& dir) {
+    const fs::path game = dir / "title-options";
+    std::error_code ec;
+    fs::remove_all(game, ec); // the dir outlives a run; this test writes mods.toml
+    write(game / "mods/bundled/stadium.rentals/manifest.toml",
+          "format_version = 1\n"
+          "id = \"stadium.rentals\"\n"
+          "version = \"1.0.0\"\n"
+          "name = \"Rental tuning\"\n"
+          "author = \"a modder\"\n"
+          "description = \"Changes the rentals.\"\n\n"
+          "[target]\n"
+          "game_id = \"pokemon-stadium\"\n"
+          "rom_sha256 = \"502f6082a6436012a8b61419435dec1388869a90ed870e87e2d7bee88f831519\"\n\n"
+          "[feature.difficulty]\n"
+          "default_enabled = true\n"
+          "name = \"Rental difficulty\"\n"
+          "description = \"Scales the AI.\"\n"
+          "group = \"Gameplay\"\n\n"
+          "[choice.level.easy]\nlabel = \"Easy\"\n\n"
+          "[choice.level.normal]\nlabel = \"Normal\"\n\n"
+          "[choice.level.hard]\nlabel = \"Hard\"\n\n"
+          "[option.level]\nfeature = \"difficulty\"\ntype = \"choice\"\nlabel = \"Level\"\n"
+          "description = \"How hard.\"\ndefault = \"normal\"\n\n"
+          "[option.boss]\nfeature = \"difficulty\"\ntype = \"boolean\"\n\n"
+          "[option.rounds]\nfeature = \"difficulty\"\ntype = \"integer\"\nmin = 1\nmax = 9\n"
+          "step = 2\ndefault = 3\n\n"
+          "[patch.a]\nfeature = \"difficulty\"\naddress = \"0x10\"\nexpected = \"00\"\n"
+          "replace = \"01\"\nwhen_option = \"level\"\nwhen_value = \"hard\"\n");
+
+    retcomm::ModScanResult r = retcomm::scan_game_mods(game);
+    check(r.layout == retcomm::ModLayout::N64lle && r.packages.size() == 1, "options package seen");
+    if (r.packages.size() != 1) return;
+    const retcomm::ModPackageInfo& p = r.packages[0];
+    check(p.name == "Rental tuning" && p.author == "a modder" &&
+              p.description == "Changes the rentals.",
+          "package name, author and description come from the manifest");
+    check(p.features.size() == 1 && p.features[0].name == "Rental difficulty" &&
+              p.features[0].description == "Scales the AI." && p.features[0].group == "Gameplay",
+          "feature name, description and group come from the manifest");
+    check(p.options.size() == 3, "three options read");
+    if (p.options.size() != 3) return;
+    const retcomm::ModOptionInfo& lv = p.options[0];
+    check(lv.id == "level" && lv.type == "choice" && lv.feature_id == "difficulty" &&
+              lv.label == "Level" && lv.description == "How hard." &&
+              lv.default_value == "normal" && lv.value == "normal",
+          "choice option fields, value starts at the default");
+    check(lv.choices.size() == 3 && lv.choices[0].value == "easy" && lv.choices[0].label == "Easy" &&
+              lv.choices[2].value == "hard" && lv.choices[2].label == "Hard",
+          "choices keep their order, values and labels");
+    check(p.options[1].type == "boolean" && p.options[1].default_value == "false" &&
+              p.options[1].label == "boss",
+          "a boolean defaults off, and a missing label falls back to the id");
+    check(p.options[2].type == "integer" && p.options[2].has_range && p.options[2].min == 1 &&
+              p.options[2].max == 9 && p.options[2].step == 2 && p.options[2].default_value == "3",
+          "integer range, step and default");
+
+    // First write: the package had NO section. It must keep running what it was
+    // running (main is default-on), so `enabled` is written with the option.
+    std::string err;
+    check(retcomm::set_scanned_mod_option(r, game, p, "difficulty", "level", "hard", &err),
+          "set a choice");
+    std::string sel = slurp(game / "mods.toml");
+    check(sel.find("enabled = \"difficulty\"") != std::string::npos,
+          "the default-on feature stays on when the section is created");
+    check(sel.find("options = \"level=hard\"") != std::string::npos, "options line written");
+    r = retcomm::scan_game_mods(game);
+    check(r.packages[0].options[0].value == "hard" && r.packages[0].features[0].enabled,
+          "rescan reads the value and the feature back");
+
+    // Several options, only the ones that differ from their default, in
+    // declaration order.
+    check(retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "5",
+                                          &err) &&
+              retcomm::set_scanned_mod_option(r, game, retcomm::scan_game_mods(game).packages[0],
+                                              "difficulty", "boss", "true", &err),
+          "set an integer and a boolean");
+    sel = slurp(game / "mods.toml");
+    check(sel.find("options = \"level=hard boss=true rounds=5\"") != std::string::npos,
+          ("declaration order, non-defaults only: " + sel).c_str());
+
+    // Toggling the feature does not lose the settings.
+    r = retcomm::scan_game_mods(game);
+    check(retcomm::set_scanned_mod_enabled(r, game, r.packages[0], "difficulty", false, &err),
+          "toggle off");
+    sel = slurp(game / "mods.toml");
+    check(sel.find("enabled = \"\"") != std::string::npos &&
+              sel.find("options = \"level=hard boss=true rounds=5\"") != std::string::npos,
+          "the options survive a feature toggle");
+
+    // Back to the default removes the setting; with none left, the line goes.
+    r = retcomm::scan_game_mods(game);
+    for (const auto& [opt, def] : {std::pair<const char*, const char*>{"level", "normal"},
+                                   {"boss", "false"},
+                                   {"rounds", "3"}}) {
+        check(retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", opt, def,
+                                              &err),
+              (std::string("reset ") + opt).c_str());
+        r = retcomm::scan_game_mods(game);
+    }
+    sel = slurp(game / "mods.toml");
+    check(sel.find("options") == std::string::npos,
+          ("every option at its default leaves no options line: " + sel).c_str());
+
+    // The game refuses a plan holding a value the option does not allow, so the
+    // page must not write one.
+    const std::string before = slurp(game / "mods.toml");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "level",
+                                           "brutal", &err),
+          "a value that is not a choice is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "4",
+                                           &err),
+          "an integer off the step is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "11",
+                                           &err),
+          "an integer out of range is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "boss", "yes",
+                                           &err),
+          "a boolean must be true or false");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "ghost", "1",
+                                           &err),
+          "an undeclared option is refused");
+    check(slurp(game / "mods.toml") == before, "a refused write changes nothing");
+}
+
 } // namespace
 
 // A fake Game Boy header: `type` at 0x147, `ram` at 0x149, a valid checksum.
@@ -382,6 +509,7 @@ int main(int argc, char** argv) {
     test_seat_plan();
     test_options(dir);
     test_n64lle_mods(dir);
+    test_n64lle_options(dir);
     test_transfer_pak(dir);
     test_tpak_library(dir);
     {

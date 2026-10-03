@@ -2,6 +2,7 @@
 #include "retcomm/fs_util.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -660,6 +661,37 @@ bool is_n64lle_manifest(const fs::path& manifest) {
     return target_sha;
 }
 
+// A feature section's suffix, "feature.<id>"; the id is everything after the
+// first dot, as n64lle's reader takes it.
+bool section_id(const std::string& section, const char* prefix, std::string* id) {
+    const std::string pre = std::string(prefix) + ".";
+    if (section.rfind(pre, 0) != 0) return false;
+    *id = section.substr(pre.size());
+    return true;
+}
+
+ModFeatureInfo* find_feature(ModPackageInfo& p, const std::string& id) {
+    for (ModFeatureInfo& f : p.features)
+        if (f.id == id) return &f;
+    return nullptr;
+}
+
+ModOptionInfo* find_option(ModPackageInfo& p, const std::string& id) {
+    for (ModOptionInfo& o : p.options)
+        if (o.id == id) return &o;
+    return nullptr;
+}
+
+long to_long(const std::string& v, long fallback) {
+    const std::string t = unquote(v);
+    char* end = nullptr;
+    const long n = std::strtol(t.c_str(), &end, 10);
+    return (end && end != t.c_str() && *end == 0) ? n : fallback;
+}
+
+// The n64lle manifest (docs/MODDING.md 5.1, 5.5). Display only: n64lle's own
+// reader decides what a manifest means and refuses what is malformed at boot,
+// so this reads what a page shows and ignores what it cannot place.
 bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string* error) {
     const std::string body = read_file(path);
     if (body.empty()) {
@@ -668,6 +700,7 @@ bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string
     }
     std::string game_id;
     std::vector<std::pair<std::string, int>> writes; // feature -> guarded writes
+    std::vector<std::pair<std::string, ModChoice>> seen_choices; // option -> choice, in order
     std::string patch_feature;
     auto count_patch = [&] {
         if (patch_feature.empty()) return;
@@ -678,24 +711,57 @@ bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string
     };
     for_each_toml_pair(body, [&](const std::string& section, bool, const std::string& key,
                                  const std::string& val) {
+        std::string id;
         if (key.empty()) {
             count_patch();
-            if (section.rfind("feature.", 0) == 0) {
+            if (section_id(section, "feature", &id)) {
                 ModFeatureInfo f;
-                f.id = section.substr(8);
-                f.name = f.id; // n64lle manifests carry no display names
+                f.id = id;
                 out.features.push_back(std::move(f));
+            } else if (section_id(section, "option", &id)) {
+                ModOptionInfo o;
+                o.id = id;
+                out.options.push_back(std::move(o));
+            } else if (section_id(section, "choice", &id)) {
+                // [choice.<option>.<value>]: neither half has a dot. It may sit
+                // above its option, so it is attached once the file is read.
+                const size_t dot = id.find('.');
+                if (dot != std::string::npos) {
+                    ModChoice c;
+                    c.value = id.substr(dot + 1);
+                    seen_choices.emplace_back(id.substr(0, dot), std::move(c));
+                }
             }
             return;
         }
         if (section.empty()) {
             if (key == "id") out.id = unquote(val);
             else if (key == "version") out.version = unquote(val);
+            else if (key == "name") out.name = unquote(val);
+            else if (key == "author") out.author = unquote(val);
+            else if (key == "description") out.description = unquote(val);
         } else if (section == "target" && key == "game_id") {
             game_id = unquote(val);
-        } else if (section.rfind("feature.", 0) == 0 && key == "default_enabled" &&
-                   !out.features.empty()) {
-            out.features.back().default_enabled = truthy(val);
+        } else if (section_id(section, "feature", &id)) {
+            ModFeatureInfo* f = find_feature(out, id);
+            if (!f) return;
+            if (key == "default_enabled") f->default_enabled = truthy(val);
+            else if (key == "name") f->name = unquote(val);
+            else if (key == "description") f->description = unquote(val);
+            else if (key == "group") f->group = unquote(val);
+        } else if (section_id(section, "option", &id)) {
+            ModOptionInfo* o = find_option(out, id);
+            if (!o) return;
+            if (key == "feature") o->feature_id = unquote(val);
+            else if (key == "type") o->type = unquote(val);
+            else if (key == "label") o->label = unquote(val);
+            else if (key == "description") o->description = unquote(val);
+            else if (key == "default") o->default_value = unquote(val);
+            else if (key == "min") { o->min = to_long(val, 0); o->has_range = true; }
+            else if (key == "max") { o->max = to_long(val, 0); o->has_range = true; }
+            else if (key == "step") o->step = to_long(val, 0);
+        } else if (section_id(section, "choice", &id)) {
+            if (key == "label" && !seen_choices.empty()) seen_choices.back().second.label = unquote(val);
         } else if (section.rfind("patch.", 0) == 0 && key == "feature") {
             patch_feature = unquote(val);
         }
@@ -712,15 +778,32 @@ bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string
                      path.parent_path().filename().string() + "'; the game refuses it";
         return false;
     }
-    out.name = out.id;
-    if (!game_id.empty()) out.description = "For " + game_id + ".";
+    if (out.name.empty()) out.name = out.id;
+    if (out.description.empty() && !game_id.empty()) out.description = "For " + game_id + ".";
     for (ModFeatureInfo& f : out.features) {
         int n = 0;
         for (const auto& w : writes)
             if (w.first == f.id) n = w.second;
-        f.description = std::to_string(n) + " guarded write" + (n == 1 ? "" : "s") + ".";
-        f.group = out.id; // no groups in this format: the page heads each by its package
+        if (f.name.empty()) f.name = f.id;
+        if (f.description.empty())
+            f.description = std::to_string(n) + " guarded write" + (n == 1 ? "" : "s") + ".";
+        // No manifest group: the page heads each feature by its package.
+        if (f.group.empty()) f.group = out.name;
         f.enabled = f.default_enabled;
+    }
+    for (auto& [opt, choice] : seen_choices)
+        if (ModOptionInfo* o = find_option(out, opt)) o->choices.push_back(choice);
+    for (ModOptionInfo& o : out.options) {
+        if (o.label.empty()) o.label = o.id;
+        for (ModChoice& c : o.choices)
+            if (c.label.empty()) c.label = c.value;
+        if (o.type == "boolean") {
+            o.type = "boolean";
+            if (o.default_value.empty()) o.default_value = "false";
+        } else if (o.type == "integer") {
+            if (o.step == 0) o.step = 1;
+        }
+        o.value = o.default_value;
     }
     return true;
 }
@@ -743,40 +826,57 @@ void scan_n64lle_origin(const fs::path& root, ModOrigin origin, ModScanResult& o
 
 // mods.toml (MODDING.md §5.3): a package with a section runs exactly the
 // features its `enabled` lists; one without runs its manifest defaults.
+// `options = "id=value ..."` carries the settings the player has changed.
 void apply_n64lle_selection(const fs::path& path, ModScanResult& r) {
     std::error_code ec;
     if (!fs::is_regular_file(path, ec)) return;
     const std::string body = read_file(path);
-    std::vector<std::pair<std::string, std::string>> sel; // package -> enabled list
+    struct Row { std::string pkg, enabled, options; };
+    std::vector<Row> sel;
     for_each_toml_pair(body, [&](const std::string& section, bool, const std::string& key,
                                  const std::string& val) {
         const std::string pkg = unquote_key(section);
         if (key.empty()) {
-            if (!pkg.empty()) sel.emplace_back(pkg, std::string());
+            if (!pkg.empty()) sel.push_back({pkg, {}, {}});
             return;
         }
-        if (key == "enabled" && !sel.empty() && sel.back().first == pkg)
-            sel.back().second = unquote(val);
+        if (sel.empty() || sel.back().pkg != pkg) return;
+        if (key == "enabled") sel.back().enabled = unquote(val);
+        else if (key == "options") sel.back().options = unquote(val);
     });
     for (ModPackageInfo& p : r.packages) {
-        for (const auto& [id, list] : sel) {
-            if (id != p.id) continue;
-            std::istringstream words(list);
+        for (const Row& row : sel) {
+            if (row.pkg != p.id) continue;
+            std::istringstream words(row.enabled);
             std::vector<std::string> on;
             for (std::string w; words >> w;) on.push_back(w);
             for (ModFeatureInfo& f : p.features)
                 f.enabled = std::find(on.begin(), on.end(), f.id) != on.end();
+            std::istringstream opts(row.options);
+            for (std::string tok; opts >> tok;) {
+                const size_t eq = tok.find('=');
+                if (eq == std::string::npos || eq == 0) continue;
+                if (ModOptionInfo* o = find_option(p, tok.substr(0, eq)))
+                    o->value = tok.substr(eq + 1);
+            }
         }
     }
 }
 
-// Rewrites (or appends) the package's section so `enabled` lists exactly
-// `on`. Every other line of mods.toml stays as it was.
-bool write_n64lle_selection(const fs::path& path, const ModPackageInfo& pkg,
-                            const std::vector<std::string>& on, std::string* error) {
+// Rewrites (or appends) the package's section so `enabled` lists exactly `on`
+// and `options` lists exactly `options` ("id=value ...", empty = no line). Every
+// other line of mods.toml stays as it was.
+//
+// Both lines are always written together, because a package with a section is
+// DECIDED: a feature missing from `enabled` is off. Writing only `options` into a
+// fresh section would turn off every default-on feature of the package.
+bool write_n64lle_section(const fs::path& path, const ModPackageInfo& pkg,
+                          const std::vector<std::string>& on, const std::string& options,
+                          std::string* error) {
     std::string list;
     for (const std::string& f : on) list += (list.empty() ? "" : " ") + f;
     const std::string enabled_line = "enabled = \"" + list + "\"";
+    const std::string options_line = "options = \"" + options + "\"";
 
     std::vector<std::string> lines = split_lines(read_file(path));
     long header = -1, end = static_cast<long>(lines.size());
@@ -801,17 +901,32 @@ bool write_n64lle_selection(const fs::path& path, const ModPackageInfo& pkg,
         lines.push_back("[" + pkg.id + "]");
         lines.push_back("version = \"" + pkg.version + "\"");
         lines.push_back(enabled_line);
+        if (!options.empty()) lines.push_back(options_line);
     } else {
-        bool replaced = false;
-        for (long i = header + 1; i < end; ++i) {
-            const std::string t = trim(lines[static_cast<size_t>(i)]);
-            if (t.rfind("enabled", 0) == 0 && t.find('=') != std::string::npos) {
-                lines[static_cast<size_t>(i)] = enabled_line;
-                replaced = true;
-                break;
+        // Replace each key's line in place, else insert after the header. A key
+        // is matched on its name followed by '=' or a space, so "enabled_x" is
+        // not "enabled".
+        auto key_line = [&](const char* key) -> long {
+            const std::string k = key;
+            for (long i = header + 1; i < end; ++i) {
+                const std::string t = trim(lines[static_cast<size_t>(i)]);
+                if (t.rfind(k, 0) == 0 && t.size() > k.size() &&
+                    (t[k.size()] == '=' || t[k.size()] == ' '))
+                    return i;
             }
+            return -1;
+        };
+        const long en = key_line("enabled");
+        if (en >= 0) lines[static_cast<size_t>(en)] = enabled_line;
+        else { lines.insert(lines.begin() + header + 1, enabled_line); ++end; }
+        const long op = key_line("options");
+        if (op >= 0) {
+            if (options.empty()) { lines.erase(lines.begin() + op); --end; }
+            else lines[static_cast<size_t>(op)] = options_line;
+        } else if (!options.empty()) {
+            lines.insert(lines.begin() + key_line("enabled") + 1, options_line);
+            ++end;
         }
-        if (!replaced) lines.insert(lines.begin() + header + 1, enabled_line);
     }
     std::string out;
     for (const std::string& l : lines) out += l + "\n";
@@ -821,6 +936,31 @@ bool write_n64lle_selection(const fs::path& path, const ModPackageInfo& pkg,
         return false;
     }
     return true;
+}
+
+// The `options` text for `pkg` as it stands: only the settings that differ from
+// the manifest default, in declaration order, since n64lle treats an unlisted
+// option as its default.
+std::string n64lle_options_text(const ModPackageInfo& pkg) {
+    std::string out;
+    for (const ModOptionInfo& o : pkg.options) {
+        if (o.value.empty() || o.value == o.default_value) continue;
+        out += (out.empty() ? "" : " ") + o.id + "=" + o.value;
+    }
+    return out;
+}
+
+// The features that are on, as the page sees them.
+std::vector<std::string> n64lle_enabled_list(const ModPackageInfo& pkg) {
+    std::vector<std::string> on;
+    for (const ModFeatureInfo& f : pkg.features)
+        if (f.enabled) on.push_back(f.id);
+    return on;
+}
+
+bool write_n64lle_selection(const fs::path& path, const ModPackageInfo& pkg,
+                            const std::vector<std::string>& on, std::string* error) {
+    return write_n64lle_section(path, pkg, on, n64lle_options_text(pkg), error);
 }
 
 ModScanResult scan_n64lle_mods(const fs::path& game_dir, const fs::path& state_dir) {
@@ -922,6 +1062,43 @@ bool set_scanned_mod_enabled(const ModScanResult& scan, const fs::path& game_dir
     for (const ModFeatureInfo& f : pkg.features)
         if (f.id == feature_id ? enabled : f.enabled) on.push_back(f.id);
     return write_n64lle_selection(selection_file(scan, game_dir), pkg, on, error);
+}
+
+bool set_scanned_mod_option(const ModScanResult& scan, const fs::path& game_dir,
+                            const ModPackageInfo& pkg, const std::string& feature_id,
+                            const std::string& option_id, const std::string& value,
+                            std::string* error) {
+    if (scan.layout == ModLayout::Engine)
+        return set_mod_option(game_dir, pkg.id, feature_id, option_id, value, error);
+    ModPackageInfo edited = pkg;
+    ModOptionInfo* o = nullptr;
+    for (ModOptionInfo& q : edited.options)
+        if (q.id == option_id) o = &q;
+    if (!o) {
+        if (error) *error = pkg.id + " has no option '" + option_id + "'";
+        return false;
+    }
+    // The game refuses a plan holding a value the option does not allow, so a
+    // page must not write one: it would boot stock with the mod silently off.
+    bool legal = false;
+    if (o->type == "boolean") {
+        legal = value == "true" || value == "false";
+    } else if (o->type == "integer") {
+        char* end = nullptr;
+        const long v = std::strtol(value.c_str(), &end, 10);
+        const long step = o->step > 0 ? o->step : 1;
+        legal = end && end != value.c_str() && *end == 0 && std::to_string(v) == value &&
+                v >= o->min && v <= o->max && (v - o->min) % step == 0;
+    } else {
+        for (const ModChoice& c : o->choices) legal |= c.value == value;
+    }
+    if (!legal) {
+        if (error) *error = "'" + value + "' is not a value option '" + option_id + "' allows";
+        return false;
+    }
+    o->value = value;
+    return write_n64lle_section(selection_file(scan, game_dir), edited,
+                                n64lle_enabled_list(edited), n64lle_options_text(edited), error);
 }
 
 bool set_scanned_mod_all(const ModScanResult& scan, const fs::path& game_dir,

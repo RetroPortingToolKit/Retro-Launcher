@@ -3780,8 +3780,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
             // opts vector — points into the packages it replaces.
             auto write_option = [&](const retcomm::ModOptionInfo& o, const std::string& v) {
                 std::string err;
-                if (retcomm::set_mod_option(title_game_dir(hub, row), sp->id, feat_for_opts,
-                                            o.id, v, &err))
+                if (retcomm::set_scanned_mod_option(st.scan, title_game_dir(hub, row), *sp,
+                                                    feat_for_opts, o.id, v, &err))
                     st.pending_rescan = true;
                 else
                     hub.append_log("Mod option failed: " + err);
