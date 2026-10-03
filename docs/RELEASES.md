@@ -288,7 +288,9 @@ without the player.
 **Developer paths.** On a local build, with **Show developer options** on (the Developer page), the
 Core, Runner and Hub rows get **Browse…** (the OS file picker), and the page's
 bottom right **Reset to Defaults** and **Save & Restart**. A pick is checked as
-a start would check it (a core needs its `.rcore.toml` and the title's core id;
+a start would check it (a core needs its `.rcore.toml`, the title's core id and,
+for a title with a game package, the package's module ABI -- read from the core's
+own `n64_module_abi_version` in a child `retro-hub --probe-module-abi <core>`;
 a runner must speak this link and ABI major; a hub must have Direct mode 4, and
 title-app mode for a title app) and refused on the row otherwise. Nothing is
 copied: Save & Restart writes the paths to `config.json` (`dev_core_path`,
@@ -302,6 +304,15 @@ it as to an updated hub, from any build. Reset to Defaults empties the three
 running one offers the newest release whatever the versions say, and
 installing it clears that row's dev path. A dev path that no longer exists, or
 a dev hub that will not run, is logged and ignored.
+
+**A hand-chosen core of another module ABI.** A core named by `--core` or
+`dev_core_path` that is built for another module ABI than the game package
+would only be refused at load ("The game stopped"). A start reads its module
+ABI first; when it differs, the title's own core (bundled, or the newest
+installed for this package) starts instead if that one matches, and the Core
+row on the Update page says why. When no core matches, the chosen one is kept
+and the row says the game has to be rebuilt for it. A core that exports no
+module ABI, or a package that records none, is not second-guessed.
 
 | Row | Checked against | Installed into | Used |
 |---|---|---|---|
