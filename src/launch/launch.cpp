@@ -1173,7 +1173,9 @@ bool launch_supports_netplay_handoff(const LaunchPlan& plan) {
     for (const fs::path& f : files) {
         const auto size = fs::file_size(f, ec);
         if (ec) continue;
-        const auto mtime = fs::last_write_time(f, ec).time_since_epoch().count();
+        // libc++ counts file_time_type in __int128, which std::to_string does not take.
+        const auto mtime =
+            static_cast<long long>(fs::last_write_time(f, ec).time_since_epoch().count());
         const std::string stamp = std::to_string(size) + ":" + std::to_string(mtime);
         bool yes = false;
         {
