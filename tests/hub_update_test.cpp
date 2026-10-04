@@ -100,6 +100,26 @@ int main(int argc, char** argv) {
     fs::remove_all(scratch);
     fs::create_directories(scratch);
 
+    // ---- a hand-chosen core against the package's module ABI ------------------
+    {
+        const fs::path dev = "/dev/n64lle_core.so", own = "/app/n64lle_core.so";
+        CoreAbiPick k = pick_core_for_package(dev, 11, own, 9, 9);
+        check(k.switched && k.path == own && !k.mismatch, "abi: a mismatched dev core falls back");
+        check(k.note.find("module ABI 11") != std::string::npos &&
+                  k.note.find("module ABI 9") != std::string::npos,
+              "abi: the note names both ABIs");
+        k = pick_core_for_package(dev, 11, own, 11, 9);
+        check(!k.switched && k.mismatch && k.path == dev, "abi: no match keeps the pick, says so");
+        k = pick_core_for_package(dev, 9, own, 9, 9);
+        check(!k.switched && !k.mismatch && k.note.empty(), "abi: a matching core is kept");
+        k = pick_core_for_package(dev, -1, own, 9, 9);
+        check(!k.switched && !k.mismatch, "abi: an unknown core ABI is not second-guessed");
+        k = pick_core_for_package(dev, 11, own, 9, -1);
+        check(!k.switched && !k.mismatch, "abi: a package with no module_abi is not checked");
+        check(core_module_abi(built_hub, scratch / "no-such-core.so") == -1,
+              "abi: a core that does not load reads as unknown");
+    }
+
     // ---- the payload: a generic core and a game package ------------------------
     const fs::path payload = scratch / "app" / "title";
     const fs::path bundled = payload / "core" / "n64lle_core.so";

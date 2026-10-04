@@ -290,7 +290,12 @@ bool http(const std::string& url, const std::string& soap_action, const std::str
     curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, 4000L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_sink);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, out);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    // CURLOPT_PROTOCOLS_STR since 7.85.0
     curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http");
+#else
+    curl_easy_setopt(c, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP));
+#endif
     curl_slist* h = nullptr;
     if (!soap_action.empty()) {
         h = curl_slist_append(h, "Content-Type: text/xml; charset=\"utf-8\"");

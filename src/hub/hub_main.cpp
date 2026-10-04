@@ -8920,6 +8920,9 @@ struct DirectPlay {
     // The config's developer paths are in use (Update page, Browse): the core
     // in args.core, and `hub` is the dev hub this one hands over to.
     bool core_dev = false, hub_dev = false;
+    // Set when a hand-chosen core did not match the game package's module ABI
+    // (setup_title_app): what was started instead, or why it will not load.
+    std::string core_abi_note;
     retcomm::hub::TitleInfo title;
     std::string title_error;  // title.json could not be used
     retcomm::hub::AppAnchor anchor;
@@ -9024,6 +9027,28 @@ void setup_title_app(DirectPlay& d, const fs::path& title_json, bool create) {
         } else if (!dev.empty()) {
             std::fprintf(stderr, "retro-hub: core: dev_core_path %s does not exist; ignored\n",
                          dev.c_str());
+        }
+    }
+    // A core chosen by hand (--core, or dev_core_path) built for another module
+    // ABI than the game package: the core would refuse the package at load and
+    // the player would see "The game stopped". Start the title's own core when
+    // that one matches, and say why; otherwise say the game needs rebuilding.
+    if ((d.core_given || d.core_dev) && !d.args.package.empty()) {
+        const int pabi = package_module_abi(d.args.package);
+        const fs::path self = current_exe_path();
+        const int cabi = pabi < 0 ? -1 : core_module_abi(self, d.args.core);
+        if (pabi >= 0 && cabi >= 0 && cabi != pabi) {
+            const ResolvedCore rc =
+                resolve_title_core(title_paths(d.data.dir), t.core, d.args.package);
+            const int fabi = rc.source == "updated" ? pabi : core_module_abi(self, rc.path);
+            const CoreAbiPick pk =
+                pick_core_for_package(d.args.core, cabi, rc.path, fabi, pabi);
+            std::fprintf(stderr, "retro-hub: core: %s\n", pk.note.c_str());
+            if (pk.switched) {
+                d.args.core = pk.path;
+                d.core_dev = false;
+            }
+            d.core_abi_note = pk.note;
         }
     }
     d.args.env = {"RETRO_TITLE_STATE_DIR=" + retro::corelink::path_utf8(d.data.dir)};
@@ -11715,6 +11740,7 @@ public:
             Items r = prev;
             if (!install) r[0] = retcomm::hub::check_game(t);
             if (!install || prev[1].available) r[1] = retcomm::hub::update_core(t, install);
+            if (!t.core_note.empty()) r[1].message = t.core_note + " " + r[1].message;
             if (!install || prev[2].available) r[2] = retcomm::hub::update_runner(t, install);
             if (!install || prev[3].available) r[3] = retcomm::hub::update_hub(t, install);
             for (int i = 0; i < 4; ++i)
@@ -12247,6 +12273,7 @@ retcomm::hub::UpdateTarget direct_update_target(const DirectHome& h, const HubMo
     t.hub_commit = RETCOMM_COMMIT[0] ? RETCOMM_COMMIT : "unknown";
     t.hub_local = kLocalBuild;
     t.core_dev = h.d.core_dev;
+    t.core_note = h.d.core_abi_note;
     // This hub is the config's dev hub when an older one handed over to it.
     std::error_code ec;
     const fs::path self = retcomm::hub::current_exe_path();
@@ -12317,6 +12344,20 @@ bool describe_dev_path(const DirectHome& h, int slot, const std::string& path, s
             title.id != sc.id) {
             *note = "a " + sc.id + " core; this title runs " + title.id;
             return false;
+        }
+        // The game package pins a module ABI; a core built for another one
+        // refuses it at load, so the pick is refused here instead.
+        if (!h.d.args.package.empty()) {
+            const int pabi = retcomm::hub::package_module_abi(h.d.args.package);
+            const int cabi = pabi < 0 ? -1
+                                      : retcomm::hub::core_module_abi(
+                                            retcomm::hub::current_exe_path(), p);
+            if (pabi >= 0 && cabi >= 0 && cabi != pabi) {
+                *note = sc.id + " " + sc.version + " is module ABI " + std::to_string(cabi) +
+                        "; this game is built for " + std::to_string(pabi) +
+                        " (rebuild the game to use it)";
+                return false;
+            }
         }
         *note = sc.id + " " + sc.version;
         return true;
@@ -13498,6 +13539,11 @@ int print_hub_version() {
 }
 
 int main(int argc, char** argv) {
+    // A child of this hub reading a core's module ABI (hub_update.hpp
+    // core_module_abi): loads the core, prints, exits before anything starts.
+    if (argc == 3 && std::string(argv[1]) == "--probe-module-abi")
+        return retcomm::hub::probe_module_abi_main(
+            retro::corelink::utf8_path(retro::corelink::utf8_args(argc, argv)[2]));
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--version") return print_hub_version();
     }

@@ -519,7 +519,8 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
                 src/hub/hub_update.cpp src/hub/hub_title.cpp)
             target_include_directories(retro-hub-update-test PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src)
-            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
+            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink
+                ${CMAKE_DL_LIBS})
             add_test(NAME hub_update COMMAND retro-hub-update-test
                 ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
             # Netplay LAN discovery: both beacons, over loopback.
