@@ -23,6 +23,7 @@
 // Calls block; the hub runs them on a worker and polls, the CLI calls them
 // directly.
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -50,9 +51,12 @@ public:
     // and `rejected` is set; on unreachable it is kept.
     bool restore(AccountInfo* out, std::string* error, bool* rejected = nullptr);
     // Interactive login. `on_url` receives the authorisation URL; when
-    // `open_browser` is true it is also opened with the OS handler.
+    // `open_browser` is true it is also opened with the OS handler. `cancel`,
+    // when set, ends the wait for the browser within a fifth of a second
+    // (the hub's Retry, or the hub closing).
     bool login(AccountInfo* out, std::string* error, int timeout_s = 300, bool open_browser = true,
-               const std::function<void(const std::string&)>& on_url = {});
+               const std::function<void(const std::string&)>& on_url = {},
+               const std::atomic<bool>* cancel = nullptr);
     // Revokes this device's key on the server (best effort) and deletes it.
     bool sign_out(std::string* error);
     // True when the last /auth/discord/start answered 503.

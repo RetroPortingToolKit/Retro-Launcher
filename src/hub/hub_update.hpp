@@ -57,6 +57,9 @@ struct UpdateTarget {
     // dev_core_path / dev_hub_path). A release always replaces one: its row
     // offers the newest release whatever the versions say.
     bool core_dev = false, hub_dev = false;
+    // Set when a hand-chosen core did not match the game package's module ABI
+    // at start (hub_main.cpp setup_title_app); shown on the Core row.
+    std::string core_note;
 };
 
 UpdateItem check_game(const UpdateTarget& t);
@@ -82,6 +85,29 @@ bool read_core_sidecar(const fs::path& core, CoreSidecar& out, std::string* erro
 // `module_abi` from the package's <stem>.n64game.toml, or -1 when it records
 // none. The core refuses a package of another module ABI at load.
 int package_module_abi(const fs::path& package);
+
+// A core's module ABI, read from the library itself: `n64_module_abi_version`,
+// which n64lle's generic core exports. -1 when the core does not export it or
+// cannot be loaded. It runs `hub_exe --probe-module-abi <core>` so that loading
+// a core never happens in the hub's own process.
+int core_module_abi(const fs::path& hub_exe, const fs::path& core);
+// The child side of that: load `core`, print `module_abi <n>`, return 0; or
+// print the reason and return 2.
+int probe_module_abi_main(const fs::path& core);
+
+// A core chosen by hand (--core, or the config's dev_core_path) that is built
+// for another module ABI than the game package would only be refused at load
+// ("The game stopped"). What to start instead: the core the title would pick
+// without the override, when that one matches; otherwise the chosen one, with
+// the reason (the game has to be rebuilt for it).
+struct CoreAbiPick {
+    fs::path path;
+    bool switched = false; // path is the fallback
+    bool mismatch = false; // nothing matches: the chosen core will refuse the package
+    std::string note;
+};
+CoreAbiPick pick_core_for_package(const fs::path& chosen, int chosen_abi,
+                                  const fs::path& fallback, int fallback_abi, int package_abi);
 
 struct ResolvedCore {
     fs::path path;       // the bundled core when nothing newer fits

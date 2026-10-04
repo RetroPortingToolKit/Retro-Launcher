@@ -117,12 +117,31 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.options = args.options;
     spec.tpak_roms = args.tpak_rom;
     spec.env = args.env;
+    spec.extra_args = args.net_args;
+    netplay_ = !args.net_args.empty();
     for (std::size_t seat = 0; seat < args.tpak_save.size(); ++seat)
         if (!args.tpak_rom[seat].empty() && !args.tpak_save[seat].empty())
             spec.save_files["tpak" + std::to_string(seat + 1)] = args.tpak_save[seat];
+    // The VRU's seat (one at most: Hey You Pikachu's is port 4). The runner
+    // is told with --vruN; a vendored link without accessory data cannot be,
+    // and the session says so rather than pretending (service_vru).
+    stop_vru();
+    vru_.seat = -1;
+    vru_.vocabulary = vru::Vocabulary{};
+    vru_.vocabulary_note.clear();
+    vru_.machine = vru::SpeechMachine{};
+    vru_.grammar.clear();
+    vru_.link_told = false;
+    vru_.last_status.clear();
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat)
+        if (args.vru_seat[seat] && vru_.seat < 0) vru_.seat = static_cast<int>(seat);
+    if (vru_.seat >= 0 && !spec_set_vru_seats(spec, args.vru_seat)) {
+        SDL_Log("retro-hub: VRU Microphone on seat %d not started: %s", vru_.seat + 1,
+                AccessoryLink::why_unsupported());
+    }
     // Port 1 holds a controller from power-on, as on the console; the other
     // seats follow the gamepads actually present at the first grant.
-    spec.initial_pads[0].connected = 1;
+    spec.initial_pads[0].connected = args.vru_seat[0] ? 0 : 1;
     runner_log_ = session_dir / "runner.log";
 
     if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
@@ -291,10 +310,16 @@ void PlaySession::save_prefs() {
 // The hotkey's way in; the pad chord opens it in poll_states_pad(). A core
 // without savestates, or a runner from before link 1.1, gets a toast instead.
 void PlaySession::open_states() {
+    if (netplay_) {
+        osd_.toast("Save states are off during a netplay match", SDL_GetTicksNS(), 3000);
+        states_.close();
+        return;
+    }
     const corelink::CoreIdentity& id = link_.identity();
     if (!link_.states_supported()) {
         const std::string why =
-            id.protocol_minor < 1 ? "Save states need a newer retro-core-runner"
+            !corelink::link_has_savestates(id.protocol_minor)
+                ? "Save states need a newer retro-core-runner"
                                   : id.core_id + " has no save states";
         osd_.toast(why, SDL_GetTicksNS(), 3000);
         states_.close();
@@ -363,6 +388,15 @@ void PlaySession::grant(std::uint64_t) {
     rcore_pad pads[RCORE_MAX_SEATS];
     fill_pads(pads);
     guard_.apply(pads, kSeats);
+    // In a match, a player in the menu holds nothing (the game runs on).
+    if (netplay_ && (menu_open_ || states_.is_open())) {
+        for (rcore_pad& p : pads) {
+            const std::uint32_t connected = p.connected;
+            p = rcore_pad{};
+            p.struct_size = sizeof(rcore_pad);
+            p.connected = connected;
+        }
+    }
     link_.grant(pads);
 }
 
@@ -553,10 +587,11 @@ void PlaySession::tick() {
     link_.pump(0);
     const bool ready = link_.state() == corelink::LinkState::Ready;
     if (ready) poll_host_combos();
+    if (ready && vru_.seat >= 0) service_vru();
     // Turbo while its key or combo is held, and never behind a menu. Worked
     // out before the Ended check, so a game that stops mid-turbo gets its
     // vsync back (set_turbo_running).
-    turbo_ = (turbo_key_ || turbo_pad_) && ready && !paused();
+    turbo_ = (turbo_key_ || turbo_pad_) && ready && !paused() && !netplay_;
     if (turbo_ != turbo_running_) set_turbo_running(turbo_);
     osd_.set_turbo(turbo_);
     if (link_.state() == corelink::LinkState::Ended) {
@@ -596,6 +631,7 @@ void PlaySession::draw() {
             break;
         case corelink::LinkState::Ended:
             if (user_quit_) finished_ = true;
+            else if (netplay_ && link_.exit_code() == 4) draw_match_ended();
             else draw_fault();
             break;
         case corelink::LinkState::Ready:
@@ -731,9 +767,30 @@ void PlaySession::draw_fault() {
     ImGui::End();
 }
 
+// The runner ends a match with exit 4 and one sentence (refused, a player
+// gone): an ordinary end, not the fault screen.
+void PlaySession::draw_match_ended() {
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, disp.y * 0.5f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(560.f, disp.x * 0.9f), 0.f), ImGuiCond_Always);
+    ImGui::Begin("The match ended", nullptr,
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+    std::string why = link_.exit_reason();
+    if (why.rfind("netplay: ", 0) == 0) why = why.substr(9);
+    if (!why.empty()) why[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(why[0])));
+    ImGui::TextWrapped("%s.", why.empty() ? "The match is over" : why.c_str());
+    ImGui::Dummy(ImVec2(0, 6));
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    if (ImGui::Button("Back to the lobby", ImVec2(220, 0))) finished_ = true;
+    ImGui::End();
+}
+
 void PlaySession::shutdown() {
     turbo_ = turbo_key_ = turbo_pad_ = false;
     if (turbo_running_) set_turbo_running(false);
+    stop_vru();
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);
@@ -744,6 +801,104 @@ void PlaySession::shutdown() {
         if (t.tex) glDeleteTextures(1, &t.tex);
     }
     layer_tex_.clear();
+}
+
+// ---- the VRU Microphone -------------------------------------------------------
+//
+// The companion's loop (n64lle tools/vru_client.py voice_worker), in the hub:
+// every dictionary the core reports goes to the machine and, when the active
+// phrases change, to the recognizer as its grammar; every recognizer event
+// goes to the machine, whose messages go to the core at (seat, slot 0).
+
+void PlaySession::start_vru() {
+    if (vru_.started || vru_.seat < 0) return;
+    vru_.started = true;
+    const std::size_t seat = static_cast<std::size_t>(vru_.seat);
+    const fs::path& owner = args_.package.empty() ? args_.core : args_.package;
+    const fs::path title_dir = args_.title_dir.empty() ? owner.parent_path() : args_.title_dir;
+    const fs::path vocab = vru::vocabulary_path(title_dir);
+    std::string err;
+    if (vru::load_vocabulary(vocab, vru_.vocabulary, &err)) {
+        SDL_Log("retro-hub: VRU vocabulary: %zu entries from %s", vru_.vocabulary.entries.size(),
+                vocab.string().c_str());
+    } else {
+        vru_.vocabulary_note = "vocabulary " + err + " at " + vocab.string();
+        SDL_Log("retro-hub: VRU %s", vru_.vocabulary_note.c_str());
+        osd_.toast("VRU Microphone: " + vru_.vocabulary_note, SDL_GetTicksNS(), 5000);
+    }
+    vru_.machine.set_vocabulary(&vru_.vocabulary);
+    vru::Microphone::Config c;
+    c.device = args_.vru_device[seat];
+    c.model_dir = vru::vosk_model_dir(args_.data_dir);
+    c.exe_dir = args_.exe_dir;
+    c.data_dir = args_.data_dir;
+    if (!vru_.mic.start(c, &err)) {
+        SDL_Log("retro-hub: VRU microphone not started: %s", err.c_str());
+        osd_.toast("VRU Microphone: " + err, SDL_GetTicksNS(), 5000);
+        return;
+    }
+    SDL_Log("retro-hub: VRU microphone on seat %d: %s%s", vru_.seat + 1,
+            vru_.mic.device_name().c_str(),
+            vru_.mic.device_fell_back() ? " (the chosen device is not connected)" : "");
+}
+
+void PlaySession::service_vru() {
+    if (!accessory_.supported()) {
+        if (!vru_.link_told) {
+            vru_.link_told = true;
+            osd_.toast(std::string("VRU Microphone is off: ") + AccessoryLink::why_unsupported(),
+                       SDL_GetTicksNS(), 6000);
+            SDL_Log("retro-hub: VRU Microphone is off: %s", AccessoryLink::why_unsupported());
+        }
+        return;
+    }
+    start_vru();
+    const auto seat = static_cast<std::uint32_t>(vru_.seat);
+    const std::uint64_t now = SDL_GetTicksNS();
+    // The core's dictionaries, every one that arrived.
+    while (std::optional<AccessoryMessage> m = accessory_.poll()) {
+        if (m->seat != seat) continue;
+        vru::Dictionary d;
+        std::string err;
+        if (!vru::parse_dictionary(m->bytes, d, &err)) {
+            SDL_Log("retro-hub: VRU: unreadable notify from seat %u: %s", m->seat + 1, err.c_str());
+            continue;
+        }
+        vru_.machine.dictionary(d);
+    }
+    const std::vector<std::string> names = vru_.machine.active_names();
+    if (names != vru_.grammar) {
+        vru_.grammar = names;
+        vru_.mic.set_grammar(names, false);
+    }
+    // The recognizer's own state, when it changes (the model loading, the
+    // library missing), once per change.
+    if (vru_.mic.running()) {
+        const std::string st = vru_.mic.recognizer_status();
+        if (st != vru_.last_status) {
+            vru_.last_status = st;
+            if (st != "ready" && st != "starting")
+                osd_.toast("VRU recognizer: " + st, now, 5000);
+        }
+    }
+    for (const vru::SpeechEvent& e : vru_.mic.take_events()) {
+        const vru::SpeechMachine::Outcome o = vru_.machine.event(e);
+        for (const std::string& msg : o.messages) {
+            if (!accessory_.send(seat, 0, msg))
+                SDL_Log("retro-hub: VRU: message not sent: %s", msg.c_str());
+        }
+        if (!o.note.empty()) osd_.toast(o.note, now, 2500);
+    }
+}
+
+void PlaySession::stop_vru() {
+    if (!vru_.started) return;
+    // A capture in flight is cancelled for the core, when it can still hear.
+    for (const std::string& msg : vru_.machine.abandon().messages)
+        if (link_.state() == corelink::LinkState::Ready)
+            accessory_.send(static_cast<std::uint32_t>(vru_.seat), 0, msg);
+    vru_.mic.stop();
+    vru_.started = false;
 }
 
 } // namespace retcomm::hub

@@ -293,6 +293,24 @@ void HubModel::append_log(const std::string& line, LogLevel level) {
     log = trim_log(std::move(log));
 }
 
+fs::path HubModel::play_media(const Title& t) const {
+    fs::path rom = boot_disc_rom(library, t);
+    // Multi-disc: Play boots the disc chosen under the button. Builds
+    // deliberately keep the boot disc -- generate is compiled against disc 1's EXE.
+    if (t.rom_identity.is_multi_disc()) {
+        const std::string chosen = preferred_disc_for(load_app_state(paths.state_path), t.id);
+        if (!chosen.empty() && fs::exists(fs::path(chosen))) rom = fs::path(chosen);
+    }
+    return rom;
+}
+
+LaunchOptions HubModel::play_launch_options(const Title& t) const {
+    LaunchOptions opts;
+    opts.rom_path = play_media(t);
+    apply_bios_choice_to_launch(t, bios, load_app_state(paths.state_path), opts);
+    return opts;
+}
+
 void HubModel::set_status(const std::string& s) {
     std::string prev;
     {
@@ -504,6 +522,9 @@ void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {
             row.netplay_lobby_url = cfg.resolve_netplay_lobby_url(t.netplay.lobby_url);
             row.netplay_max_slots = t.netplay.max_slots;
             row.netplay_joinable = row.installed;
+            row.netplay_pin = normalize_netplay_version(
+                plan.record && !plan.record->source_ref.empty() ? plan.record->source_ref
+                                                                : t.netplay.game_version);
             row.netplay_version_ok =
                 row.installed &&
                 (row.installed_tag.empty() ||
@@ -1184,16 +1205,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     LaunchOptions opts;
                     opts.mode = LaunchMode::Default;
                     opts.detach = true;
-                    opts.rom_path = boot_disc_rom(library, *t);
-                    // Multi-disc: Play boots the disc chosen under the button.
-                    // Builds deliberately keep the boot disc — generate is
-                    // compiled against disc 1's EXE.
-                    if (t->rom_identity.is_multi_disc()) {
-                        const std::string chosen =
-                            preferred_disc_for(load_app_state(paths.state_path), title_id);
-                        if (!chosen.empty() && fs::exists(fs::path(chosen)))
-                            opts.rom_path = fs::path(chosen);
-                    }
+                    opts.rom_path = play_media(*t);
                     {
                         auto ensured =
                             ensure_canonical_save(paths, cfg, *t, opts.rom_path, true);

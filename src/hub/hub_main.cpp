@@ -4,6 +4,8 @@
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
 #include "hub/hub_title.hpp"
+#include "hub/hub_vru.hpp"
+#include "hub/hub_vru_mic.hpp"
 #include "hub/hub_update.hpp"
 #include "runner_probe.hpp" // Retro-Runtime: probe_runner
 #include "transport.hpp"    // Retro-Runtime: utf8_args, path_utf8
@@ -12,6 +14,8 @@
 #include "rcore/rcore.h"     // Retro-Runtime: RCORE_ABI_MAJOR / RCORE_DRAFT_REVISION
 #endif
 #include "hub/hub_theme.hpp"
+#include "hub/hub_widgets.hpp"
+#include "hub/hub_netplay.hpp"
 
 #if !defined(RETCOMM_COMMIT)
 #define RETCOMM_COMMIT ""
@@ -28,6 +32,7 @@ constexpr bool kLocalBuild = true;
 
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/config.hpp"
+#include "retcomm/hash.hpp"
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/runtime_update.hpp"
@@ -950,46 +955,10 @@ void draw_status_badge_glyph(ImDrawList* dl, const ImVec2& c, float rad, TileSta
     }
 }
 
-bool accent_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.accent_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.accent_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.accent_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.accent_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Play / success actions — muted green fill; bright th.good stays for status text.
 // A button as wide as its label plus the same padding at both ends, so a
 // fixed width never crowds (or clips) the text at one side.
 float padded_button_width(const char* label, float pad = 20.f) {
     return ImGui::CalcTextSize(label).x + 2.f * pad;
-}
-
-bool good_button(const char* label, const Theme& th, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, th.good_button);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, th.good_button_hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, th.good_button_active);
-    ImGui::PushStyleColor(ImGuiCol_Text, th.good_button_text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
-}
-
-// Destructive actions — muted red fill (mirrors good_button contrast).
-bool danger_button(const char* label, const Theme& /*th*/, const ImVec2& size = ImVec2(0, 0)) {
-    const ImVec4 btn(0.561f, 0.165f, 0.200f, 1.f);       // #8F2A33
-    const ImVec4 hovered(0.655f, 0.220f, 0.255f, 1.f);   // #A73841
-    const ImVec4 active(0.455f, 0.130f, 0.165f, 1.f);    // #74212A
-    const ImVec4 text(0.980f, 0.920f, 0.925f, 1.f);      // #FAEBEB
-    ImGui::PushStyleColor(ImGuiCol_Button, btn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
-    ImGui::PushStyleColor(ImGuiCol_Text, text);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return clicked;
 }
 
 // RomM brand purple (docs.romm.app brand guidelines: #553e98 / #371f69).
@@ -1099,6 +1068,7 @@ void go_back_to_titles(HubModel& hub) {
 void close_settings_pages(HubModel& hub) {
     request_page_focus(hub);
     hub.show_mods_page = false;
+    hub.show_netplay = false; // its connection and seat carry on (hub_netplay.hpp)
     hub.show_library_panel = false;
     hub.show_settings = false;
     hub.show_romm_settings = false;
@@ -1351,8 +1321,8 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         // plus Back, which belongs beside it in the corner rather than down in
         // the page's own header band.
         float right_x = p0.x + width - 16.f;
-        const bool show_back =
-            hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms;
+        const bool show_back = hub.show_mods_page || hub.show_netplay ||
+                               hub.library_nav != retcomm::hub::LibraryNav::Platforms;
         if (show_back) {
             const char* back_label = "Back";
             const float back_w =
@@ -1361,6 +1331,7 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
             ImGui::SetCursorScreenPos(ImVec2(right_x, btn_y));
             if (ImGui::Button(back_label, ImVec2(back_w, kMenuH))) {
                 if (hub.show_mods_page) hub.show_mods_page = false;
+                else if (hub.show_netplay) hub.show_netplay = false;
                 else if (hub.library_nav == retcomm::hub::LibraryNav::Detail)
                     go_back_to_titles(hub);
                 else go_home(hub);
@@ -3020,6 +2991,12 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
             close_nav_drawer(hub);
             hub.pending_open_library = true;
         }
+        ImGui::Dummy(ImVec2(0, 4.f));
+        if (ImGui::Button("Netplay", item_sz)) {
+            close_nav_drawer(hub);
+            close_settings_pages(hub);
+            hub.show_netplay = true;
+        }
         ImGui::PopStyleVar();
 
         // Version block pinned to the bottom (was the Menu modal's footer).
@@ -3805,8 +3782,8 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
             // opts vector — points into the packages it replaces.
             auto write_option = [&](const retcomm::ModOptionInfo& o, const std::string& v) {
                 std::string err;
-                if (retcomm::set_mod_option(title_game_dir(hub, row), sp->id, feat_for_opts,
-                                            o.id, v, &err))
+                if (retcomm::set_scanned_mod_option(st.scan, title_game_dir(hub, row), *sp,
+                                                    feat_for_opts, o.id, v, &err))
                     st.pending_rescan = true;
                 else
                     hub.append_log("Mod option failed: " + err);
@@ -8943,6 +8920,9 @@ struct DirectPlay {
     // The config's developer paths are in use (Update page, Browse): the core
     // in args.core, and `hub` is the dev hub this one hands over to.
     bool core_dev = false, hub_dev = false;
+    // Set when a hand-chosen core did not match the game package's module ABI
+    // (setup_title_app): what was started instead, or why it will not load.
+    std::string core_abi_note;
     retcomm::hub::TitleInfo title;
     std::string title_error;  // title.json could not be used
     retcomm::hub::AppAnchor anchor;
@@ -9049,6 +9029,28 @@ void setup_title_app(DirectPlay& d, const fs::path& title_json, bool create) {
                          dev.c_str());
         }
     }
+    // A core chosen by hand (--core, or dev_core_path) built for another module
+    // ABI than the game package: the core would refuse the package at load and
+    // the player would see "The game stopped". Start the title's own core when
+    // that one matches, and say why; otherwise say the game needs rebuilding.
+    if ((d.core_given || d.core_dev) && !d.args.package.empty()) {
+        const int pabi = package_module_abi(d.args.package);
+        const fs::path self = current_exe_path();
+        const int cabi = pabi < 0 ? -1 : core_module_abi(self, d.args.core);
+        if (pabi >= 0 && cabi >= 0 && cabi != pabi) {
+            const ResolvedCore rc =
+                resolve_title_core(title_paths(d.data.dir), t.core, d.args.package);
+            const int fabi = rc.source == "updated" ? pabi : core_module_abi(self, rc.path);
+            const CoreAbiPick pk =
+                pick_core_for_package(d.args.core, cabi, rc.path, fabi, pabi);
+            std::fprintf(stderr, "retro-hub: core: %s\n", pk.note.c_str());
+            if (pk.switched) {
+                d.args.core = pk.path;
+                d.core_dev = false;
+            }
+            d.core_abi_note = pk.note;
+        }
+    }
     d.args.env = {"RETRO_TITLE_STATE_DIR=" + retro::corelink::path_utf8(d.data.dir)};
 
     d.rom = resolve_rom(t, retro::corelink::utf8_path(d.cli_rom), d.anchor.dir, d.data.dir);
@@ -9083,6 +9085,9 @@ retcomm::ResolvedRunner resolve_title_runner(const DirectPlay& d, const retcomm:
         rr.version = v.version;
         rr.game_package = v.game_package;
         rr.transfer_pak_seats = v.transfer_pak_seats;
+#if defined(RETCOMM_LINK_ACCESSORY_DATA)
+        rr.accessory_data = v.accessory_data;
+#endif
         rr.note = "--runner names it";
     } else {
         rr.note = "--runner names it (" + err + ")";
@@ -9622,10 +9627,12 @@ std::string rcore_manifest_platform(const fs::path& core) {
 // settings (play.ini), which the in-game hotkeys write back, and how the hub
 // scales the picture (display.ini, the title's over the platform's).
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
-                           const std::string& platform, const std::string& title_key) {
+                           const fs::path& exe_dir, const std::string& platform,
+                           const std::string& title_key) {
     // The overlay's settings are every core's: loaded whatever the platform.
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
     args.data_dir = data_dir;
+    args.exe_dir = exe_dir;
     if (platform.empty()) return;
     std::vector<std::string> warnings;
     args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
@@ -9651,6 +9658,16 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
             retcomm::hub::load_display_settings(data_dir, platform, title_key), &display_warnings);
         for (const std::string& w : display_warnings)
             std::fprintf(stderr, "retro-hub: %s\n", w.c_str());
+    }
+    // Each seat's VRU Microphone: the seat reads no pad (the runner masks it
+    // too), and its recording device is the session's.
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        const retcomm::hub::SeatPak& pak = args.input.paks[seat];
+        if (pak.kind != retcomm::hub::SeatPak::Vru) continue;
+        args.vru_seat[seat] = true;
+        args.vru_device[seat] = pak.vru_device;
+        std::fprintf(stderr, "retro-hub: VRU microphone, seat %zu: %s\n", seat + 1,
+                     pak.vru_device.empty() ? "default recording device" : pak.vru_device.c_str());
     }
     auto plat = retcomm::hub::load_core_options(data_dir, platform, "");
     auto title = retcomm::hub::load_core_options(data_dir, platform, title_key);
@@ -9701,6 +9718,19 @@ void limit_transfer_paks(retcomm::hub::PlayArgs& args, const retcomm::ResolvedRu
                      seat + 1, rr.source.c_str(), rr.version.c_str(), rr.transfer_pak_seats);
         args.tpak_rom[seat].clear();
         args.tpak_save[seat].clear();
+    }
+    // Likewise a runner from before accessory data (no accessory_data in its
+    // --version) does not take --vruN: the seat plays as an empty port, and
+    // the log says why nobody is listening.
+    if (rr.accessory_data == 0) {
+        for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+            if (!args.vru_seat[seat]) continue;
+            std::fprintf(stderr,
+                         "retro-hub: VRU microphone, seat %zu: left out -- the %s runner %s carries "
+                         "no accessory data; a Retro-Runtime runner with link 2.1 is needed\n",
+                         seat + 1, rr.source.c_str(), rr.version.c_str());
+            args.vru_seat[seat] = false;
+        }
     }
 }
 
@@ -9777,6 +9807,31 @@ struct CoreSettingsPage {
     std::string pak_note;      // the last picker's result or refusal
     bool pak_note_bad = false;
 
+    // The title the page was opened for, when one is known (Direct mode):
+    // where the VRU vocabulary is looked for.
+    fs::path title_dir;
+    // VRU Microphone (Gamepads tab): the microphone runs while a VRU panel
+    // is on screen, for its level meter; Test runs the recognizer against
+    // the title's vocabulary (or any English without one) for a few seconds.
+    struct VruPanel {
+        retcomm::hub::vru::Microphone mic;
+        std::string mic_device;         // the device the mic was started with
+        bool mic_started = false;
+        std::string mic_error;
+        std::uint64_t mic_retry_ns = 0;  // a failed open is tried again then
+        std::uint64_t test_until_ns = 0; // a Test in progress, until
+        std::string test_text;           // what it heard
+        retcomm::hub::vru::ModelDownload download;
+        bool download_was_running = false;
+        std::string download_note;
+        retcomm::hub::vru::Vocabulary vocabulary;
+        std::string vocabulary_note;
+        bool vocabulary_checked = false;
+        std::vector<retcomm::hub::vru::RecordingDevice> devices;
+        std::uint64_t devices_at_ns = 0;
+    };
+    VruPanel vru;
+
     bool dirty() const {
         return input != input_saved || plat_opts != plat_saved || title_opts != title_saved ||
                prefs != prefs_saved || disp_plat != disp_plat_saved ||
@@ -9820,10 +9875,14 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
                         const std::string& title_name, const fs::path& core,
                         const fs::path& package,
                         const retcomm::hub::CoreDescription* known = nullptr,
-                        bool direct = false) {
+                        bool direct = false, const fs::path& title_dir = {}) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
     p.platform = platform;
+    p.title_dir = title_dir;
+    p.vru.vocabulary_checked = false;
+    p.vru.test_until_ns = 0;
+    p.vru.test_text.clear();
     p.title_key = title_key;
     p.title_name = title_name;
     p.direct = direct && !title_key.empty();
@@ -9933,8 +9992,15 @@ bool save_core_settings(HubModel& hub, std::string* err) {
     return true;
 }
 
+void stop_vru_panel(CoreSettingsPage& p) {
+    if (p.vru.mic_started) p.vru.mic.stop();
+    p.vru.mic_started = false;
+    p.vru.test_until_ns = 0;
+}
+
 void close_core_settings(HubModel& hub) {
     CoreSettingsPage& p = core_settings_page();
+    stop_vru_panel(p);
     p.input = p.input_saved;
     p.plat_opts = p.plat_saved;
     p.title_opts = p.title_saved;
@@ -11176,6 +11242,241 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
     }
 }
 
+// The VRU Microphone panels, under the seat cards like the Transfer Pak's:
+// the recording device, its level, a Test of the recognizer, the recognizer
+// and model, and the title's vocabulary. The microphone runs while a panel is
+// on screen (meter only); Test puts the recognizer on it for a few seconds.
+void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
+    using retcomm::hub::SeatPak;
+    namespace vru = retcomm::hub::vru;
+    CoreSettingsPage::VruPanel& v = p.vru;
+    bool any = false;
+    for (const SeatPak& pak : p.input.paks) any = any || pak.kind == SeatPak::Vru;
+    if (!any) {
+        stop_vru_panel(p);
+        return;
+    }
+    const std::uint64_t now = SDL_GetTicksNS();
+    const fs::path& data = hub.paths.data_dir;
+    // The devices, once a second: a USB microphone plugged in shows up.
+    if (v.devices.empty() || now - v.devices_at_ns > 1000000000ull) {
+        v.devices = vru::recording_devices();
+        v.devices_at_ns = now;
+    }
+    // The recognizer and the model, as they stand on disk.
+    vru::VoskLibrary& lib = vru::VoskLibrary::get();
+    const bool lib_ok = lib.load(hub.exe_dir, data);
+    const bool model_ok = vru::vosk_model_present(data);
+    if (v.download_was_running && !v.download.running()) {
+        v.download_was_running = false;
+        v.download_note = v.download.finished_ok()
+                              ? "Model downloaded to " + vru::vosk_model_dir(data).string() + "."
+                              : "Download failed: " + v.download.error();
+        hub.append_log("VRU: " + v.download_note);
+    }
+    // The vocabulary, once per page opening.
+    if (!v.vocabulary_checked) {
+        v.vocabulary_checked = true;
+        v.vocabulary = vru::Vocabulary{};
+        if (p.title_dir.empty()) {
+            v.vocabulary_note = "checked when a title is played (none is open here)";
+        } else {
+            const fs::path path = vru::vocabulary_path(p.title_dir);
+            std::string err;
+            if (vru::load_vocabulary(path, v.vocabulary, &err))
+                v.vocabulary_note = std::to_string(v.vocabulary.entries.size()) + " entries, " +
+                                    std::to_string(v.vocabulary.all_names().size()) +
+                                    " phrases, from " + path.string();
+            else
+                v.vocabulary_note = err + " at " + path.string();
+        }
+    }
+    // One VRU seat drives the one microphone: the first seat set to it.
+    int first = -1, last = -1;
+    for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+        if (p.input.paks[static_cast<size_t>(s)].kind != SeatPak::Vru) continue;
+        if (first < 0) first = s;
+        last = s;
+    }
+    const std::string& device = p.input.paks[static_cast<size_t>(first)].vru_device;
+    if (v.mic_started && v.mic_device == device && !v.mic.running()) {
+        // The worker ended on its own (the device would not open, or went
+        // away): its last word is the reason; another try in a moment.
+        v.mic_error = v.mic.recognizer_status();
+        v.mic_started = false;
+        v.mic_retry_ns = now + 2000000000ull;
+    }
+    if (!v.mic_started && (v.mic_device != device || now >= v.mic_retry_ns)) {
+        vru::Microphone::Config c;
+        c.device = device;
+        c.model_dir = vru::vosk_model_dir(data);
+        c.exe_dir = hub.exe_dir;
+        c.data_dir = data;
+        v.mic_started = v.mic.start(c, &v.mic_error);
+        v.mic_device = device;
+        v.mic_retry_ns = now + 2000000000ull;
+        v.test_until_ns = 0;
+    }
+    // A Test ends: the recognizer comes off (meter only).
+    if (v.test_until_ns && now >= v.test_until_ns) {
+        v.test_until_ns = 0;
+        v.mic.set_grammar({}, false);
+    }
+    if (v.test_until_ns) {
+        for (const vru::SpeechEvent& e : v.mic.take_events()) {
+            if (e.kind == vru::SpeechEvent::Final)
+                v.test_text = e.text.empty() ? "nothing recognized" : "heard: " + e.text;
+        }
+        const std::string partial = v.mic.partial();
+        if (!partial.empty() && v.test_text.rfind("heard: ", 0) != 0) v.test_text = partial + "\xE2\x80\xA6";
+    }
+
+    ImGui::Dummy(ImVec2(0, th.spacing_md));
+    ImGui::Separator();
+    ImGui::TextColored(th.text_muted, "VRU MICROPHONE");
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped("The port is the voice unit: it reads no controller. In the game, hold Z on "
+                       "controller 1 and speak; the recognizer hears the phrases the game is "
+                       "listening for and answers through the VRU. Recognition is Vosk, on this "
+                       "machine; the English model is downloaded once.");
+    ImGui::PopStyleColor();
+
+    const float gap = th.spacing_md;
+    float cardw = 0.f;
+    const int cols = seat_grid(ImGui::GetContentRegionAvail().x, gap, &cardw);
+    for (int s = 0; s <= last; ++s) {
+        if (s % cols) ImGui::SameLine(0, gap);
+        else if (s) ImGui::Dummy(ImVec2(0, gap));
+        SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+        if (pak.kind != SeatPak::Vru) {
+            ImGui::Dummy(ImVec2(cardw, 1.f));
+            continue;
+        }
+        ImGui::PushID(s);
+        ImGui::BeginChild("vru", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                                                       ImGuiChildFlags_NavFlattened);
+        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
+        ImGui::TextColored(th.text_muted, "Microphone");
+        ImGui::SetNextItemWidth(-1.f);
+        {
+            std::string preview = pak.vru_device.empty() ? "System default" : pak.vru_device;
+            bool listed = pak.vru_device.empty();
+            for (const vru::RecordingDevice& d : v.devices) listed = listed || d.name == pak.vru_device;
+            if (!listed) preview += " (not connected)";
+            if (ImGui::BeginCombo("##vrudev", preview.c_str())) {
+                if (ImGui::Selectable("System default", pak.vru_device.empty())) pak.vru_device.clear();
+                for (size_t i = 0; i < v.devices.size(); ++i) {
+                    const std::string item = v.devices[i].name + "##dev" + std::to_string(i);
+                    if (ImGui::Selectable(item.c_str(), pak.vru_device == v.devices[i].name))
+                        pak.vru_device = v.devices[i].name;
+                }
+                if (v.devices.empty()) ImGui::TextColored(th.text_muted, "No recording device found.");
+                ImGui::EndCombo();
+            }
+        }
+        if (s != first) {
+            ImGui::TextColored(th.text_muted, "One microphone serves every VRU seat; player %d's is the "
+                                              "one that runs.", first + 1);
+        }
+        // The level, live.
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(th.text_muted, "Level");
+        {
+            const int level = v.mic_started ? v.mic.level() : 0;
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, level >= 12 ? th.good : th.accent_dim);
+            ImGui::ProgressBar(static_cast<float>(level) / 100.f, ImVec2(-1.f, 10.f), "");
+            ImGui::PopStyleColor();
+            if (!v.mic_started && !v.mic_error.empty()) ImGui::TextColored(th.warn, "%s", v.mic_error.c_str());
+            else if (v.mic_started && v.mic.device_fell_back())
+                ImGui::TextColored(th.warn, "Not connected: the system default is used.");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+        // Test: the recognizer on the microphone for a few seconds.
+        const bool can_test = v.mic_started && lib_ok && model_ok && s == first;
+        ImGui::BeginDisabled(!can_test || v.test_until_ns != 0);
+        if (ImGui::Button(v.test_until_ns ? "Listening\xE2\x80\xA6" : "Test", ImVec2(110.f, 0))) {
+            v.test_until_ns = now + 6ull * 1000000000ull;
+            v.test_text.clear();
+            if (v.vocabulary.loaded()) v.mic.set_grammar(v.vocabulary.all_names(), false);
+            else v.mic.set_grammar({}, true);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(!v.mic_started ? "The microphone is not open."
+                              : !lib_ok      ? "libvosk is not loaded."
+                              : !model_ok    ? "Download the model first."
+                              : s != first   ? "Test runs on player %zu's panel."
+                              : v.vocabulary.loaded()
+                                  ? "Say one of the title's %zu phrases; the recognizer shows what it heard."
+                                  : "No vocabulary: say anything in English; the recognizer shows what it heard.",
+                              s != first ? static_cast<size_t>(first + 1) : v.vocabulary.all_names().size());
+        if (s == first && v.test_until_ns) {
+            ImGui::SameLine();
+            const std::string st = v.mic.recognizer_status();
+            ImGui::TextColored(st == "ready" ? th.text_muted : th.warn, "%s",
+                               st == "ready" ? "speak now" : st.c_str());
+        }
+        if (s == first && !v.test_text.empty()) ImGui::TextWrapped("%s", v.test_text.c_str());
+        ImGui::Dummy(ImVec2(0, 4));
+        // The recognizer, and its model.
+        ImGui::TextColored(th.text_muted, "Recognizer");
+        if (!lib_ok) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.warn);
+            ImGui::TextWrapped("%s", lib.error().c_str());
+            ImGui::PopStyleColor();
+        } else if (!model_ok) {
+            ImGui::TextWrapped("libvosk %s; model %s not downloaded.",
+                               retro::corelink::utf8_path(lib.path()).filename().string().c_str(),
+                               vru::kVoskModelName);
+        } else {
+            ImGui::TextWrapped("ready: libvosk %s, model %s.",
+                               retro::corelink::utf8_path(lib.path()).filename().string().c_str(),
+                               vru::kVoskModelName);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && lib_ok)
+            ImGui::SetTooltip("%s\n%s", lib.path().c_str(), vru::vosk_model_dir(data).string().c_str());
+        if (!model_ok && s == first) {
+            if (v.download.running()) {
+                const std::uint64_t got = v.download.downloaded(), total = v.download.total();
+                char buf[64];
+                if (v.download.unpacking()) std::snprintf(buf, sizeof buf, "unpacking\xE2\x80\xA6");
+                else if (total) std::snprintf(buf, sizeof buf, "%.1f / %.1f MB", got / 1048576.0, total / 1048576.0);
+                else std::snprintf(buf, sizeof buf, "%.1f MB", got / 1048576.0);
+                ImGui::ProgressBar(total ? static_cast<float>(got) / static_cast<float>(total) : 0.f,
+                                   ImVec2(-1.f, 0.f), buf);
+            } else if (accent_button("Download model", th, ImVec2(160.f, 0))) {
+                std::string err;
+                if (v.download.start(data, &err)) {
+                    v.download_was_running = true;
+                    v.download_note.clear();
+                    hub.append_log(std::string("VRU: downloading ") + vru::kVoskModelUrl);
+                } else {
+                    v.download_note = err;
+                }
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("%s (about 40 MB, Apache-2.0) into %s", vru::kVoskModelUrl,
+                                  vru::vosk_models_dir(data).string().c_str());
+        }
+        if (!v.download_note.empty() && s == first) {
+            ImGui::PushStyleColor(ImGuiCol_Text, v.download.finished_ok() ? th.text_muted : th.warn);
+            ImGui::TextWrapped("%s", v.download_note.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(th.text_muted, "Vocabulary");
+        ImGui::PushStyleColor(ImGuiCol_Text, v.vocabulary.loaded() ? th.text : th.warn);
+        ImGui::TextWrapped("%s%s", v.vocabulary.loaded() ? "" : "not found: ", v.vocabulary_note.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("The title's phoneme-to-text table, generated locally from its ROM "
+                              "(vru_vocabulary.json beside game.toml, or game.toml's [vru] vocabulary). "
+                              "Without it the game's words cannot be named, so nothing is recognized.");
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+}
+
 void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
                             BoxartCache& boxart) {
     using namespace retcomm::hub;
@@ -11221,13 +11522,26 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
                 ImGui::Dummy(ImVec2(0, 2));
             }
         }
+        const bool vru_seat = p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru;
         ImGui::SetNextItemWidth(-1.f);
-        draw_core_seat_source_combo(p, s, pads);
+        if (vru_seat) {
+            // The port is the voice unit's: no controller reads here, as on
+            // the console (the pad, if any, goes to the next Auto seat).
+            ImGui::BeginDisabled();
+            if (ImGui::BeginCombo("##src", "VRU Microphone (no controller)")) ImGui::EndCombo();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("This port holds the VRU Microphone, so it reads no controller. "
+                                  "Set Pak to None to give it a controller again.");
+        } else {
+            draw_core_seat_source_combo(p, s, pads);
+        }
         ImGui::Dummy(ImVec2(0, 4));
 
         const float cw = ImGui::GetContentRegionAvail().x;
         const float half = (cw - th.spacing_sm) * 0.5f;
         constexpr float btnh = 32.f;
+        ImGui::BeginDisabled(vru_seat);
         if (ImGui::Button("Configure", ImVec2(half, btnh))) {
             cancel_core_capture(p);
             p.status.clear();
@@ -11235,13 +11549,15 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             p.map_keyboard = p.input.seats[static_cast<size_t>(s)].source == SeatAssign::Keyboard ||
                              (plan[static_cast<size_t>(s)].keyboard);
         }
+        ImGui::EndDisabled();
         ImGui::SameLine(0, th.spacing_sm);
         {
             const SeatPlan& sp = plan[static_cast<size_t>(s)];
             std::string st = "no device";
-            if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
+            if (sp.vru) st = "voice unit";
+            else if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
             else if (sp.keyboard) st = "keyboard";
-            const bool on = sp.connected();
+            const bool on = sp.connected() || sp.vru;
             const float sw = 18.f + ImGui::CalcTextSize(st.c_str()).x;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btnh - ImGui::GetTextLineHeight()) * 0.5f);
@@ -11266,21 +11582,45 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::SetNextItemWidth(-1.f);
-            const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak" : "None";
+            const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak"
+                              : pak.kind == SeatPak::Vru       ? "VRU Microphone"
+                                                               : "None";
+            // The VRU is offered only when the described core declares the
+            // n64.vru accessory for this seat (an older core: the entry stays,
+            // disabled, and says why), the way Transfer Pak support is read
+            // from what the title declares.
+            const retcomm::hub::CoreAccessoryDecl* vru_decl =
+                p.desc.ok ? p.desc.accessory(retcomm::hub::kVruAccessoryId) : nullptr;
+            const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
             if (ImGui::BeginCombo("##pak", (std::string("Pak: ") + now).c_str())) {
                 if (ImGui::Selectable("None", pak.kind == SeatPak::None)) pak.kind = SeatPak::None;
                 if (ImGui::Selectable("Transfer Pak", pak.kind == SeatPak::TransferPak))
                     pak.kind = SeatPak::TransferPak;
+                ImGui::BeginDisabled(!vru_here && pak.kind != SeatPak::Vru);
+                if (ImGui::Selectable("VRU Microphone", pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
+                ImGui::EndDisabled();
+                if (!vru_here && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(
+                        !p.desc_ready ? "Waiting for the core to describe itself."
+                        : !p.desc.ok  ? "No core description: the VRU is offered once a core "
+                                        "that declares it has described itself."
+                        : !vru_decl   ? "%s %s does not declare the VRU Microphone (n64.vru). "
+                                        "A newer core is needed."
+                                      : "%s %s does not take the VRU on this port.",
+                        p.desc.core_id.c_str(), p.desc.core_version.c_str());
                 ImGui::EndCombo();
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak for now; "
-                                  "the Controller Pak and Rumble Pak are not implemented yet.");
+                ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak, or the "
+                                  "VRU Microphone (the port becomes the voice unit; Hey You, "
+                                  "Pikachu! has it on port 4). The Controller Pak and Rumble Pak "
+                                  "are not implemented yet.");
         }
         ImGui::EndChild();
         ImGui::PopID();
     }
     draw_transfer_pak_section(hub, p, th, boxart);
+    draw_vru_section(hub, p, th);
     ImGui::EndChild();
     draw_core_configure_modal(p, th, boxart);
 }
@@ -11463,7 +11803,7 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
 
 // ---- Direct home ------------------------------------------------------------
 
-enum class DirectPage { Home, Mods, Update };
+enum class DirectPage { Home, Mods, Update, Netplay };
 
 // run_direct_home's answer when the player pressed Restart on the Update page:
 // main closes the window and starts the app again (restart_hub).
@@ -11496,6 +11836,7 @@ public:
             Items r = prev;
             if (!install) r[0] = retcomm::hub::check_game(t);
             if (!install || prev[1].available) r[1] = retcomm::hub::update_core(t, install);
+            if (!t.core_note.empty()) r[1].message = t.core_note + " " + r[1].message;
             if (!install || prev[2].available) r[2] = retcomm::hub::update_runner(t, install);
             if (!install || prev[3].available) r[3] = retcomm::hub::update_hub(t, install);
             for (int i = 0; i < 4; ++i)
@@ -11667,6 +12008,22 @@ struct DirectHome {
     std::shared_ptr<DevPick> dev_pick;
     std::string rom_note; // the last pick's result, or why none resolved
     bool rom_note_bad = false;
+    // Transfer Pak Support (a title whose game.toml supports the Transfer Pak):
+    // the three Game Boy cartridges netplay Transfer Pak lobbies need, each
+    // checked by sha256 before it is kept (hub_core_settings.hpp).
+    bool tpak_supported = false;
+    bool tpak_open = false;
+    retcomm::hub::TransferPakLibrary tpak_lib;
+    std::array<std::string, retcomm::hub::kSupportedGbRoms> tpak_note;
+    std::array<bool, retcomm::hub::kSupportedGbRoms> tpak_bad{};
+    int tpak_picking = -1;
+    std::shared_ptr<TitleRomPick> tpak_pick;
+    // Netplay (docs/NETPLAY_DIRECT.md): this title's lobby, and a match the
+    // lobby launched, waiting for the loop to start it.
+    retcomm::hub::NetplayScope net_scope;
+    bool net_scope_ready = false;
+    std::optional<retcomm::hub::NetplayLaunch> net_launch;
+    bool net_playing = false; // a match's PlaySession is running
 };
 
 // SDL_ShowOpenFileDialog answers on whichever thread the platform's dialog
@@ -11764,6 +12121,190 @@ void take_title_rom_pick(DirectHome& h) {
     std::fprintf(stderr, "retro-hub: rom: %s (chosen, remembered)\n", path.c_str());
 }
 
+// game.toml `[transfer_pak] supported = true`: the title reads a Game Boy
+// cartridge through a Transfer Pak (n64lle setup_project --transfer-pak).
+bool title_supports_transfer_pak(const fs::path& title_dir) {
+    std::ifstream in(title_dir / "game.toml");
+    std::string line;
+    bool in_section = false;
+    while (std::getline(in, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const auto first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        line = line.substr(first);
+        if (line[0] == '[') {
+            in_section = line.rfind("[transfer_pak]", 0) == 0;
+            continue;
+        }
+        if (!in_section || line.rfind("supported", 0) != 0) continue;
+        const auto eq = line.find('=');
+        return eq != std::string::npos && line.find("true", eq) != std::string::npos;
+    }
+    return false;
+}
+
+void begin_tpak_pick(DirectHome& h, int which) {
+    if (!h.tpak_pick) h.tpak_pick = std::make_shared<TitleRomPick>();
+    TitleRomPick& p = *h.tpak_pick;
+    {
+        std::lock_guard<std::mutex> lock(p.mu);
+        if (p.busy) return;
+        p.busy = true;
+        p.answered = false;
+    }
+    h.tpak_picking = which;
+    p.filter_name = std::string(retcomm::hub::supported_gb_rom(which).label) + " (.gb)";
+    p.filter_pattern = "gb;gbc";
+    p.filters[0].name = p.filter_name.c_str();
+    p.filters[0].pattern = p.filter_pattern.c_str();
+    p.filters[1].name = "All files";
+    p.filters[1].pattern = "*";
+    const std::string& have = h.tpak_lib.path[static_cast<size_t>(which)];
+    const std::string start = have.empty() ? std::string() : fs::path(have).parent_path().string();
+    SDL_ShowOpenFileDialog(on_title_rom_dialog, new std::shared_ptr<TitleRomPick>(h.tpak_pick),
+                           h.window, p.filters, 2, start.empty() ? nullptr : start.c_str(), false);
+}
+
+// The dialog's answer: kept only when it is the supported dump, then saved.
+void take_tpak_pick(DirectHome& h, HubModel& hub) {
+    if (!h.tpak_pick || h.tpak_picking < 0) return;
+    std::string path, error;
+    {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        if (!h.tpak_pick->answered) return;
+        h.tpak_pick->answered = false;
+        path = h.tpak_pick->path;
+        error = h.tpak_pick->error;
+    }
+    const int i = h.tpak_picking;
+    h.tpak_picking = -1;
+    const size_t k = static_cast<size_t>(i);
+    if (path.empty()) {
+        if (!error.empty()) {
+            h.tpak_note[k] = "The file dialog failed: " + error;
+            h.tpak_bad[k] = true;
+        }
+        return;
+    }
+    std::string sha, err;
+    if (!retcomm::hub::verify_supported_gb_rom(i, path, &sha, &err)) {
+        h.tpak_note[k] = err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+    lib.path[k] = path;
+    lib.sha256[k] = sha;
+    if (!retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+        h.tpak_note[k] = "Not saved: " + err;
+        h.tpak_bad[k] = true;
+        return;
+    }
+    h.tpak_lib = lib;
+    h.tpak_note[k] = "Verified: sha256 " + sha.substr(0, 16) + "\xE2\x80\xA6";
+    h.tpak_bad[k] = false;
+}
+
+void draw_tpak_support(DirectHome& h, HubModel& hub, const Theme& th) {
+    using retcomm::hub::kSupportedGbRoms;
+    using retcomm::hub::supported_gb_rom;
+    constexpr const char* kId = "Transfer Pak Support###tpak_support";
+    take_tpak_pick(h, hub);
+    if (h.tpak_open) {
+        h.tpak_open = false;
+        h.tpak_lib = retcomm::hub::load_tpak_library(hub.paths.data_dir, h.platform);
+        // Say up front whether what was saved still checks out.
+        for (int i = 0; i < kSupportedGbRoms; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            h.tpak_note[k].clear();
+            h.tpak_bad[k] = false;
+            const std::string& p = h.tpak_lib.path[k];
+            if (p.empty()) continue;
+            std::string sha, err;
+            if (!retcomm::hub::verify_supported_gb_rom(i, p, &sha, &err)) {
+                h.tpak_note[k] = err;
+                h.tpak_bad[k] = true;
+            } else if (sha != h.tpak_lib.sha256[k]) {
+                h.tpak_note[k] = "Changed since it was saved; choose it again.";
+                h.tpak_bad[k] = true;
+            } else {
+                h.tpak_note[k] = "Verified";
+            }
+        }
+        ImGui::OpenPopup(kId);
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->WorkSize.x - 40.f), 0.f));
+    if (!ImGui::BeginPopupModal(kId, nullptr,
+                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextColored(th.text_muted,
+                       "Transfer Pak lobbies need all three cartridges on every player's machine: "
+                       "each player's pak is simulated by everyone. Only these dumps are accepted; "
+                       "each file is checked when you choose it and again before a Transfer Pak "
+                       "lobby.");
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, 6));
+    bool picking = false;
+    if (h.tpak_pick) {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        picking = h.tpak_pick->busy;
+    }
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        const auto& rom = supported_gb_rom(i);
+        ImGui::PushID(i);
+        ImGui::Separator();
+        ImGui::TextColored(th.accent, "%s", rom.label);
+        ImGui::SameLine();
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(th.text_muted, "%s", rom.dump);
+        const std::string& p = h.tpak_lib.path[k];
+        ImGui::TextUnformatted(p.empty() ? "Not set" : p.c_str());
+        ImGui::PopTextWrapPos();
+        if (!h.tpak_note[k].empty()) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextColored(h.tpak_bad[k] ? th.warn : th.good, "%s", h.tpak_note[k].c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::BeginDisabled(picking);
+        if (ImGui::Button(h.tpak_picking == i ? "Choosing..." : "Choose\xE2\x80\xA6", ImVec2(140, 0)))
+            begin_tpak_pick(h, i);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(p.empty());
+        if (ImGui::Button("Clear", ImVec2(100, 0))) {
+            retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+            lib.path[k].clear();
+            lib.sha256[k].clear();
+            std::string err;
+            if (retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+                h.tpak_lib = lib;
+                h.tpak_note[k].clear();
+            } else {
+                h.tpak_note[k] = "Not saved: " + err;
+                h.tpak_bad[k] = true;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 4));
+    if (h.tpak_lib.complete())
+        ImGui::TextColored(th.good, "All three are set: you can host and join Transfer Pak lobbies.");
+    else
+        ImGui::TextColored(th.text_muted, "Set all three to host or join a Transfer Pak lobby.");
+    if (ImGui::Button("Close", ImVec2(140, 0)) ||
+        (!picking && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 std::string platform_label(const std::string& platform) {
     return platform.empty() ? std::string("this platform") : platform_display_name(platform);
 }
@@ -11828,6 +12369,7 @@ retcomm::hub::UpdateTarget direct_update_target(const DirectHome& h, const HubMo
     t.hub_commit = RETCOMM_COMMIT[0] ? RETCOMM_COMMIT : "unknown";
     t.hub_local = kLocalBuild;
     t.core_dev = h.d.core_dev;
+    t.core_note = h.d.core_abi_note;
     // This hub is the config's dev hub when an older one handed over to it.
     std::error_code ec;
     const fs::path self = retcomm::hub::current_exe_path();
@@ -11898,6 +12440,20 @@ bool describe_dev_path(const DirectHome& h, int slot, const std::string& path, s
             title.id != sc.id) {
             *note = "a " + sc.id + " core; this title runs " + title.id;
             return false;
+        }
+        // The game package pins a module ABI; a core built for another one
+        // refuses it at load, so the pick is refused here instead.
+        if (!h.d.args.package.empty()) {
+            const int pabi = retcomm::hub::package_module_abi(h.d.args.package);
+            const int cabi = pabi < 0 ? -1
+                                      : retcomm::hub::core_module_abi(
+                                            retcomm::hub::current_exe_path(), p);
+            if (pabi >= 0 && cabi >= 0 && cabi != pabi) {
+                *note = sc.id + " " + sc.version + " is module ABI " + std::to_string(cabi) +
+                        "; this game is built for " + std::to_string(pabi) +
+                        " (rebuild the game to use it)";
+                return false;
+            }
         }
         *note = sc.id + " " + sc.version;
         return true;
@@ -12181,7 +12737,7 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         auto open_tab = [&](bool gamepads) {
             open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core,
                                h.d.args.package, h.desc_ready ? &h.desc : nullptr,
-                               /*direct=*/true);
+                               /*direct=*/true, h.title_dir);
             core_settings_page().gamepads_tab = gamepads;
         };
         if (ImGui::Button("System", ImVec2(half, 0))) open_tab(false);
@@ -12191,6 +12747,17 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
     ImGui::Dummy(ImVec2(0, 6));
 
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
+    ImGui::BeginDisabled(!have_rom);
+    if (ImGui::Button("Netplay", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Netplay);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(have_rom ? "Play this game online or on your network."
+                                   : "Choose the ROM first: a match runs it.");
+    if (h.tpak_supported) {
+        if (ImGui::Button("Transfer Pak Support\xE2\x80\xA6", ImVec2(w, 0))) h.tpak_open = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Pokemon Red, Blue and Yellow for Transfer Pak netplay lobbies.");
+    }
     if (!h.session_notes.empty()) {
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextColored(th.text_muted, "Last session");
@@ -12491,7 +13058,7 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
         return false;
     }
     retcomm::hub::PlayArgs args = h.d.args;
-    apply_player_settings(args, hub.paths.data_dir, h.platform, h.title_key);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     const fs::path session = hub.paths.data_dir / "sessions" / h.title_key;
     const fs::path saves = hub.paths.data_dir / "saves" / h.title_key;
     std::string err;
@@ -12505,6 +13072,171 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     return true;
 }
 
+// The lobby identity of this exact build: the title's version plus the core's
+// and the package's sha256, so only players who can simulate identically see
+// each other (recomp-ai-rules NETPLAY.md §4). Worked out once per run.
+void prepare_net_scope(DirectHome& h, HubModel& hub) {
+    if (h.net_scope_ready) return;
+    h.net_scope_ready = true;
+    retcomm::hub::NetplayScope& sc = h.net_scope;
+    sc.title = h.name;
+    sc.game_name = h.name;
+    const std::string version =
+        h.d.title_mode && !h.d.title.version.empty() ? h.d.title.version : "dev";
+    const std::string core_sha = retcomm::file_sha256_hex(h.d.args.core);
+    const std::string pkg_sha =
+        h.d.args.package.empty() ? std::string() : retcomm::file_sha256_hex(h.d.args.package);
+    sc.pin = version + "+c" + core_sha.substr(0, 10) +
+             (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
+    sc.max_slots = 4;
+    sc.tpak_supported = h.tpak_supported;
+    const fs::path data = hub.paths.data_dir;
+    const std::string platform = h.platform;
+    sc.tpak_problem = [data, platform]() -> std::string {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        std::string err;
+        if (!lib.complete())
+            return "Set Pokemon Red, Blue and Yellow in Transfer Pak Support first.";
+        if (!retcomm::hub::recheck_tpak_library(lib, &err)) return err;
+        return {};
+    };
+    sc.match_running = [&h] { return h.net_playing || h.net_launch.has_value(); };
+    // A VRU seat (a NETPLAY data accessory) cannot join a match yet: its
+    // bytes are not replicated to the peers, and the runner refuses it too.
+    // Asked every frame by the room: input.ini is re-read once a second.
+    struct VruCheck {
+        std::uint64_t at_ns = 0;
+        std::string answer;
+    };
+    sc.match_problem = [data, platform, check = std::make_shared<VruCheck>()]() -> std::string {
+        const std::uint64_t now = SDL_GetTicksNS();
+        if (check->at_ns && now - check->at_ns < 1000000000ull) return check->answer;
+        check->at_ns = now;
+        check->answer.clear();
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+            if (in.paks[static_cast<size_t>(s)].kind != retcomm::hub::SeatPak::Vru) continue;
+            check->answer = "VRU Microphone is not available in netplay yet (player " +
+                            std::to_string(s + 1) +
+                            " holds it: set that seat's Pak to None on the Gamepads tab).";
+            break;
+        }
+        return check->answer;
+    };
+    // A Transfer Pak lobby: this player's pak is their first seat's (Gamepads).
+    sc.local_pak = [data, platform]() {
+        retcomm::hub::NetplayPak pak;
+        const retcomm::hub::PlatformInput in = retcomm::hub::load_platform_input(data, platform);
+        const retcomm::hub::SeatPak& sp = in.paks[0];
+        if (sp.kind != retcomm::hub::SeatPak::TransferPak || sp.gb_rom.empty()) {
+            pak.note = "no Transfer Pak on your first seat (Gamepads): you play without one.";
+            return pak;
+        }
+        const int cart = retcomm::hub::supported_gb_rom_by_sha256(retcomm::file_sha256_hex(sp.gb_rom));
+        if (cart < 0) {
+            pak.note = fs::path(sp.gb_rom).filename().string() +
+                       " is not Pokemon Red, Blue or Yellow (the supported dumps): you play without a pak.";
+            return pak;
+        }
+        std::error_code ec;
+        if (!sp.gb_save.empty() && fs::is_regular_file(sp.gb_save, ec)) {
+            std::ifstream in_save(sp.gb_save, std::ios::binary);
+            pak.save.assign(std::istreambuf_iterator<char>(in_save), {});
+        } else {
+            std::string err;
+            pak.save.assign(retcomm::hub::gb_cart_ram_bytes(sp.gb_rom, &err), '\xFF');
+        }
+        pak.cart = cart;
+        return pak;
+    };
+    sc.cart_rom = [data, platform](int i) {
+        const auto lib = retcomm::hub::load_tpak_library(data, platform);
+        return i >= 0 && i < retcomm::hub::kSupportedGbRoms ? lib.path[static_cast<std::size_t>(i)]
+                                                          : std::string();
+    };
+    sc.pak_dir = (data / "netplay" / h.title_key / "paks").string();
+    sc.launch = [&h](const retcomm::hub::NetplayLaunch& l) -> std::string {
+        std::string err;
+        if (retcomm::hub::netplay_runner_args(l, &err).empty()) return err;
+        h.net_launch = l;
+        return {};
+    };
+    std::fprintf(stderr, "retro-hub: netplay identity %s \"%s\"\n", sc.pin.c_str(),
+                 sc.game_name.c_str());
+}
+
+// A match: the player's session, settled for every peer alike -- a fresh save
+// sandbox per match (every peer starts from blank cartridge saves), only the
+// options that do not change the simulation, no Transfer Pak until the pak
+// exchange exists, and the runner's --net-* flags.
+bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, const HubModel& hub,
+                       const retcomm::hub::NetplayLaunch& l, std::string* why) {
+    const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
+    if (rr.path.empty()) {
+        *why = "No usable retro-core-runner was found (" + rr.note + ").";
+        return false;
+    }
+    if (rr.netplay == 0) {
+        *why = "The " + rr.source + " runner at " + rr.path.string() +
+               " was built without netplay ('netplay 1' in --version).";
+        return false;
+    }
+    std::string err;
+    retcomm::hub::PlayArgs args = h.d.args;
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
+    // NETPLAY-flagged options join the match key: each peer's own choice
+    // would only get the match refused, so every peer takes the core's default.
+    if (h.desc_ready && h.desc.ok) {
+        for (const auto& o : h.desc.options)
+            if (o.netplay) args.options.erase(o.key);
+    }
+    args.tpak_rom = {};
+    args.tpak_save = {};
+    for (std::size_t seat = 0; seat < args.vru_seat.size(); ++seat) {
+        if (!args.vru_seat[seat]) continue;
+        *why = "VRU Microphone is not available in netplay yet (player " + std::to_string(seat + 1) +
+               " holds it: set that seat's Pak to None on the Gamepads tab).";
+        return false;
+    }
+    args.net_args = retcomm::hub::netplay_runner_args(l, &err);
+    if (args.net_args.empty()) {
+        *why = err;
+        return false;
+    }
+    const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /
+                          ("session-" + std::to_string(l.session_id));
+    std::error_code ec;
+    fs::remove_all(base / "saves", ec);
+    fs::create_directories(base / "saves", ec);
+    // Transfer Pak lobbies: every seat's cartridge and a copy of the save the
+    // room exchanged. The copies are the match's; nobody's real save is
+    // written (host-authoritative, NETPLAY.md §3).
+    if (l.tpak) {
+        for (std::size_t seat = 0; seat < l.tpak_rom.size(); ++seat) {
+            if (l.tpak_rom[seat].empty() || l.tpak_save[seat].empty()) continue;
+            const fs::path copy = base / "saves" / ("tpak" + std::to_string(seat + 1) + ".sav");
+            fs::copy_file(l.tpak_save[seat], copy, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                *why = "Cannot stage seat " + std::to_string(seat + 1) + "'s Transfer Pak save: " +
+                       ec.message();
+                return false;
+            }
+            args.tpak_rom[seat] = l.tpak_rom[seat];
+            args.tpak_save[seat] = copy;
+        }
+        limit_transfer_paks(args, rr);
+    }
+    if (!play.start(args, rr.path, base, base / "saves", &err)) {
+        *why = "Cannot start the match: " + err;
+        return false;
+    }
+    std::string argv;
+    for (const auto& a : args.net_args) argv += " " + a;
+    std::fprintf(stderr, "retro-hub: netplay match %u, seat %d of %d:%s\n", l.session_id,
+                 l.seat + 1, l.slots, argv.c_str());
+    return true;
+}
+
 int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const DirectPlay& d,
                     HubModel& hub) {
     DirectHome h;
@@ -12512,6 +13244,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     h.d = d;
     h.window = window;
     h.title_dir = direct_title_dir(d.args);
+    h.tpak_supported = title_supports_transfer_pak(h.title_dir);
     h.title_key = d.title_key.empty() ? direct_title_key(d.args) : d.title_key;
     h.platform = rcore_manifest_platform(d.args.core);
     if (h.platform.empty() && d.title_mode) h.platform = d.title.platform;
@@ -12640,6 +13373,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (play->finished()) {
                 play->shutdown();
                 play.reset();
+                h.net_playing = false;
                 h.session_notes = session_mod_lines(hub.paths.data_dir / "sessions" /
                                                     h.title_key / "core.log");
                 set_direct_status(h, "Session ended.", false);
@@ -12670,6 +13404,16 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     open_direct_page(h, hub, DirectPage::Home);
                 else
                     draw_direct_updates(h, hub, th);
+            } else if (h.page == DirectPage::Netplay) {
+                if (draw_direct_subpage_header(th, "Netplay")) {
+                    open_direct_page(h, hub, DirectPage::Home);
+                } else {
+                    prepare_net_scope(h, hub);
+                    ImGui::BeginChild("netplay_page_host", ImVec2(0, 0),
+                                      ImGuiChildFlags_NavFlattened);
+                    retcomm::hub::draw_netplay_page(hub, th, window, &h.net_scope);
+                    ImGui::EndChild();
+                }
             } else {
                 draw_page_header(th, platform_label(h.platform).c_str(), "");
                 const float total = ImGui::GetContentRegionAvail().x;
@@ -12684,6 +13428,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 act = draw_direct_actions(h, hub, th);
                 ImGui::EndChild();
                 draw_direct_update_prompt(h, hub, th);
+                if (h.tpak_supported) draw_tpak_support(h, hub, th);
             }
             // B / Escape backs out of a page, unless something in front owns it
             // or the settings page holds edits (Save or Cancel decides those).
@@ -12712,6 +13457,20 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (console_was_open && !hub.log_overlay_open) h.focus_pending = true;
 
             if (act == DirectAction::Quit || h.restart) running = false;
+            if (h.net_launch) {
+                const retcomm::hub::NetplayLaunch l = *h.net_launch;
+                h.net_launch.reset();
+                auto p = std::make_unique<retcomm::hub::PlaySession>();
+                std::string why;
+                if (start_net_session(*p, h, hub, l, &why)) {
+                    play = std::move(p);
+                    h.net_playing = true;
+                    set_direct_status(h, "Playing online.", false);
+                } else {
+                    set_direct_status(h, why, true);
+                    hub.append_log("netplay: " + why, retcomm::hub::LogLevel::Error);
+                }
+            }
             if (act == DirectAction::Play) {
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string why;
@@ -12776,7 +13535,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     const fs::path saves = hub.paths.data_dir / "saves" / stem;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
-    apply_player_settings(args, hub.paths.data_dir, rcore_manifest_platform(d.args.core), stem);
+    apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
     std::string err;
     limit_transfer_paks(args, rr);
     if (!play.start(args, runner, session, saves, &err)) {
@@ -12876,6 +13635,11 @@ int print_hub_version() {
 }
 
 int main(int argc, char** argv) {
+    // A child of this hub reading a core's module ABI (hub_update.hpp
+    // core_module_abi): loads the core, prints, exits before anything starts.
+    if (argc == 3 && std::string(argv[1]) == "--probe-module-abi")
+        return retcomm::hub::probe_module_abi_main(
+            retro::corelink::utf8_path(retro::corelink::utf8_args(argc, argv)[2]));
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--version") return print_hub_version();
     }
@@ -13343,7 +14107,7 @@ int main(int argc, char** argv) {
                 args.title_dir = req->title_dir;
                 // The platform's bindings and this title's option values: the
                 // files Direct mode's Controls and Core Settings pages write.
-                apply_player_settings(args, hub.paths.data_dir,
+                apply_player_settings(args, hub.paths.data_dir, hub.exe_dir,
                                       rcore_manifest_platform(args.core), req->title_id);
                 const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
                 const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
@@ -13486,6 +14250,10 @@ int main(int argc, char** argv) {
         if (hub.show_mods_page) {
             ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
             draw_mods_page(hub, th);
+            ImGui::EndChild();
+        } else if (hub.show_netplay) {
+            ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            retcomm::hub::draw_netplay_page(hub, th, window);
             ImGui::EndChild();
         } else if (hub.show_library_panel) {
             ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
@@ -14118,6 +14886,11 @@ int main(int argc, char** argv) {
     // Before the GL context goes: the session owns a texture and a runner.
     play.reset();
 #endif
+
+    // Leave any netplay room and stop its threads (bounded: a second at most).
+    retcomm::hub::netplay_shutdown();
+    // The settings page's VRU microphone, before SDL's audio goes.
+    stop_vru_panel(core_settings_page());
 
     // Self-update / hard-reset apply scripts wait on this PID. Prefer a fast
     // exit over a graceful join that can hang on prefetch/launch workers and

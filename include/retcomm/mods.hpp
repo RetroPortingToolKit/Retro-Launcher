@@ -96,7 +96,9 @@ struct ModPackageInfo {
 //           [[feature]] arrays, selection in mods/state.toml
 //   N64lle  n64lle guarded-write packages (n64lle docs/MODDING.md §5):
 //           mods/<origin>/<id>/manifest.toml with [target] rom_sha256 and
-//           [feature.<id>] tables, selection in <game>/mods.toml
+//           [feature.<id>] / [option.<id>] / [choice.<option>.<value>] tables,
+//           selection in <game>/mods.toml (`enabled`, and `options` for the
+//           settings that differ from their manifest default)
 enum class ModLayout { Engine, N64lle };
 
 struct ModScanResult {
@@ -164,6 +166,16 @@ bool set_scanned_mod_enabled(const ModScanResult& scan, const fs::path& game_dir
                              bool enabled, std::string* error = nullptr);
 bool set_scanned_mod_all(const ModScanResult& scan, const fs::path& game_dir,
                          const ModPackageInfo& pkg, bool enabled, std::string* error = nullptr);
+
+// Set one option's value in whichever layout `scan` found. n64lle layout: the
+// package's mods.toml section gets `options = "id=value ..."` (only settings
+// that differ from the default), and its `enabled` line is written with it from
+// what the scan saw, so a package that had no section keeps running what it was
+// running. A value the option does not allow is refused, not written.
+bool set_scanned_mod_option(const ModScanResult& scan, const fs::path& game_dir,
+                            const ModPackageInfo& pkg, const std::string& feature_id,
+                            const std::string& option_id, const std::string& value,
+                            std::string* error = nullptr);
 
 
 } // namespace retcomm

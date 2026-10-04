@@ -44,7 +44,11 @@ const char* kN64 =
     "input\t0\t1\t0\tControl Stick (left/right)\n"
     "input\t0\t2\t0\tControl Stick (up/down)\n"
     "input\t0\t4\t1\tC-Up\n"
-    "input\t0\t4\t-1\tC-Down\n";
+    "input\t0\t4\t-1\tC-Down\n"
+    // accessory records (runner 2026-10-01): flags as the options spell
+    // theirs, the masks hex as the runner prints them (%x).
+    "accessory\tn64.transfer_pak\tTransfer Pak\tcontent,save,netplay\tf\t1\n"
+    "accessory\tn64.vru\tVRU Microphone\tnetplay\tf\t1\n";
 
 void test_parse_n64() {
     CoreDescription d;
@@ -61,6 +65,14 @@ void test_parse_n64() {
     check(d.options[1].int_max == 1000000 && d.options[1].developer, "int range and flags");
     check(!d.options[2].has_default && d.options[2].default_value.empty(), "no default");
     check(d.inputs.size() == 7, "seven inputs");
+    check(d.accessories.size() == 2, "two accessory types");
+    const CoreAccessoryDecl* vru = d.accessory(kVruAccessoryId);
+    check(vru && vru->label == "VRU Microphone" && vru->netplay && !vru->content && !vru->save,
+          "the VRU: its label, NETPLAY only");
+    check(vru && vru->seat_mask == 0xf && vru->slot_mask == 0x1, "hex masks");
+    check(d.accessories[0].content && d.accessories[0].save && d.accessories[0].netplay,
+          "the Transfer Pak's three flags");
+    check(!d.accessory("n64.rumble"), "an undeclared accessory is null");
 
     check(pad_target_label(PadTarget::South, d) == "A", "South is A");
     check(pad_target_label(PadTarget::West, d) == "B", "West is B");
@@ -73,6 +85,9 @@ void test_parse_n64() {
     check(pad_target_label(PadTarget::East, d) == pad_target_generic_name(PadTarget::East),
           "an undeclared target keeps its generic name");
 }
+
+// The same core described by a runner from before accessory records.
+const char* kN64Old = "describe\t1\ncore\tn64lle\t0.374.0\tn64\ninput\t1\t0\t0\tA\n";
 
 void test_parse_edges() {
     CoreDescription d;
@@ -91,6 +106,16 @@ void test_parse_edges() {
           "no header refused");
     check(!parse_core_description("describe\t1\nvalue\tnope\tx\n", d, &err),
           "an orphan value refused");
+    check(parse_core_description("describe\t1\naccessory\tx\tX\t-\t0x3\t0\n", d, &err) &&
+              d.accessories.size() == 1 && !d.accessories[0].netplay && d.accessories[0].seat_mask == 3,
+          "no flags, a 0x mask");
+    check(parse_core_description("describe\t1\naccessory\tx\tX\t4\t1\t1\n", d, &err) &&
+              d.accessories[0].netplay && !d.accessories[0].content,
+          "a numeric flags field is RCORE_ACC_FLAG_* bits");
+    check(!parse_core_description("describe\t1\naccessory\tx\tX\t-\tzz\t0\n", d, &err),
+          "a mask that is not hex refused");
+    check(parse_core_description(kN64Old, d, &err) && d.accessories.empty(),
+          "a description without accessory records declares none");
 }
 
 void test_bindings(const fs::path& dir) {
@@ -158,6 +183,22 @@ void test_seat_plan() {
     in.seats[0] = {SeatAssign::None, "", ""};
     p = plan_seats(in, {"g2"});
     check(!p[0].connected() && p[3].pad == 0, "None is unplugged; the pad goes to the next Auto");
+
+    // A VRU seat takes no device, whatever its source says: the port is the
+    // voice unit's, and its pad goes on to the next Auto seat.
+    PlatformInput vin;
+    vin.paks[3].kind = SeatPak::Vru;
+    vin.seats[3] = {SeatAssign::Gamepad, "g1", "first"};
+    p = plan_seats(vin, {"g1"});
+    check(p[3].vru && !p[3].connected() && p[0].pad == 0,
+          "a VRU seat's named pad is free for Auto seats; the seat reads nothing");
+    vin.paks[0].kind = SeatPak::Vru;
+    vin.paks[3].kind = SeatPak::None;
+    p = plan_seats(vin, {});
+    check(p[0].vru && !p[0].keyboard && !p[1].keyboard, "port 1 as the VRU gets no keyboard fallback");
+    vin.seats[0] = {SeatAssign::Keyboard, "", ""};
+    p = plan_seats(vin, {});
+    check(!p[0].keyboard, "nor the keyboard it was set to");
 }
 
 void test_options(const fs::path& dir) {
@@ -290,6 +331,133 @@ void test_n64lle_mods(const fs::path& dir) {
     check(r.packages.empty(), "a duplicate id shows neither copy");
 }
 
+// Options in an n64lle package (n64lle docs/MODDING.md 5.5): read for the page,
+// and written into the `options` line of the package's mods.toml section.
+void test_n64lle_options(const fs::path& dir) {
+    const fs::path game = dir / "title-options";
+    std::error_code ec;
+    fs::remove_all(game, ec); // the dir outlives a run; this test writes mods.toml
+    write(game / "mods/bundled/stadium.rentals/manifest.toml",
+          "format_version = 1\n"
+          "id = \"stadium.rentals\"\n"
+          "version = \"1.0.0\"\n"
+          "name = \"Rental tuning\"\n"
+          "author = \"a modder\"\n"
+          "description = \"Changes the rentals.\"\n\n"
+          "[target]\n"
+          "game_id = \"pokemon-stadium\"\n"
+          "rom_sha256 = \"502f6082a6436012a8b61419435dec1388869a90ed870e87e2d7bee88f831519\"\n\n"
+          "[feature.difficulty]\n"
+          "default_enabled = true\n"
+          "name = \"Rental difficulty\"\n"
+          "description = \"Scales the AI.\"\n"
+          "group = \"Gameplay\"\n\n"
+          "[choice.level.easy]\nlabel = \"Easy\"\n\n"
+          "[choice.level.normal]\nlabel = \"Normal\"\n\n"
+          "[choice.level.hard]\nlabel = \"Hard\"\n\n"
+          "[option.level]\nfeature = \"difficulty\"\ntype = \"choice\"\nlabel = \"Level\"\n"
+          "description = \"How hard.\"\ndefault = \"normal\"\n\n"
+          "[option.boss]\nfeature = \"difficulty\"\ntype = \"boolean\"\n\n"
+          "[option.rounds]\nfeature = \"difficulty\"\ntype = \"integer\"\nmin = 1\nmax = 9\n"
+          "step = 2\ndefault = 3\n\n"
+          "[patch.a]\nfeature = \"difficulty\"\naddress = \"0x10\"\nexpected = \"00\"\n"
+          "replace = \"01\"\nwhen_option = \"level\"\nwhen_value = \"hard\"\n");
+
+    retcomm::ModScanResult r = retcomm::scan_game_mods(game);
+    check(r.layout == retcomm::ModLayout::N64lle && r.packages.size() == 1, "options package seen");
+    if (r.packages.size() != 1) return;
+    const retcomm::ModPackageInfo& p = r.packages[0];
+    check(p.name == "Rental tuning" && p.author == "a modder" &&
+              p.description == "Changes the rentals.",
+          "package name, author and description come from the manifest");
+    check(p.features.size() == 1 && p.features[0].name == "Rental difficulty" &&
+              p.features[0].description == "Scales the AI." && p.features[0].group == "Gameplay",
+          "feature name, description and group come from the manifest");
+    check(p.options.size() == 3, "three options read");
+    if (p.options.size() != 3) return;
+    const retcomm::ModOptionInfo& lv = p.options[0];
+    check(lv.id == "level" && lv.type == "choice" && lv.feature_id == "difficulty" &&
+              lv.label == "Level" && lv.description == "How hard." &&
+              lv.default_value == "normal" && lv.value == "normal",
+          "choice option fields, value starts at the default");
+    check(lv.choices.size() == 3 && lv.choices[0].value == "easy" && lv.choices[0].label == "Easy" &&
+              lv.choices[2].value == "hard" && lv.choices[2].label == "Hard",
+          "choices keep their order, values and labels");
+    check(p.options[1].type == "boolean" && p.options[1].default_value == "false" &&
+              p.options[1].label == "boss",
+          "a boolean defaults off, and a missing label falls back to the id");
+    check(p.options[2].type == "integer" && p.options[2].has_range && p.options[2].min == 1 &&
+              p.options[2].max == 9 && p.options[2].step == 2 && p.options[2].default_value == "3",
+          "integer range, step and default");
+
+    // First write: the package had NO section. It must keep running what it was
+    // running (main is default-on), so `enabled` is written with the option.
+    std::string err;
+    check(retcomm::set_scanned_mod_option(r, game, p, "difficulty", "level", "hard", &err),
+          "set a choice");
+    std::string sel = slurp(game / "mods.toml");
+    check(sel.find("enabled = \"difficulty\"") != std::string::npos,
+          "the default-on feature stays on when the section is created");
+    check(sel.find("options = \"level=hard\"") != std::string::npos, "options line written");
+    r = retcomm::scan_game_mods(game);
+    check(r.packages[0].options[0].value == "hard" && r.packages[0].features[0].enabled,
+          "rescan reads the value and the feature back");
+
+    // Several options, only the ones that differ from their default, in
+    // declaration order.
+    check(retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "5",
+                                          &err) &&
+              retcomm::set_scanned_mod_option(r, game, retcomm::scan_game_mods(game).packages[0],
+                                              "difficulty", "boss", "true", &err),
+          "set an integer and a boolean");
+    sel = slurp(game / "mods.toml");
+    check(sel.find("options = \"level=hard boss=true rounds=5\"") != std::string::npos,
+          ("declaration order, non-defaults only: " + sel).c_str());
+
+    // Toggling the feature does not lose the settings.
+    r = retcomm::scan_game_mods(game);
+    check(retcomm::set_scanned_mod_enabled(r, game, r.packages[0], "difficulty", false, &err),
+          "toggle off");
+    sel = slurp(game / "mods.toml");
+    check(sel.find("enabled = \"\"") != std::string::npos &&
+              sel.find("options = \"level=hard boss=true rounds=5\"") != std::string::npos,
+          "the options survive a feature toggle");
+
+    // Back to the default removes the setting; with none left, the line goes.
+    r = retcomm::scan_game_mods(game);
+    for (const auto& [opt, def] : {std::pair<const char*, const char*>{"level", "normal"},
+                                   {"boss", "false"},
+                                   {"rounds", "3"}}) {
+        check(retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", opt, def,
+                                              &err),
+              (std::string("reset ") + opt).c_str());
+        r = retcomm::scan_game_mods(game);
+    }
+    sel = slurp(game / "mods.toml");
+    check(sel.find("options") == std::string::npos,
+          ("every option at its default leaves no options line: " + sel).c_str());
+
+    // The game refuses a plan holding a value the option does not allow, so the
+    // page must not write one.
+    const std::string before = slurp(game / "mods.toml");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "level",
+                                           "brutal", &err),
+          "a value that is not a choice is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "4",
+                                           &err),
+          "an integer off the step is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "rounds", "11",
+                                           &err),
+          "an integer out of range is refused");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "boss", "yes",
+                                           &err),
+          "a boolean must be true or false");
+    check(!retcomm::set_scanned_mod_option(r, game, r.packages[0], "difficulty", "ghost", "1",
+                                           &err),
+          "an undeclared option is refused");
+    check(slurp(game / "mods.toml") == before, "a refused write changes nothing");
+}
+
 } // namespace
 
 // A fake Game Boy header: `type` at 0x147, `ram` at 0x149, a valid checksum.
@@ -302,6 +470,63 @@ void write_gb_rom(const fs::path& p, unsigned char type, unsigned char ram) {
     rom[0x14D] = static_cast<char>(sum);
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << rom;
+}
+
+// Transfer Pak Support: the three accepted dumps, their settings file, and the
+// refusals. The real dumps are checked too when RETRO_TEST_GB_DIR names a
+// folder holding them (they are not in the repo).
+void test_tpak_library(const fs::path& dir) {
+    check(supported_gb_rom_by_sha256(supported_gb_rom(1).sha256) == 1 &&
+              supported_gb_rom_by_sha256("00") == -1,
+          "supported dumps are found by sha256");
+    const fs::path gb = dir / "tpaklib";
+    write_gb_rom(gb / "fake_red.gb", 0x13, 0x03);
+    std::string sha, err;
+    check(!verify_supported_gb_rom(0, gb / "fake_red.gb", &sha, &err) &&
+              err.find("not the supported Pokemon Red dump") != std::string::npos &&
+              sha.size() == 64,
+          "a Game Boy ROM that is not the dump is refused, naming the dump");
+    fs::create_directories(gb);
+    std::ofstream(gb / "junk.gb", std::ios::binary) << std::string(0x200, 'x');
+    err.clear();
+    check(!verify_supported_gb_rom(2, gb / "junk.gb", &sha, &err) &&
+              err.find("no valid Game Boy header") != std::string::npos,
+          "a file that is no Game Boy ROM says so");
+    err.clear();
+    check(!verify_supported_gb_rom(1, gb / "missing.gb", &sha, &err) && !err.empty(),
+          "a missing file is refused");
+
+    TransferPakLibrary lib;
+    check(!lib.complete(), "an empty library is incomplete");
+    lib.path[0] = "/roms/red.gb";
+    lib.sha256[0] = supported_gb_rom(0).sha256;
+    lib.path[2] = "/roms/yellow.gb";
+    lib.sha256[2] = supported_gb_rom(2).sha256;
+    check(save_tpak_library(dir, "n64", lib, &err), "transfer_pak.ini saves");
+    check(load_tpak_library(dir, "n64") == lib, "paths and hashes read back, the unset one empty");
+    err.clear();
+    check(!recheck_tpak_library(lib, &err) && err.find("Pokemon Red") != std::string::npos,
+          "a recheck reports the first problem");
+
+    if (const char* real = std::getenv("RETRO_TEST_GB_DIR")) {
+        const char* names[3] = {"Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb",
+                                "Pokemon - Blue Version (USA, Europe) (SGB Enhanced).gb",
+                                "Pokemon - Yellow Version - Special Pikachu Edition (USA, Europe) "
+                                "(CGB+SGB Enhanced).gb"};
+        TransferPakLibrary full;
+        for (int i = 0; i < 3; ++i) {
+            const fs::path f = fs::path(real) / names[i];
+            err.clear();
+            check(verify_supported_gb_rom(i, f, &sha, &err), ("the real dump verifies: " + err).c_str());
+            full.path[static_cast<size_t>(i)] = f.string();
+            full.sha256[static_cast<size_t>(i)] = sha;
+        }
+        err.clear();
+        check(!verify_supported_gb_rom(0, fs::path(real) / names[1], &sha, &err) &&
+                  err.find("is Pokemon Blue, not Pokemon Red") != std::string::npos,
+              "Blue offered as Red is named as Blue");
+        check(full.complete() && recheck_tpak_library(full, &err), "the real library rechecks");
+    }
 }
 
 void test_transfer_pak(const fs::path& dir) {
@@ -340,6 +565,26 @@ void test_transfer_pak(const fs::path& dir) {
     check(back.paks[0] == in.paks[0], "seat 1's Transfer Pak reads back");
     check(back.paks[3] == in.paks[3], "seat 4's Transfer Pak reads back");
     check(back.paks[1].kind == SeatPak::None, "a seat without one stays None");
+
+    // The VRU Microphone: pak = vru, its recording device (or default).
+    PlatformInput vin;
+    vin.paks[3] = {SeatPak::Vru, "", "", "ASTRO C40 Mono"};
+    vin.paks[1] = {SeatPak::Vru, "", "", ""};
+    check(save_platform_input(dir, "n64", vin, &err), "input.ini with VRU seats saves");
+    const PlatformInput vback = load_platform_input(dir, "n64");
+    check(vback.paks[3] == vin.paks[3], "seat 4's VRU and its device read back");
+    check(vback.paks[1].kind == SeatPak::Vru && vback.paks[1].vru_device.empty(),
+          "a default device is written as 'default' and read back empty");
+    check(vback.paks[0].kind == SeatPak::None, "the Transfer Pak from before is gone");
+    {
+        std::ifstream in_file(platform_settings_dir(dir, "n64") / "input.ini");
+        std::string text((std::istreambuf_iterator<char>(in_file)), {});
+        check(text.find("pak = vru\nvru_device = ASTRO C40 Mono\n") != std::string::npos,
+              "the keys as documented");
+        check(text.find("vru_device = default\n") != std::string::npos, "default spelled out");
+    }
+    vin.paks[3].vru_device = "a\nb";
+    check(!save_platform_input(dir, "n64", vin, &err), "a device name with a newline refused");
 }
 
 int main(int argc, char** argv) {
@@ -367,7 +612,9 @@ int main(int argc, char** argv) {
     test_options(dir);
     test_display(dir);
     test_n64lle_mods(dir);
+    test_n64lle_options(dir);
     test_transfer_pak(dir);
+    test_tpak_library(dir);
     {
         // The host hotkeys round-trip through play.ini with the overlay's settings.
         PlayPrefs pr;

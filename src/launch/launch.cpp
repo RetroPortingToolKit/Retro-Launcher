@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <utility>
 
@@ -978,12 +979,11 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
     lp.title = &title;
     lp.mode = opts.mode;
 
-    if (opts.mode == LaunchMode::Netplay) {
+    if (opts.mode == LaunchMode::Netplay && opts.netplay_record.empty() &&
+        opts.netplay_query.empty()) {
         lp.ready = false;
-        lp.message =
-            "launch mode 'netplay' is not implemented yet\n"
-            "  tip: use --mode default for the dedicated launcher; a generic\n"
-            "       netplay lobby frontend will plug in here later\n";
+        lp.message = "launch mode 'netplay' starts a match the hub's lobby "
+                     "negotiated; it needs a launch record (docs/NETPLAY_HANDOFF.md)\n";
         return lp;
     }
 
@@ -1063,8 +1063,19 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
     // launcher screen no matter what the setting said, which made the hub's
     // checkbox look broken. Honour it by not asking for the screen at all.
     const bool skip_launcher = title_skip_launcher(lp.cwd, title.platform);
-    const bool open_launcher = (opts.mode == LaunchMode::Default) && !skip_launcher;
+    // A netplay launch always runs the game's launcher, whatever Skip Launcher
+    // says: that is where the match record is taken (recomp-ui
+    // recomp_launcher_run_window), and it opens no window for it.
+    const bool netplay = opts.mode == LaunchMode::Netplay;
+    const bool open_launcher = netplay || ((opts.mode == LaunchMode::Default) && !skip_launcher);
     append_default_argv(lp, title, open_launcher);
+    if (netplay && !opts.netplay_query.empty()) {
+        lp.argv.emplace_back("--netplay-query");
+        lp.argv.push_back(path_for_guest(opts.netplay_query, lp.use_wine));
+    } else if (netplay) {
+        lp.env.emplace_back("RECOMP_NETPLAY_LAUNCH",
+                            path_for_guest(opts.netplay_record, lp.use_wine));
+    }
     if (lp.use_wine) lp.argv.insert(lp.argv.begin(), wine_bin);
 
     // Persist paths where recomp-ui / hosts already look.
@@ -1122,6 +1133,63 @@ LaunchPlan plan_launch(const Paths& paths, const Title& title, const LaunchOptio
     oss << "  argv:   " << format_argv(lp.argv) << "\n";
     lp.message = oss.str();
     return lp;
+}
+
+namespace {
+
+// The flag a build that takes hub matches parses (psxrecomp main.cpp,
+// snesrecomp host_main.c): it is in the executable as a string literal.
+bool file_contains(const fs::path& file, const std::string& needle) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    std::vector<char> buf(1 << 20);
+    std::string carry;
+    while (in) {
+        in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+        const std::streamsize got = in.gcount();
+        if (got <= 0) break;
+        std::string chunk = carry;
+        chunk.append(buf.data(), static_cast<size_t>(got));
+        if (chunk.find(needle) != std::string::npos) return true;
+        carry = chunk.size() >= needle.size() ? chunk.substr(chunk.size() - needle.size() + 1)
+                                              : chunk;
+    }
+    return false;
+}
+
+} // namespace
+
+bool launch_supports_netplay_handoff(const LaunchPlan& plan) {
+    static std::mutex mu;
+    static std::map<std::string, std::pair<std::string, bool>> memo;  // path -> (stamp, answer)
+    std::vector<fs::path> files;
+    std::error_code ec;
+    if (plan.binary.filename() == "AppRun") {
+        for (const auto& e : fs::directory_iterator(plan.binary.parent_path() / "usr" / "bin", ec))
+            if (e.is_regular_file(ec)) files.push_back(e.path());
+    } else if (!plan.binary.empty()) {
+        files.push_back(plan.binary);
+    }
+    for (const fs::path& f : files) {
+        const auto size = fs::file_size(f, ec);
+        if (ec) continue;
+        const auto mtime = fs::last_write_time(f, ec).time_since_epoch().count();
+        const std::string stamp = std::to_string(size) + ":" + std::to_string(mtime);
+        bool yes = false;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            const auto it = memo.find(path_utf8(f));
+            if (it != memo.end() && it->second.first == stamp) {
+                if (it->second.second) return true;
+                continue;
+            }
+        }
+        yes = file_contains(f, "--netplay-query");
+        std::lock_guard<std::mutex> lk(mu);
+        memo[path_utf8(f)] = {stamp, yes};
+        if (yes) return true;
+    }
+    return false;
 }
 
 LaunchResult launch_title(const Paths& paths, const Title& title, const LaunchOptions& opts) {

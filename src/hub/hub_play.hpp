@@ -21,8 +21,11 @@
 // default); while it is held that seat sends the game no buttons.
 
 #include "core_link.hpp" // Retro-Runtime: retro_corelink
+#include "hub/hub_accessory_link.hpp"
 #include "hub/hub_core_settings.hpp"
 #include "hub/hub_picture.hpp"
+#include "hub/hub_vru.hpp"
+#include "hub/hub_vru_mic.hpp"
 #include "overlay.hpp"   // Retro-Runtime: retro_overlay
 
 #include <SDL3/SDL.h>
@@ -52,6 +55,15 @@ struct PlayArgs {
     // --tpakN-rom) and its battery save (region tpakN). Empty = no pak.
     std::array<std::string, 4> tpak_rom;
     std::array<fs::path, 4> tpak_save;
+    // Seat N's VRU Microphone (index N-1; runner --vruN): the seat reads no
+    // pad, and the hub's recognizer speaks to the core over the accessory
+    // data link (hub_vru.hpp). vru_device is the SDL recording device's
+    // name, "" for the default. The title's vocabulary is read from
+    // title_dir (vru::vocabulary_path); exe_dir is where libvosk is looked
+    // for first.
+    std::array<bool, 4> vru_seat{};
+    std::array<std::string, 4> vru_device;
+    fs::path exe_dir;
     std::map<std::string, std::string> options;
     bool gl = true;
     // Extra NAME=value for the runner, which passes its environment on to the
@@ -67,6 +79,11 @@ struct PlayArgs {
     // How the frame is scaled to the window (hub_core_settings.hpp,
     // "display"): the title's, over its platform's. Presentation only.
     PictureStyle picture;
+    // A netplay match (docs/NETPLAY_DIRECT.md): the runner's --net-* flags.
+    // Empty = offline. In a match the game never pauses (the menu opens over
+    // it and this player's pad goes neutral), and save states and turbo are
+    // off; a match that ends is not a fault.
+    std::vector<std::string> net_args;
 };
 
 class PlaySession {
@@ -109,7 +126,8 @@ private:
     void pump_audio();
     void upload_frame();
     void set_paused(bool paused);
-    bool paused() const { return menu_open_ || states_.is_open(); }
+    // A match never pauses: every peer runs on (recomp-ai-rules NETPLAY.md §6).
+    bool paused() const { return !netplay_ && (menu_open_ || states_.is_open()); }
     void sync_pause();
     void set_volume(int percent);
     void set_show_fps(bool on);
@@ -123,11 +141,16 @@ private:
     void draw_overlay();
     void draw_menu();
     void draw_fault();
+    void draw_match_ended();
     void draw_loading();
+    void start_vru();
+    void service_vru();
+    void stop_vru();
 
     corelink::CoreLink link_;
     PlayArgs args_;
     bool menu_open_ = false;
+    bool netplay_ = false;
     bool finished_ = false;
     bool user_quit_ = false;
 
@@ -162,6 +185,22 @@ private:
     bool states_configured_ = false;
     bool states_were_open_ = false;
     retro::overlay::SavestateMenu::Request state_request_; // waiting for a gap between frames
+
+    // The VRU Microphone, when a seat holds one: the title's vocabulary, the
+    // companion's state machine, the microphone and the link's data channel.
+    struct Vru {
+        int seat = -1;                 // the one VRU seat (0-3); -1 = none
+        vru::Vocabulary vocabulary;
+        std::string vocabulary_note;   // why none, naming the path looked at
+        vru::SpeechMachine machine;
+        vru::Microphone mic;
+        std::vector<std::string> grammar; // what the mic last got
+        bool started = false;
+        bool link_told = false;        // the "no accessory data" toast shown
+        std::string last_status;       // the recognizer's, as last toasted
+    };
+    Vru vru_;
+    AccessoryLink accessory_{link_};
 
     PlayPrefs prefs_;
     bool turbo_ = false;          // turbo in effect this frame

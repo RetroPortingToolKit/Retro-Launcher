@@ -78,6 +78,9 @@ set(RETCOMM_CORE_SOURCES
     src/netplay/netplay_ws.cpp
     src/netplay/netplay_client.cpp
     src/netplay/netplay_account.cpp
+    src/netplay/netplay_lan.cpp
+    src/netplay/netplay_nat.cpp
+    src/netplay/netplay_handoff.cpp
 )
 
 # --- miniz (vendored) -------------------------------------------------------
@@ -310,7 +313,30 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_VERSION})
         endif()
     endif()
 endif()
+# Netplay in the runner (Retro-Runtime runner/net_session.hpp) needs a
+# recomp-net checkout. A local build finds one beside this repository; a build
+# without it gets a runner that answers `netplay 0` (docs/NETPLAY_DIRECT.md).
+if(NOT DEFINED CACHE{RETRO_RUNTIME_RECOMP_NET_DIR} AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net/include/recomp_net/rb_driver.h")
+    get_filename_component(_rnet "${CMAKE_CURRENT_SOURCE_DIR}/../recomp-net" ABSOLUTE)
+    set(RETRO_RUNTIME_RECOMP_NET_DIR "${_rnet}" CACHE PATH
+        "recomp-net checkout: build retro-core-runner with netplay")
+endif()
 add_subdirectory(third_party/Retro-Runtime)
+# Accessory data (link 2.1, rcore rev 7): the VRU Microphone's channel. The
+# hub's seam (src/hub/hub_accessory_link.hpp) is live only when the vendored
+# link carries the messages; an older submodule builds a hub whose VRU panel
+# says the link predates accessory data.
+file(STRINGS third_party/Retro-Runtime/corelink/link_protocol.hpp _rr_accessory
+     REGEX "AccessoryData = 69")
+if(_rr_accessory)
+    set(RETCOMM_LINK_ACCESSORY_DATA TRUE)
+    target_compile_definitions(retcomm_core PUBLIC RETCOMM_LINK_ACCESSORY_DATA=1)
+    message(STATUS "retro-hub: Retro-Runtime link carries accessory data (2.1)")
+else()
+    set(RETCOMM_LINK_ACCESSORY_DATA FALSE)
+    message(STATUS "retro-hub: Retro-Runtime link predates accessory data; the VRU is off")
+endif()
 # The hub starts the runner from its own directory, so in the build tree the
 # runner must land there too, not under third_party/ (where, until this line, a
 # stale pre-split copy beside the hub was being run instead).
@@ -382,6 +408,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
             ${RETCOMM_RC_HUB}
         )
         # Hub uses int main(); MSVC Windows subsystem defaults to WinMain.
@@ -399,6 +426,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
         )
     endif()
     target_include_directories(retro-hub PRIVATE
@@ -421,7 +449,37 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
     target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_picture.cpp
-                   src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp)
+                   src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp
+                   src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)
+    # The VRU Microphone's recognizer, Vosk (third_party/vosk/NOTICE.md): never
+    # linked, loaded at runtime from beside the hub, from RETCOMM_VOSK_DIR, or
+    # from the system. RETCOMM_VOSK_DIR names an unpacked vosk release
+    # (vosk-linux-x86_64-<v>, vosk-osx-<v>, vosk-win64-<v>); its library is
+    # copied beside the hub in the build tree and installed with it.
+    set(RETCOMM_VOSK_DIR "" CACHE PATH
+        "An unpacked vosk-api release holding libvosk (optional; loaded at runtime)")
+    target_link_libraries(retro-hub PRIVATE ${CMAKE_DL_LIBS})
+    if(RETCOMM_VOSK_DIR)
+        get_filename_component(_vosk_dir "${RETCOMM_VOSK_DIR}" ABSOLUTE)
+        target_compile_definitions(retro-hub PRIVATE "RETCOMM_VOSK_DIR=\"${_vosk_dir}\"")
+        if(WIN32)
+            file(GLOB _vosk_libs "${_vosk_dir}/*.dll" "${_vosk_dir}/*/*.dll")
+        elseif(APPLE)
+            file(GLOB _vosk_libs "${_vosk_dir}/libvosk.dylib" "${_vosk_dir}/*/libvosk.dylib")
+        else()
+            file(GLOB _vosk_libs "${_vosk_dir}/libvosk.so" "${_vosk_dir}/*/libvosk.so")
+        endif()
+        if(_vosk_libs)
+            foreach(_lib ${_vosk_libs})
+                add_custom_command(TARGET retro-hub POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_lib}" $<TARGET_FILE_DIR:retro-hub>)
+            endforeach()
+            install(FILES ${_vosk_libs} DESTINATION bin)
+            message(STATUS "retro-hub: libvosk from ${_vosk_dir}")
+        else()
+            message(WARNING "RETCOMM_VOSK_DIR=${_vosk_dir} holds no libvosk; the hub will say so at runtime")
+        endif()
+    endif()
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
     target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
@@ -450,6 +508,15 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         add_test(NAME hub_picture COMMAND retro-hub-picture-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_picture_test.d)
         set_tests_properties(hub_picture PROPERTIES SKIP_RETURN_CODE 77)
+        # The VRU Microphone's windowless half: the vocabulary, the core's
+        # dictionary, phrase matching, the speech state machine against
+        # scripted sequences, and the link's accessory message layout.
+        add_executable(retro-hub-vru-test tests/hub_vru_test.cpp src/hub/hub_vru.cpp)
+        target_include_directories(retro-hub-vru-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(retro-hub-vru-test PRIVATE retcomm_core retro_corelink)
+        add_test(NAME hub_vru COMMAND retro-hub-vru-test
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vru_vocabulary.json
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_vru_test.d)
         # Title-app mode's windowless half: title.json, the data dir beside
         # the app, the ROM checks, mods.toml in the state dir.
         add_executable(retro-hub-title-test tests/hub_title_test.cpp src/hub/hub_title.cpp)
@@ -464,9 +531,29 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
                 src/hub/hub_update.cpp src/hub/hub_title.cpp)
             target_include_directories(retro-hub-update-test PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src)
-            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink)
+            target_link_libraries(retro-hub-update-test PRIVATE retcomm_core retro_corelink
+                ${CMAKE_DL_LIBS})
             add_test(NAME hub_update COMMAND retro-hub-update-test
                 ${CMAKE_CURRENT_BINARY_DIR}/hub_update_test.d $<TARGET_FILE:retro-hub>)
+            # Netplay LAN discovery: both beacons, over loopback.
+            add_executable(retcomm-netplay-lan-test tests/netplay_lan_test.cpp)
+            target_link_libraries(retcomm-netplay-lan-test PRIVATE retcomm_core)
+            add_test(NAME netplay_lan COMMAND retcomm-netplay-lan-test)
+            # The host relay's reachability: UPnP / NAT-PMP / STUN encoders,
+            # and a host port answering a probe over loopback.
+            add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
+            target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
+            add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
+            # NETPLAY_HANDOFF.md: the launch record, the game's status, and
+            # the build probe that decides whether Retro can start a game.
+            add_executable(retcomm-netplay-handoff-test tests/netplay_handoff_test.cpp)
+            target_link_libraries(retcomm-netplay-handoff-test PRIVATE retcomm_core)
+            add_test(NAME netplay_handoff COMMAND retcomm-netplay-handoff-test
+                ${CMAKE_CURRENT_BINARY_DIR}/netplay_handoff_test.d)
+            # The two-seat, two-game run behind NETPLAY_HANDOFF.md's evidence
+            # (needs a local lobby server and two game builds; not a ctest).
+            add_executable(retcomm-netplay-handoff-drive tools/netplay_handoff_drive.cpp)
+            target_link_libraries(retcomm-netplay-handoff-drive PRIVATE retcomm_core)
         endif()
     endif()
     install(TARGETS retro-hub RUNTIME DESTINATION bin)

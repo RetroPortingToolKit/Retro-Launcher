@@ -16,9 +16,21 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <map>
+#include <random>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace retcomm::hub {
 
@@ -173,6 +185,78 @@ int package_module_abi(const fs::path& package) {
     if (package.empty()) return -1;
     const fs::path desc = package.parent_path() / (package.stem().string() + ".n64game.toml");
     return to_int(field(toml_section(desc, "package"), "module_abi"), -1);
+}
+
+int probe_module_abi_main(const fs::path& core) {
+    using Fn = unsigned (*)();
+#if defined(_WIN32)
+    HMODULE h = LoadLibraryW(core.wstring().c_str());
+    if (!h) {
+        std::printf("error cannot load %s\n", corelink::path_utf8(core).c_str());
+        return 2;
+    }
+    const auto fn = reinterpret_cast<Fn>(GetProcAddress(h, "n64_module_abi_version"));
+#else
+    void* h = dlopen(core.string().c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        const char* e = dlerror();
+        std::printf("error %s\n", e ? e : "cannot load the core");
+        return 2;
+    }
+    const auto fn = reinterpret_cast<Fn>(dlsym(h, "n64_module_abi_version"));
+#endif
+    if (!fn) {
+        std::printf("error the core exports no n64_module_abi_version\n");
+        return 2;
+    }
+    std::printf("module_abi %u\n", fn());
+    std::fflush(stdout);
+    // The core is not unloaded: this process exits now.
+    return 0;
+}
+
+int core_module_abi(const fs::path& hub_exe, const fs::path& core) {
+    if (hub_exe.empty() || core.empty()) return -1;
+    std::error_code ec;
+    std::mt19937_64 rng(static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    const fs::path report = fs::temp_directory_path(ec) /
+                            ("retro-hub-module-abi-" + std::to_string(rng()) + ".txt");
+    corelink::SpawnSpec spec;
+    spec.args = {corelink::path_utf8(hub_exe), "--probe-module-abi", corelink::path_utf8(core)};
+    spec.log = report;
+    std::string err;
+    const auto code = corelink::run_to_completion(spec, 10000, &err);
+    int abi = -1;
+    {
+        std::ifstream in(report);
+        for (std::string line; std::getline(in, line);) {
+            if (line.rfind("module_abi ", 0) == 0) abi = to_int(line.substr(11), -1);
+        }
+    }
+    fs::remove(report, ec);
+    return code && *code == 0 ? abi : -1;
+}
+
+CoreAbiPick pick_core_for_package(const fs::path& chosen, int chosen_abi,
+                                  const fs::path& fallback, int fallback_abi, int package_abi) {
+    CoreAbiPick out;
+    out.path = chosen;
+    if (package_abi < 0 || chosen_abi < 0 || chosen_abi == package_abi) return out;
+    const std::string what = "core " + corelink::path_utf8(chosen) + " is module ABI " +
+                             std::to_string(chosen_abi) + "; this game is built for module ABI " +
+                             std::to_string(package_abi);
+    if (!fallback.empty() && fallback != chosen && fallback_abi == package_abi) {
+        out.path = fallback;
+        out.switched = true;
+        out.note = what + ", so the title's own core " + corelink::path_utf8(fallback) +
+                   " runs it instead. Rebuild the game to run the newer core.";
+        return out;
+    }
+    out.mismatch = true;
+    out.note = what + " and no installed core matches it: the core will refuse the game. "
+                      "Rebuild the game against this core.";
+    return out;
 }
 
 ResolvedCore resolve_title_core(const Paths& paths, const fs::path& bundled,

@@ -182,6 +182,12 @@ env `GITHUB_TOKEN` / `GH_TOKEN` (env wins). Hub UI needs system **SDL3** + OpenG
 `../recomp-ui`, or CMake FetchContent). Wine installs need `wine` / `wine64` on
 `PATH`.
 
+The N64 VRU Microphone's recognizer, libvosk, is never linked: the hub loads
+it at runtime. `-DRETCOMM_VOSK_DIR=<an unpacked vosk-api release>` copies it
+beside `retro-hub` in the build tree and installs it with it; without it the
+hub looks in `<data dir>/vru/` and the system loader
+([`third_party/vosk/NOTICE.md`](third_party/vosk/NOTICE.md)).
+
 Packaging lives under `packaging/`; icon source is `assets/retcomm.svg`.
 
 ### A local hub for ports (`scripts/build-local.sh`)

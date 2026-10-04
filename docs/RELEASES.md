@@ -86,7 +86,7 @@ header's **n64lle Config** -- writes these, and every play path reads them
 
 | File | Scope |
 |---|---|
-| `<data dir>/platform/<platform>/input.ini` | the four controller seats (device and maps), the stick deadzone, and each seat's expansion pak (`pak = tpak`, `tpak_rom`, `tpak_save`: a Transfer Pak's Game Boy ROM and `.srm` save, given to the session as that seat's `--tpakN-rom` and save region `tpakN`; `--tpak1-rom` on the command line wins over seat 1's. Every seat can hold one with a runner reporting `transfer_pak_seats 4`; with an older runner the hub leaves seats 2-4 out and logs why), every title of the platform (the core's `.rcore.toml` `platforms`) |
+| `<data dir>/platform/<platform>/input.ini` | the four controller seats (device and maps), the stick deadzone, and each seat's expansion pak (`pak = tpak`, `tpak_rom`, `tpak_save`: a Transfer Pak's Game Boy ROM and `.srm` save, given to the session as that seat's `--tpakN-rom` and save region `tpakN`; `--tpak1-rom` on the command line wins over seat 1's. Every seat can hold one with a runner reporting `transfer_pak_seats 4`; with an older runner the hub leaves seats 2-4 out and logs why; or `pak = vru`, `vru_device` (`default` or the SDL recording device's name): the VRU Microphone, given to the session as `--vruN`, the seat reading no pad -- a runner without `accessory_data 1` in `--version` gets the seat as an empty port and the hub logs why), every title of the platform (the core's `.rcore.toml` `platforms`) |
 | `<data dir>/platform/<platform>/options.ini` | option values for every title |
 | `<data dir>/platform/<platform>/options/<stem>.ini` | one title's overrides; `--opt` wins over both |
 | `<data dir>/platform/<platform>/core_description.txt` | the last `--describe`, so the page can label things with no core at hand |
@@ -150,12 +150,36 @@ PlayStation, Super Nintendo).
 
 **Gamepads tab (N64).** Each seat card shows the controller (rendered from
 `assets/src/n64_controller.svg`) above its device choice, and a **Pak** choice
-under Configure: None, or Transfer Pak (any seat). A Transfer Pak adds a section
+under Configure: None, Transfer Pak (any seat), or VRU Microphone. A Transfer Pak adds a section
 below the cards: **Choose ROM…** and **Choose save…** list the `.gb`/`.gbc`
 and `.srm` files in the library's gb and gbc folders (`library_root` +
 `platform_folders`, any file there, not only indexed titles), and **Create New
 Save…** writes a blank `<name>.srm` beside the chosen ROM, sized from its
 cartridge header (0xFF, as fresh battery RAM reads).
+
+**VRU Microphone (N64).** Offered on a seat only when the described core
+declares the `n64.vru` accessory for it (`accessory` records from
+`--describe`, Retro-Runtime rcore rev 7); otherwise the entry is disabled and
+its tooltip says why. The seat becomes the voice unit: it reads no controller
+(its pad goes to the next Auto seat) and Configure is disabled. Its panel,
+below the cards, picks the recording device (System default, or one SDL
+lists), shows the live level, and has **Test** (the recognizer for six
+seconds, against the title's vocabulary or any English without one), the
+recognizer's state and **Download model**, and the title's vocabulary.
+Recognition is Vosk on this machine (`third_party/vosk/NOTICE.md`): libvosk
+is loaded at runtime from beside the hub, from the build's
+`RETCOMM_VOSK_DIR`, from `<data dir>/vru/`, or through the system loader; the
+English model (`vosk-model-small-en-us-0.15`, about 40 MB) is downloaded into
+`<data dir>/vru/models/`. The vocabulary is the title's phoneme-to-text
+table (schema 1, en-US: the file n64lle's `tools/vru_client.py` takes as
+`--vocabulary`), made locally from the title's ROM and never checked in --
+no tool in either repository writes it yet: `vru_vocabulary.json` beside
+`game.toml`, or the file `game.toml`'s `[vru] vocabulary` names. In play, the
+core's dictionaries arrive over the link's accessory data (link 2.1) and
+the hub answers with `start` / `progress` / `result` / `cancel` at that seat. One
+microphone serves every VRU seat (the first one's device). A VRU seat cannot
+join a netplay match yet: the room says so and the match is refused until
+that seat's Pak is None.
 
 The page is built from what the core declares, asked of the runner with
 `retro-core-runner --describe` (Retro-Runtime `docs/CORE_RUNNER.md`), never
@@ -284,7 +308,9 @@ without the player.
 **Developer paths.** On a local build, with **Show developer options** on (the Developer page), the
 Core, Runner and Hub rows get **Browse…** (the OS file picker), and the page's
 bottom right **Reset to Defaults** and **Save & Restart**. A pick is checked as
-a start would check it (a core needs its `.rcore.toml` and the title's core id;
+a start would check it (a core needs its `.rcore.toml`, the title's core id and,
+for a title with a game package, the package's module ABI -- read from the core's
+own `n64_module_abi_version` in a child `retro-hub --probe-module-abi <core>`;
 a runner must speak this link and ABI major; a hub must have Direct mode 4, and
 title-app mode for a title app) and refused on the row otherwise. Nothing is
 copied: Save & Restart writes the paths to `config.json` (`dev_core_path`,
@@ -298,6 +324,15 @@ it as to an updated hub, from any build. Reset to Defaults empties the three
 running one offers the newest release whatever the versions say, and
 installing it clears that row's dev path. A dev path that no longer exists, or
 a dev hub that will not run, is logged and ignored.
+
+**A hand-chosen core of another module ABI.** A core named by `--core` or
+`dev_core_path` that is built for another module ABI than the game package
+would only be refused at load ("The game stopped"). A start reads its module
+ABI first; when it differs, the title's own core (bundled, or the newest
+installed for this package) starts instead if that one matches, and the Core
+row on the Update page says why. When no core matches, the chosen one is kept
+and the row says the game has to be rebuilt for it. A core that exports no
+module ABI, or a package that records none, is not second-guessed.
 
 | Row | Checked against | Installed into | Used |
 |---|---|---|---|

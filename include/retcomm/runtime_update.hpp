@@ -45,6 +45,11 @@ struct ResolvedRunner {
     // Seats that take a Transfer Pak (--tpakN-rom): 4, or 1 for a runner from
     // before seats 2-4.
     std::uint32_t transfer_pak_seats = 1;
+    // 1 when it runs netplay (--net-*; built with recomp-net).
+    std::uint32_t netplay = 0;
+    // 1 when it takes --vru1 .. --vru4 and carries accessory data over the
+    // link (2.1); 0 for a runner from before it.
+    std::uint32_t accessory_data = 0;
     std::string note;    // why this one; what was skipped
 };
 
