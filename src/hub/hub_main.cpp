@@ -9624,7 +9624,8 @@ std::string rcore_manifest_platform(const fs::path& core) {
 // Loads the player's seats and option values into a session's arguments:
 // the platform's options, the title's over them, and the command line's --opt
 // over both (it is the most specific request). Also the play overlay's
-// settings (play.ini), which the in-game hotkeys write back.
+// settings (play.ini), which the in-game hotkeys write back, and how the hub
+// scales the picture (display.ini, the title's over the platform's).
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
                            const fs::path& exe_dir, const std::string& platform,
                            const std::string& title_key) {
@@ -9647,6 +9648,16 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         args.tpak_save[seat] = retro::corelink::utf8_path(pak.gb_save);
         std::fprintf(stderr, "retro-hub: transfer pak, seat %zu: %s, save %s\n", seat + 1,
                      pak.gb_rom.c_str(), pak.gb_save.empty() ? "none" : pak.gb_save.c_str());
+    }
+    // The hub's scaling of the picture: the title's display file over the
+    // platform's (hub_core_settings.hpp, "display"). Never the core's.
+    {
+        std::vector<std::string> display_warnings;
+        args.picture = retcomm::hub::resolve_picture_style(
+            retcomm::hub::load_display_settings(data_dir, platform, ""),
+            retcomm::hub::load_display_settings(data_dir, platform, title_key), &display_warnings);
+        for (const std::string& w : display_warnings)
+            std::fprintf(stderr, "retro-hub: %s\n", w.c_str());
     }
     // Each seat's VRU Microphone: the seat reads no pad (the runner masks it
     // too), and its recording device is the session's.
@@ -9757,6 +9768,9 @@ struct CoreSettingsPage {
     std::map<std::string, std::string> plat_opts, plat_saved, title_opts, title_saved;
     // The play overlay's settings (play.ini): every core's, shown here too.
     retcomm::hub::PlayPrefs prefs, prefs_saved;
+    // The hub's scaling of the picture (display.ini): layered like the
+    // options, and edited in the same scope (title_scope).
+    std::map<std::string, std::string> disp_plat, disp_plat_saved, disp_title, disp_title_saved;
 
     bool gamepads_tab = false;
     // Direct mode, local builds: the core's developer options on a page of
@@ -9820,7 +9834,8 @@ struct CoreSettingsPage {
 
     bool dirty() const {
         return input != input_saved || plat_opts != plat_saved || title_opts != title_saved ||
-               prefs != prefs_saved;
+               prefs != prefs_saved || disp_plat != disp_plat_saved ||
+               disp_title != disp_title_saved;
     }
 };
 
@@ -9878,6 +9893,10 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
     p.title_opts = p.title_saved =
         title_key.empty() ? std::map<std::string, std::string>{}
                           : retcomm::hub::load_core_options(data, platform, title_key);
+    p.disp_plat = p.disp_plat_saved = retcomm::hub::load_display_settings(data, platform, "");
+    p.disp_title = p.disp_title_saved =
+        title_key.empty() ? std::map<std::string, std::string>{}
+                          : retcomm::hub::load_display_settings(data, platform, title_key);
     p.gamepads_tab = false;
     p.developer_page = false;
     p.gb_scanned = false;
@@ -9955,7 +9974,16 @@ bool save_core_settings(HubModel& hub, std::string* err) {
         return false;
     if (p.prefs != p.prefs_saved && !retcomm::hub::save_play_prefs(data, p.prefs, err))
         return false;
+    // Written only when changed: a player who never touches them gets no file.
+    if (p.disp_plat != p.disp_plat_saved &&
+        !retcomm::hub::save_display_settings(data, p.platform, "", p.disp_plat, err))
+        return false;
+    if (!p.title_key.empty() && p.disp_title != p.disp_title_saved &&
+        !retcomm::hub::save_display_settings(data, p.platform, p.title_key, p.disp_title, err))
+        return false;
     p.prefs_saved = p.prefs;
+    p.disp_plat_saved = p.disp_plat;
+    p.disp_title_saved = p.disp_title;
     p.input_saved = p.input;
     p.plat_saved = p.plat_opts;
     p.title_saved = p.title_opts;
@@ -9977,6 +10005,8 @@ void close_core_settings(HubModel& hub) {
     p.plat_opts = p.plat_saved;
     p.title_opts = p.title_saved;
     p.prefs = p.prefs_saved;
+    p.disp_plat = p.disp_plat_saved;
+    p.disp_title = p.disp_title_saved;
     p.configuring = -1;
     cancel_core_capture(p);
     hub.show_core_settings = false;
@@ -10309,6 +10339,68 @@ void draw_core_hotkeys_panel(HubModel& hub, CoreSettingsPage& p, const Theme& th
     ImGui::EndChild();
 }
 
+// The hub's own display rows, beside the core's video options: how the picture
+// is scaled to the window (hub_picture.hpp). Not the core's -- they change
+// nothing a game computes -- so they show whatever the core declares, and are
+// kept in display.ini, never handed to the runner. Scoped like the options:
+// in platform scope an unset value shows as the default; in title scope the
+// value the title plays with (its own, else every title's) shows plainly, and
+// Reset to Default clears the title's file.
+void draw_core_display_rows(CoreSettingsPage& p, const Theme& th) {
+    using retcomm::hub::OutputFilter;
+    std::map<std::string, std::string>& layer = p.title_scope ? p.disp_title : p.disp_plat;
+    // What an unset value in this layer means: every title's, else the default.
+    const retcomm::hub::PictureStyle inherited = retcomm::hub::resolve_picture_style(
+        p.title_scope ? p.disp_plat : std::map<std::string, std::string>{}, {});
+    const retcomm::hub::PictureStyle cur = retcomm::hub::resolve_picture_style(
+        p.disp_plat, p.title_scope ? p.disp_title : std::map<std::string, std::string>{});
+    const char* inherit_word = p.title_scope ? "All titles" : "Default";
+
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextColored(th.text_muted, "DISPLAY");
+    ImGui::Separator();
+    ImGui::PushID("display");
+    settings_row("Output filter", th, kSettingsCtrlW);
+    const bool set = layer.count(retcomm::hub::kDisplayOutputFilter) != 0;
+    const std::string preview =
+        !p.title_scope && !set
+            ? std::string(inherit_word) + ": " + retcomm::hub::output_filter_label(inherited.filter)
+            : std::string(retcomm::hub::output_filter_label(cur.filter));
+    if (ImGui::BeginCombo("##filter", preview.c_str())) {
+        if (!p.title_scope &&
+            ImGui::Selectable((std::string(inherit_word) + " (" +
+                               retcomm::hub::output_filter_label(inherited.filter) + ")")
+                                  .c_str(),
+                              !set))
+            layer.erase(retcomm::hub::kDisplayOutputFilter);
+        for (int i = 0; i < retcomm::hub::kOutputFilterCount; ++i) {
+            const auto f = static_cast<OutputFilter>(i);
+            const bool chosen = (set || p.title_scope) && f == cur.filter;
+            if (ImGui::Selectable(retcomm::hub::output_filter_label(f), chosen))
+                layer[retcomm::hub::kDisplayOutputFilter] = retcomm::hub::output_filter_key(f);
+            if (chosen) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip(
+            "How the picture is scaled to the window. The hub's, not the core's: it changes\n"
+            "nothing the game computes, and applies the next time a game starts.\n\n"
+            "Bilinear: smooth (the default, as the hub always drew it).\n"
+            "Nearest: hard pixel edges; uneven rows and columns when the window\n"
+            "is not a whole multiple of the picture.\n"
+            "Sharp bilinear: crisp, even pixels; only their edges are blended.\n\n"
+            "A picture larger than the window (a raised internal resolution) is\n"
+            "always scaled down smoothly.");
+    bool integer = cur.integer_scale;
+    if (settings_checkbox("Integer scale", "##integer", th, &integer))
+        layer[retcomm::hub::kDisplayIntegerScale] = integer ? "1" : "0";
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Only whole multiples of the picture's height, with black borders\n"
+                          "around it. A picture taller than the window is fitted as usual.");
+    ImGui::PopID();
+}
+
 void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h) {
     const float gap = 12.f;
     const float col_w = std::max(300.f, (ImGui::GetContentRegionAvail().x - gap) * 0.5f);
@@ -10328,6 +10420,7 @@ void draw_core_system_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, f
     } else {
         draw_core_option_group(p, th, false);
     }
+    draw_core_display_rows(p, th);
     // Not the core's: Retro-Runtime's play overlay, the same for every core
     // (play.ini). The hotkeys change the same values in game.
     ImGui::Dummy(ImVec2(0, 8));
@@ -11628,7 +11721,8 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
         if (p.title_scope) {
             ImGui::SameLine();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(th.text_muted, "%zu overridden", p.title_opts.size());
+            ImGui::TextColored(th.text_muted, "%zu overridden",
+                               p.title_opts.size() + p.disp_title.size());
         }
     }
 
@@ -11651,7 +11745,9 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
             p.input.seats = seats;
         } else {
             // This page's options only: the System tab's player options (and
-            // keys no longer declared), or the Developer page's.
+            // keys no longer declared) and the hub's display rows, or the
+            // Developer page's.
+            if (!p.developer_page) (p.title_scope ? p.disp_title : p.disp_plat).clear();
             std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
             for (auto it = layer.begin(); it != layer.end();) {
                 const auto decl = std::find_if(

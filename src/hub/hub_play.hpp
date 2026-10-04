@@ -23,6 +23,7 @@
 #include "core_link.hpp" // Retro-Runtime: retro_corelink
 #include "hub/hub_accessory_link.hpp"
 #include "hub/hub_core_settings.hpp"
+#include "hub/hub_picture.hpp"
 #include "hub/hub_vru.hpp"
 #include "hub/hub_vru_mic.hpp"
 #include "overlay.hpp"   // Retro-Runtime: retro_overlay
@@ -75,6 +76,9 @@ struct PlayArgs {
     // not persisted).
     PlayPrefs prefs;
     fs::path data_dir;
+    // How the frame is scaled to the window (hub_core_settings.hpp,
+    // "display"): the title's, over its platform's. Presentation only.
+    PictureStyle picture;
     // A netplay match (docs/NETPLAY_DIRECT.md): the runner's --net-* flags.
     // Empty = offline. In a match the game never pauses (the menu opens over
     // it and this player's pad goes neutral), and save states and turbo are
@@ -150,10 +154,8 @@ private:
     bool finished_ = false;
     bool user_quit_ = false;
 
-    // Picture
-    unsigned int tex_ = 0;
-    std::uint32_t tex_w_ = 0, tex_h_ = 0;
-    std::uint32_t aspect_num_ = 0, aspect_den_ = 0;
+    // The core's frame, scaled as args_.picture says.
+    Picture picture_;
 
     // Audio: an SDL stream fed from the link's ring; its fill level paces
     // grants (the core states no frame rate; its audio clock stands in).
