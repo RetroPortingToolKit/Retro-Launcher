@@ -49,6 +49,25 @@ Install JDK 17, CMake 3.24+, Ninja, Make, Perl, Python 3, and the Android SDK
 with platform 36, build tools 36.0.0, and NDK 29.0.14206865. The Gradle wrapper
 pins Gradle 9.0.0. SDL is built from the same pinned source as its Java bridge.
 
+For a debug APK, one command does everything below:
+
+```sh
+tools/build-android-debug.sh                          # arm64-v8a
+tools/build-android-debug.sh --abi x86_64 --install emulator-5554
+```
+
+It finds the SDK holding the pinned NDK, picks JDK 17 when the default `java`
+is newer than Gradle supports, uses or clones the pinned SDL, builds the
+native payload and the APK, and runs the APK verifier. `--install [SERIAL]`
+installs and starts it; a serial is required when more than one device is
+attached. The debug APK's application id is
+`org.retroportingtoolkit.launcher.debug` and its label is "Retro Launcher
+(debug)", so it installs beside a release install rather than being refused
+over it. It is debuggable, so `adb shell run-as
+org.retroportingtoolkit.launcher.debug` reaches its private files.
+
+The steps by hand:
+
 ```sh
 git clone --branch release-3.2.16 --depth 1 https://github.com/libsdl-org/SDL.git .cache/android/SDL
 export ANDROID_HOME="$HOME/Android/Sdk"
@@ -69,9 +88,10 @@ them. Intermediate output is in `.cache/android/` and `build-android-<ABI>/`.
 
 For a signed local release, set `ANDROID_KEYSTORE` to an absolute keystore
 path and set the three password/alias variables listed above. For a local
-debug-signed install, run `./gradlew :app:assembleDebug`. The native payload
-is still built with release optimizations. Set `ANDROID_ABI=x86_64` for the
-native build and pass `-PretroAbi=x86_64` to Gradle to test on an emulator.
+debug-signed build by hand, run `./gradlew :app:assembleDebug`. The native
+payload is still built with release optimizations. Set `ANDROID_ABI=x86_64`
+for the native build and pass `-PretroAbi=x86_64` to Gradle to test on an
+emulator.
 
 ## Platform scope
 

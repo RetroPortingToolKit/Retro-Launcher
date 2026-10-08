@@ -31,6 +31,13 @@ android {
         release {
             minifyEnabled false
             if (releaseKeystore) signingConfig signingConfigs.release
+            manifestPlaceholders = [appLabel: 'Retro Launcher']
+        }
+        debug {
+            // Installs beside a release build; Android refuses a different key over it.
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+            manifestPlaceholders = [appLabel: 'Retro Launcher (debug)']
         }
     }
     sourceSets.main {
