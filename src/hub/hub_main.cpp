@@ -53,8 +53,11 @@ constexpr bool kLocalBuild = true;
 #endif
 
 #include <SDL3/SDL.h>
+#if defined(__ANDROID__)
+#include <SDL3/SDL_main.h>
+#endif
 #include <SDL3/SDL_dialog.h>
-#include <SDL3/SDL_opengl.h>
+#include "hub/hub_gl.hpp"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -109,6 +112,8 @@ fs::path find_hub_asset_file(const char* kind, const char* filename) {
     };
 
     std::vector<fs::path> dirs;
+    if (const char* assets = std::getenv("RETCOMM_ASSET_DIR"))
+        dirs.push_back(fs::path(assets) / kind);
     // AppImage runtime sets APPDIR to the mounted squashfs root.
     if (const char* appdir = std::getenv("APPDIR")) {
         const fs::path ad(appdir);
@@ -13755,11 +13760,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    #if defined(__ANDROID__)
+    const char* glsl = "#version 300 es";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    #else
     const char* glsl = "#version 150";
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    #endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);

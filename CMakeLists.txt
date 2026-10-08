@@ -37,6 +37,9 @@ set(RETCOMM_CATALOG_DOWNLOAD_URL
 
 # Portable installs: look next to the binary first; baked path is a dev fallback.
 find_package(CURL REQUIRED)
+if(ANDROID)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 set(RETCOMM_CORE_SOURCES
     src/paths/paths.cpp
@@ -229,22 +232,27 @@ find_package(SDL3 QUIET)
 # generate time instead. Resolve to whatever the host actually has.
 # Canonical version of this logic: recomp-ui/cmake/recomp_gl.cmake (duplicated
 # because the launcher must configure without a recomp-ui checkout).
-find_package(OpenGL REQUIRED)
-if(TARGET OpenGL::GL)
-    set(RETCOMM_GL_TARGET OpenGL::GL)
-elseif(TARGET OpenGL::OpenGL)
-    message(STATUS "retro-hub: OpenGL::GL unavailable (GLVND host) — linking OpenGL::OpenGL")
-    set(RETCOMM_GL_TARGET OpenGL::OpenGL)
-elseif(OPENGL_gl_LIBRARY)
-    set(RETCOMM_GL_TARGET "${OPENGL_gl_LIBRARY}")
-elseif(OPENGL_opengl_LIBRARY)
-    set(RETCOMM_GL_TARGET "${OPENGL_opengl_LIBRARY}")
+if(ANDROID)
+    find_library(RETCOMM_GLES_LIBRARY GLESv3 REQUIRED)
+    set(RETCOMM_GL_TARGET ${RETCOMM_GLES_LIBRARY})
 else()
-    message(FATAL_ERROR
-        "retro-hub: OpenGL found but no usable GL library resolved "
-        "(OPENGL_gl_LIBRARY='${OPENGL_gl_LIBRARY}', "
-        "OPENGL_opengl_LIBRARY='${OPENGL_opengl_LIBRARY}'). "
-        "Install the GL development files (libgl-dev / libglvnd-dev / libglvnd).")
+    find_package(OpenGL REQUIRED)
+    if(TARGET OpenGL::GL)
+        set(RETCOMM_GL_TARGET OpenGL::GL)
+    elseif(TARGET OpenGL::OpenGL)
+        message(STATUS "retro-hub: OpenGL::GL unavailable (GLVND host) — linking OpenGL::OpenGL")
+        set(RETCOMM_GL_TARGET OpenGL::OpenGL)
+    elseif(OPENGL_gl_LIBRARY)
+        set(RETCOMM_GL_TARGET "${OPENGL_gl_LIBRARY}")
+    elseif(OPENGL_opengl_LIBRARY)
+        set(RETCOMM_GL_TARGET "${OPENGL_opengl_LIBRARY}")
+    else()
+        message(FATAL_ERROR
+            "retro-hub: OpenGL found but no usable GL library resolved "
+            "(OPENGL_gl_LIBRARY='${OPENGL_gl_LIBRARY}', "
+            "OPENGL_opengl_LIBRARY='${OPENGL_opengl_LIBRARY}'). "
+            "Install the GL development files (libgl-dev / libglvnd-dev / libglvnd).")
+    endif()
 endif()
 
 if(NOT SDL3_FOUND AND NOT TARGET SDL3::SDL3)
@@ -293,7 +301,9 @@ endif()
 # with standalone releases. retcomm_core links retro_core_support (sidecar
 # reader); the hub links retro_corelink; the runner is built and installed
 # beside the hub. It lends GL through the hub's own SDL3.
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime/CMakeLists.txt")
+set(RETCOMM_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime"
+    CACHE PATH "Retro-Runtime source checkout (CI may resolve a newer commit)")
+if(NOT EXISTS "${RETCOMM_RUNTIME_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "third_party/Retro-Runtime is empty: run `git submodule update --init`")
 endif()
 set(RETRO_RUNTIME_SDL3_TARGET "${RETCOMM_HUB_SDL_TARGET}")
@@ -305,7 +315,7 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_VERSION})
     find_package(Git QUIET)
     if(GIT_FOUND)
         execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match --match "v[0-9]*"
-                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Retro-Runtime
+                        WORKING_DIRECTORY ${RETCOMM_RUNTIME_DIR}
                         OUTPUT_VARIABLE _rr_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
         if(_rr_tag MATCHES "^v([0-9].*)$")
             set(RETRO_RUNTIME_VERSION "${CMAKE_MATCH_1}" CACHE STRING
@@ -322,12 +332,12 @@ if(NOT DEFINED CACHE{RETRO_RUNTIME_RECOMP_NET_DIR} AND
     set(RETRO_RUNTIME_RECOMP_NET_DIR "${_rnet}" CACHE PATH
         "recomp-net checkout: build retro-core-runner with netplay")
 endif()
-add_subdirectory(third_party/Retro-Runtime)
+add_subdirectory("${RETCOMM_RUNTIME_DIR}" third_party/Retro-Runtime)
 # Accessory data (link 2.1, rcore rev 7): the VRU Microphone's channel. The
 # hub's seam (src/hub/hub_accessory_link.hpp) is live only when the vendored
 # link carries the messages; an older submodule builds a hub whose VRU panel
 # says the link predates accessory data.
-file(STRINGS third_party/Retro-Runtime/corelink/link_protocol.hpp _rr_accessory
+file(STRINGS "${RETCOMM_RUNTIME_DIR}/corelink/link_protocol.hpp" _rr_accessory
      REGEX "AccessoryData = 69")
 if(_rr_accessory)
     set(RETCOMM_LINK_ACCESSORY_DATA TRUE)
@@ -343,25 +353,38 @@ endif()
 if(TARGET retro-core-runner)
     set_target_properties(retro-core-runner PROPERTIES RUNTIME_OUTPUT_DIRECTORY
                           ${CMAKE_CURRENT_BINARY_DIR})
+    if(ANDROID)
+        # The standalone child has no Java Activity. SDL's Android video
+        # driver cannot lend it a desktop GL context. Software cores still
+        # present through the hub's GLES window over the normal core link.
+        get_target_property(_runner_defines retro-core-runner COMPILE_DEFINITIONS)
+        list(FILTER _runner_defines EXCLUDE REGEX "^RETRO_RUNNER_HAVE_SDL3=")
+        set_property(TARGET retro-core-runner PROPERTY COMPILE_DEFINITIONS "${_runner_defines}")
+        set_target_properties(retro-core-runner PROPERTIES
+            OUTPUT_NAME libretro-core-runner SUFFIX .so)
+    endif()
 endif()
 
 if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # FreeType enables CBDT/CBLC color emoji (Noto Color Emoji) via LoadColor.
     set(RETCOMM_IMGUI_FREETYPE FALSE)
     set(RETCOMM_IMGUI_FREETYPE_TARGET "")
-    find_package(Freetype QUIET)
-    if(TARGET Freetype::Freetype)
-        set(RETCOMM_IMGUI_FREETYPE TRUE)
-        set(RETCOMM_IMGUI_FREETYPE_TARGET Freetype::Freetype)
-    else()
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(RETCOMM_FT2 IMPORTED_TARGET freetype2)
-            if(TARGET PkgConfig::RETCOMM_FT2)
-                set(RETCOMM_IMGUI_FREETYPE TRUE)
-                set(RETCOMM_IMGUI_FREETYPE_TARGET PkgConfig::RETCOMM_FT2)
+    if(NOT ANDROID)
+        find_package(Freetype QUIET)
+        if(TARGET Freetype::Freetype)
+            set(RETCOMM_IMGUI_FREETYPE TRUE)
+            set(RETCOMM_IMGUI_FREETYPE_TARGET Freetype::Freetype)
+        else()
+            find_package(PkgConfig QUIET)
+            if(PkgConfig_FOUND)
+                pkg_check_modules(RETCOMM_FT2 IMPORTED_TARGET freetype2)
+                if(TARGET PkgConfig::RETCOMM_FT2)
+                    set(RETCOMM_IMGUI_FREETYPE TRUE)
+                    set(RETCOMM_IMGUI_FREETYPE_TARGET PkgConfig::RETCOMM_FT2)
+                endif()
             endif()
         endif()
+
     endif()
 
     set(RETCOMM_IMGUI_SOURCES
@@ -387,6 +410,9 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         ${RETCOMM_IMGUI_DIR}/backends
     )
     target_link_libraries(retcomm_imgui PUBLIC ${RETCOMM_HUB_SDL_TARGET} ${RETCOMM_GL_TARGET})
+    if(ANDROID)
+        target_compile_definitions(retcomm_imgui PUBLIC IMGUI_IMPL_OPENGL_ES3)
+    endif()
     if(RETCOMM_IMGUI_FREETYPE)
         # Prefer our vendored misc/ over a trimmed imgui tree that lacks it.
         # third_party → "misc/freetype/…"; misc/freetype → "imgui_freetype.h" in .cpp.
@@ -420,6 +446,15 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             set_target_properties(retro-hub PROPERTIES WIN32_EXECUTABLE FALSE)
             target_link_options(retro-hub PRIVATE "-Wl,--subsystem,windows")
         endif()
+    elseif(ANDROID)
+        add_library(retro-hub SHARED
+            src/hub/hub_main.cpp
+            src/hub/hub_model.cpp
+            src/hub/hub_boxart.cpp
+            src/hub/hub_osk.cpp
+            src/hub/hub_netplay.cpp
+        )
+        set_target_properties(retro-hub PROPERTIES OUTPUT_NAME main)
     else()
         add_executable(retro-hub
             src/hub/hub_main.cpp
@@ -556,7 +591,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             target_link_libraries(retcomm-netplay-handoff-drive PRIVATE retcomm_core)
         endif()
     endif()
-    install(TARGETS retro-hub RUNTIME DESTINATION bin)
+    install(TARGETS retro-hub RUNTIME DESTINATION bin LIBRARY DESTINATION lib)
     # The hub's old name, retcomm-hub (until 2026-09-25), keeps working:
     # shortcuts, Steam entries and older self-updaters relaunch it by name.
     # Windows gets a forwarder exe (symlinks are not dependable there);
@@ -567,7 +602,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         add_executable(retcomm-hub WIN32 src/compat/retcomm_hub_forwarder_win.cpp
                        ${RETCOMM_RC_HUB_COMPAT})
         install(TARGETS retcomm-hub RUNTIME DESTINATION bin)
-    else()
+    elseif(NOT ANDROID)
         add_custom_command(TARGET retro-hub POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E create_symlink retro-hub
                     $<TARGET_FILE_DIR:retro-hub>/retcomm-hub)

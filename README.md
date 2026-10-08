@@ -155,6 +155,7 @@ from platform config**.
 | `Retro-Launcher-portable-windows.zip` | Windows portable (`Retro Launcher.exe` inside) |
 | `Retro-Launcher-macos-arm64.dmg` | macOS Apple Silicon |
 | `Retro-Launcher-macos-x86_64.dmg` | macOS Intel |
+| `Retro-Launcher-android-arm64.apk` | Android 11+ ARM64 (initial Android support) |
 
 Releases are published manually via Actions → **Release**. Leave **version**
 empty to auto-bump the next `x.x.x` from the latest `vX.Y.Z` tag (`bump`
@@ -189,6 +190,10 @@ hub looks in `<data dir>/vru/` and the system loader
 ([`third_party/vosk/NOTICE.md`](third_party/vosk/NOTICE.md)).
 
 Packaging lives under `packaging/`; icon source is `assets/retcomm.svg`.
+
+Android CI compiles the latest Retro-Runtime source into the APK alongside the
+launcher. Build instructions, signing secrets, source provenance, and current
+platform limitations are in [`docs/ANDROID.md`](docs/ANDROID.md).
 
 ### A local hub for ports (`scripts/build-local.sh`)
 

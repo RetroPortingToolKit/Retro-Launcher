@@ -508,8 +508,16 @@ jobs:
             dist/Retro-Launcher-macos-${{ matrix.arch }}.dmg
           retention-days: 5
 
+  android:
+    needs: version
+    uses: ./.github/workflows/android.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      require_signing: true
+    secrets: inherit
+
   publish:
-    needs: [version, linux, windows, macos]
+    needs: [version, linux, windows, macos, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -524,7 +532,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p dist
-          find artifacts -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -exec cp -v {} dist/ \;
+          find artifacts -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.apk' \) -exec cp -v {} dist/ \;
           ls -lah dist/
           test -n "$(ls -A dist)" || { echo "No release artifacts found" >&2; exit 1; }
           # Guaranteed end-user set. Stable names (version is the release tag).
@@ -533,6 +541,9 @@ jobs:
           test -f dist/Retro-Launcher-portable-windows.zip
           test -f dist/Retro-Launcher-macos-arm64.dmg
           test -f dist/Retro-Launcher-macos-x86_64.dmg
+          test -f dist/Retro-Launcher-android-arm64.apk
+          cp artifacts/android-arm64/android-build.json dist/
+          cp artifacts/android-arm64/*.apk.sha256 dist/
           # Do not publish the loose portable stub — only the zip (friendly exe inside).
           rm -f "dist/Retro Launcher.exe"
 

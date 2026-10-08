@@ -3,7 +3,7 @@
 
 #include "retcomm/http.hpp"
 
-#include <SDL3/SDL_opengl.h>
+#include "hub/hub_gl.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 

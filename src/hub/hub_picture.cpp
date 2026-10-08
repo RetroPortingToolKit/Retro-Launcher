@@ -1,7 +1,7 @@
 #include "hub/hub_picture.hpp"
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_opengl.h>
+#include "hub/hub_gl.hpp"
 
 #include <algorithm>
 #include <cmath>

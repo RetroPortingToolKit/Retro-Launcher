@@ -2,7 +2,7 @@
 
 #include "imgui.h"
 
-#include <SDL3/SDL_opengl.h>
+#include "hub/hub_gl.hpp"
 
 #include <algorithm>
 #include <cstdlib>

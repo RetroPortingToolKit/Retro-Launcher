@@ -1,3 +1,4 @@
+.claude
 /build/
 /build-*/
 /dist/
@@ -21,3 +22,9 @@ compile_commands.json
 *.o
 *.a
 netplay_cachyos.log
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+*.jks
+*.keystore
