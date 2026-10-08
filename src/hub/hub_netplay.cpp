@@ -1511,7 +1511,7 @@ bool begin_modal(const char* id, bool* open_flag, float width) {
         *open_flag = false;
     }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(std::min(width, vp->WorkSize.x - 40.f), 0.f));
     return ImGui::BeginPopupModal(id, nullptr,
                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
