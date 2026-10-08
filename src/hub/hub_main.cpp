@@ -36,6 +36,7 @@ constexpr bool kLocalBuild = true;
 #include "retcomm/http.hpp"
 #include "retcomm/paths.hpp"
 #include "retcomm/runtime_update.hpp"
+#include "retcomm/netplay_module.hpp"
 #include "retcomm/platform_settings.hpp"
 #include "retcomm/psx_input_profiles.hpp"
 #include "retcomm/snes_platform_settings.hpp"
@@ -9444,6 +9445,8 @@ public:
         worker_ = std::thread([st, paths = hub.paths, exe_dir = hub.exe_dir] {
             const retcomm::RuntimeUpdateResult r = retcomm::update_runtime(paths, exe_dir);
             std::fprintf(stderr, "retro-hub: %s\n", r.message.c_str());
+            const retcomm::NetplayModuleUpdateResult nm = retcomm::update_netplay_module(paths, exe_dir);
+            std::fprintf(stderr, "retro-hub: %s\n", nm.message.c_str());
             std::lock_guard<std::mutex> lock(st->mu);
             st->message = r.message;
             st->updated = r.updated;
@@ -13197,6 +13200,22 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = "VRU Microphone is not available in netplay yet (player " + std::to_string(seat + 1) +
                " holds it: set that seat's Pak to None on the Gamepads tab).";
         return false;
+    }
+    // A runner built for the loadable netplay module reads its path from
+    // RETRO_NETPLAY_MODULE (a runner with netplay linked in ignores it).
+    // Unresolved is not fatal here: a module runner then refuses the match
+    // itself, naming the missing module.
+    if (!std::getenv("RETRO_NETPLAY_MODULE")) {
+        const retcomm::ResolvedNetplayModule nm =
+            retcomm::resolve_netplay_module(hub.paths, hub.exe_dir);
+        if (!nm.path.empty()) {
+            set_process_env("RETRO_NETPLAY_MODULE", retro::corelink::path_utf8(nm.path));
+            std::fprintf(stderr, "retro-hub: netplay module %s (%s, wire %u)\n",
+                         retro::corelink::path_utf8(nm.path).c_str(), nm.source.c_str(),
+                         nm.info.wire_version);
+        } else {
+            std::fprintf(stderr, "retro-hub: %s\n", nm.note.c_str());
+        }
     }
     args.net_args = retcomm::hub::netplay_runner_args(l, &err);
     if (args.net_args.empty()) {

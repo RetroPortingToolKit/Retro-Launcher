@@ -64,6 +64,7 @@ set(RETCOMM_CORE_SOURCES
     src/build/disc_stage.cpp
     src/update/self_update.cpp
     src/update/runtime_update.cpp
+    src/update/netplay_module.cpp
     src/update/manifest_util.cpp
     src/launch/launch.cpp
     src/core/image_compose.cpp
@@ -124,6 +125,10 @@ target_compile_definitions(retcomm_core PUBLIC
 # retro_corelink: runtime_update.cpp probes runners and checks the link major.
 target_link_libraries(retcomm_core PUBLIC CURL::libcurl retcomm_miniz retro_core_support
                       retro_corelink)
+if(NOT WIN32)
+    # netplay_module.cpp opens the module it verifies (dlopen).
+    target_link_libraries(retcomm_core PUBLIC ${CMAKE_DL_LIBS})
+endif()
 if(WIN32)
     # ws2_32 for WSAPoll in src/netplay/netplay_ws.cpp. PUBLIC because the
     # symbol is in this library, so every consumer needs it — retro-hub only

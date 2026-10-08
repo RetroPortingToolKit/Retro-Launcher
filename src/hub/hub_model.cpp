@@ -14,6 +14,7 @@
 #include "retcomm/romscan.hpp"
 #include "retcomm/release_tags.hpp"
 #include "retcomm/runtime_update.hpp"
+#include "retcomm/netplay_module.hpp"
 #include "retcomm/self_update.hpp"
 #include "retcomm/catalog_sync.hpp"
 #include "retcomm/http.hpp"
@@ -2048,6 +2049,10 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     set_status("Checking runtime…");
                     const auto rt = update_runtime(paths, exe_dir);
                     append_log(rt.message);
+                    // The netplay module is updated the same way, apart from
+                    // the runner and the cores (netplay_module.hpp).
+                    const auto nm = update_netplay_module(paths, exe_dir);
+                    append_log(nm.message);
                 }
                 bool toolchain_upd = false;
                 {
