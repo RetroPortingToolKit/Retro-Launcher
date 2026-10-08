@@ -437,18 +437,12 @@ void PlaySession::set_turbo_running(bool on) {
     }
 }
 
-// Every frame the core finished since the last call, for the FPS readout,
-// spread evenly over the time since (a hub frame can collect several).
+// The link's running totals, for the readout (Retro-Runtime docs/OVERLAY.md):
+// frames done give VI, the game's own count FPS, and the runner's run_frame
+// time ms/VI. A 2.1 runner sends neither of the last two; those rows read --.
 void PlaySession::note_frames(std::uint64_t now) {
-    const std::uint64_t done = link_.frames_done();
-    if (done <= noted_frames_) return;
-    const std::uint64_t n = done - noted_frames_;
-    if (noted_ns_ && now > noted_ns_) {
-        for (std::uint64_t i = 1; i < n; ++i) osd_.note_frame(noted_ns_ + (now - noted_ns_) * i / n);
-    }
-    osd_.note_frame(now);
-    noted_frames_ = done;
-    noted_ns_ = now;
+    const corelink::FrameStats& s = link_.frame_stats();
+    osd_.note_counters(now, {link_.frames_done(), s.game_frame, s.work_ns});
 }
 
 double PlaySession::audio_queued_ms() const {
