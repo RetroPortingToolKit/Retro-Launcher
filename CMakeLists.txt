@@ -440,6 +440,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_touch.cpp
             src/hub/hub_netplay.cpp
             ${RETCOMM_RC_HUB}
         )
@@ -458,6 +459,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_touch.cpp
             src/hub/hub_netplay.cpp
         )
         set_target_properties(retro-hub PROPERTIES OUTPUT_NAME main)
@@ -467,6 +469,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_model.cpp
             src/hub/hub_boxart.cpp
             src/hub/hub_osk.cpp
+            src/hub/hub_touch.cpp
             src/hub/hub_netplay.cpp
         )
     endif()
