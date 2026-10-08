@@ -56,6 +56,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default list is 'tools platform-tools'; the legacy
+          # 'tools' package is gone from the SDK repository, so sdkmanager
+          # exits 1 on it. Everything the build needs is installed below.
+          packages: 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Install build tools
