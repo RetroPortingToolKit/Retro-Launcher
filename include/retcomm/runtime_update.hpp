@@ -47,6 +47,9 @@ struct ResolvedRunner {
     std::uint32_t transfer_pak_seats = 1;
     // 1 when it runs netplay (--net-*; built with recomp-net).
     std::uint32_t netplay = 0;
+    // The netplay module ABI it loads at run time (retcomm/netplay_module.hpp);
+    // 0 when netplay is linked into it, or it has none.
+    std::uint32_t netplay_module_abi = 0;
     // 1 when it takes --vru1 .. --vru4 and carries accessory data over the
     // link (2.1); 0 for a runner from before it.
     std::uint32_t accessory_data = 0;

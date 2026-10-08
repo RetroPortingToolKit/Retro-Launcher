@@ -82,6 +82,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
             out.game_package = v.game_package;
             out.transfer_pak_seats = v.transfer_pak_seats;
             out.netplay = v.netplay;
+            out.netplay_module_abi = v.netplay_module_abi;
 #if defined(RETCOMM_LINK_ACCESSORY_DATA)
             out.accessory_data = v.accessory_data;
 #endif
@@ -102,6 +103,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
             out.game_package = v.game_package;
             out.transfer_pak_seats = v.transfer_pak_seats;
             out.netplay = v.netplay;
+            out.netplay_module_abi = v.netplay_module_abi;
 #if defined(RETCOMM_LINK_ACCESSORY_DATA)
             out.accessory_data = v.accessory_data;
 #endif
@@ -174,6 +176,7 @@ ResolvedRunner resolve_runner(const Paths& paths, const fs::path& exe_dir) {
     out.game_package = best->info.game_package;
     out.transfer_pak_seats = best->info.transfer_pak_seats;
     out.netplay = best->info.netplay;
+    out.netplay_module_abi = best->info.netplay_module_abi;
 #if defined(RETCOMM_LINK_ACCESSORY_DATA)
     out.accessory_data = best->info.accessory_data;
 #endif

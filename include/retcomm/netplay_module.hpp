@@ -27,10 +27,6 @@ namespace retcomm {
 
 namespace fs = std::filesystem;
 
-// The module ABI the runners this launcher starts are built for
-// (recomp-net RNET_MODULE_ABI_VERSION). A module with another ABI is skipped.
-constexpr std::uint32_t kNetplayModuleAbi = 1;
-
 struct NetplayModuleInfo {
     std::uint32_t abi_version = 0, abi_minor = 0, wire_version = 0, features = 0;
     std::string version; // "major.minor.patch"
@@ -56,8 +52,10 @@ struct ResolvedNetplayModule {
 };
 
 // $RETRO_NETPLAY_MODULE when set; otherwise the newest usable of the module
-// bundled beside the launcher and the updated ones.
-ResolvedNetplayModule resolve_netplay_module(const Paths& paths, const fs::path& exe_dir);
+// bundled beside the launcher and the updated ones, among those whose ABI is
+// `wanted_abi`: the one the runner reports (ResolvedRunner::netplay_module_abi).
+ResolvedNetplayModule resolve_netplay_module(const Paths& paths, const fs::path& exe_dir,
+                                             std::uint32_t wanted_abi);
 
 struct NetplayModuleUpdateResult {
     bool ok = false;
@@ -67,6 +65,8 @@ struct NetplayModuleUpdateResult {
     fs::path installed;
 };
 
+// Installs the module for the ABI the resolved runner loads. A runner with
+// netplay linked in (ABI 0) needs none: nothing is fetched.
 NetplayModuleUpdateResult update_netplay_module(const Paths& paths, const fs::path& exe_dir,
                                                 bool check_only = false);
 

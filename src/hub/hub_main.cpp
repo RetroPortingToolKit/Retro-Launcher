@@ -13205,9 +13205,10 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     // RETRO_NETPLAY_MODULE (a runner with netplay linked in ignores it).
     // Unresolved is not fatal here: a module runner then refuses the match
     // itself, naming the missing module.
-    if (!std::getenv("RETRO_NETPLAY_MODULE")) {
+    // Only a runner that loads a module (rr.netplay_module_abi != 0) needs one.
+    if (rr.netplay_module_abi != 0 && !std::getenv("RETRO_NETPLAY_MODULE")) {
         const retcomm::ResolvedNetplayModule nm =
-            retcomm::resolve_netplay_module(hub.paths, hub.exe_dir);
+            retcomm::resolve_netplay_module(hub.paths, hub.exe_dir, rr.netplay_module_abi);
         if (!nm.path.empty()) {
             set_process_env("RETRO_NETPLAY_MODULE", retro::corelink::path_utf8(nm.path));
             std::fprintf(stderr, "retro-hub: netplay module %s (%s, wire %u)\n",

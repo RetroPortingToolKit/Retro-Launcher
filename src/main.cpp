@@ -81,6 +81,8 @@ void print_help(const char* argv0) {
         << "      --force-generate         Re-run disc→C on build updates\n"
         << "  runtime [status|check|update]\n"
         << "                               The core runner: which one is used, and its updates\n"
+        << "  netplay-module [status|check|update]\n"
+        << "                               The loadable netplay library the runner plays through\n"
         << "  uninstall <title-id> [opts]  Remove installed title (alias: remove)\n"
         << "      --keep-saves             Keep memcards/SRAM/savestates (default)\n"
         << "      --delete-saves           Also wipe saves / preserved stash\n"
@@ -1437,10 +1439,12 @@ int cmd_netplay_module(const retcomm::Paths& paths, const std::vector<std::strin
                        const fs::path& exe_dir) {
     const std::string sub = args.size() > 1 ? args[1] : "status";
     if (sub == "status") {
-        const auto m = retcomm::resolve_netplay_module(paths, exe_dir);
+        const auto rr = retcomm::resolve_runner(paths, exe_dir);
+        const auto m = retcomm::resolve_netplay_module(paths, exe_dir, rr.netplay_module_abi);
         std::cout << "module:    " << (m.path.empty() ? "(none)" : m.path.string()) << "\n"
                   << "version:   " << (m.info.version.empty() ? "?" : m.info.version) << " ("
                   << m.source << ")\n"
+                  << "runner wants ABI: " << rr.netplay_module_abi << "\n"
                   << "abi/wire:  " << m.info.abi_version << " / " << m.info.wire_version << "\n"
                   << "why:       " << m.note << "\n"
                   << "updates:   " << retcomm::netplay_module_dir(paths).string() << "\n";

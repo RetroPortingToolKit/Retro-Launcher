@@ -99,7 +99,8 @@ std::string netplay_module_manifest_url() {
     return u;
 }
 
-ResolvedNetplayModule resolve_netplay_module(const Paths& paths, const fs::path& exe_dir) {
+ResolvedNetplayModule resolve_netplay_module(const Paths& paths, const fs::path& exe_dir,
+                                             std::uint32_t wanted_abi) {
     ResolvedNetplayModule out;
     if (const char* env = std::getenv("RETRO_NETPLAY_MODULE"); env && *env) {
         out.path = env;
@@ -123,9 +124,9 @@ ResolvedNetplayModule resolve_netplay_module(const Paths& paths, const fs::path&
             skipped.push_back(err);
             return false;
         }
-        if (i.abi_version != kNetplayModuleAbi) {
+        if (i.abi_version != wanted_abi) {
             skipped.push_back(utf8(p) + ": module ABI " + std::to_string(i.abi_version) +
-                              ", the runners here need " + std::to_string(kNetplayModuleAbi));
+                              ", the runners here need " + std::to_string(wanted_abi));
             return false;
         }
         found.push_back({p, i, source});
@@ -172,7 +173,13 @@ NetplayModuleUpdateResult update_netplay_module(const Paths& paths, const fs::pa
         r.message = "Netplay module update: " + m;
         return r;
     };
-    const ResolvedNetplayModule current = resolve_netplay_module(paths, exe_dir);
+    const std::uint32_t wanted = resolve_runner(paths, exe_dir).netplay_module_abi;
+    if (wanted == 0) {
+        r.ok = true;
+        r.message = "Netplay module update: not needed, the runner has netplay built in (or none)";
+        return r;
+    }
+    const ResolvedNetplayModule current = resolve_netplay_module(paths, exe_dir, wanted);
     r.current_version = current.path.empty() ? "none" : current.info.version;
     if (current.source == "override") {
         r.ok = true;
@@ -205,11 +212,11 @@ NetplayModuleUpdateResult update_netplay_module(const Paths& paths, const fs::pa
                     e["unavailable"].get<std::string>() + ")";
         return r;
     }
-    if (abi != kNetplayModuleAbi) {
+    if (abi != wanted) {
         r.ok = true;
         r.message = "Netplay module update: module " + r.latest_version + " is ABI " +
                     std::to_string(abi) + "; the runners here need ABI " +
-                    std::to_string(kNetplayModuleAbi) + ". Update Retro to use it.";
+                    std::to_string(wanted) + ". Update Retro to use it.";
         return r;
     }
     if (const std::string why = unmet_requirement(e.value("requires", json::object())); !why.empty()) {

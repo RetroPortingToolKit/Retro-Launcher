@@ -10,7 +10,7 @@ Code: `include/retcomm/netplay_module.hpp`, `src/update/netplay_module.cpp`.
   kept. A module beside the launcher (bundled) also counts. A running match
   keeps the module it started with.
 - **Resolve:** `$RETRO_NETPLAY_MODULE`, else the newest usable bundled or
-  updated module whose ABI is `kNetplayModuleAbi` (1). Opening a library to
+  updated module whose ABI is the ABI the resolved runner reports (`--version` `netplay_module_abi`; Retro-Runtime `dd465e7`). Opening a library to
   read `rnet_module_info` runs no netplay code.
 - **Update:** `netplay-module-manifest.json` from the newest recomp-net release
   (`RETRO_NETPLAY_MODULE_MANIFEST_URL` overrides, `file://` too). Refused when
@@ -19,6 +19,7 @@ Code: `include/retcomm/netplay_module.hpp`, `src/update/netplay_module.cpp`.
   ABI and wire version. Runs on startup and in the Update step beside the
   runtime update.
 - **CLI:** `retcomm netplay-module [status|check|update]`.
+- **A runner with netplay linked in** (`netplay_module_abi 0`) needs no module: nothing is fetched or passed.
 - **Starting a match:** `start_net_session` sets `RETRO_NETPLAY_MODULE` for the
   runner. A runner built with netplay linked in ignores it; a runner built for
   the module (Retro-Runtime `-DRETRO_RUNTIME_NETPLAY_MODULE=ON`) opens it and
