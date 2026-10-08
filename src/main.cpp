@@ -1,3 +1,4 @@
+#include "retcomm/netplay_module.hpp"
 #include "retcomm/runtime_update.hpp"
 #include "retcomm/app_state.hpp"
 #include "retcomm/bios_index.hpp"
@@ -80,6 +81,8 @@ void print_help(const char* argv0) {
         << "      --force-generate         Re-run disc→C on build updates\n"
         << "  runtime [status|check|update]\n"
         << "                               The core runner: which one is used, and its updates\n"
+        << "  netplay-module [status|check|update]\n"
+        << "                               The loadable netplay library the runner plays through\n"
         << "  uninstall <title-id> [opts]  Remove installed title (alias: remove)\n"
         << "      --keep-saves             Keep memcards/SRAM/savestates (default)\n"
         << "      --delete-saves           Also wipe saves / preserved stash\n"
@@ -1429,6 +1432,34 @@ int cmd_root(const retcomm::Paths& paths, const std::vector<std::string>& args,
     return 0;
 }
 
+// retcomm netplay-module [status|check|update]: the loadable netplay library
+// the runner plays through (retcomm/netplay_module.hpp). The manifest can be
+// redirected with RETRO_NETPLAY_MODULE_MANIFEST_URL (file:// too), for testing.
+int cmd_netplay_module(const retcomm::Paths& paths, const std::vector<std::string>& args,
+                       const fs::path& exe_dir) {
+    const std::string sub = args.size() > 1 ? args[1] : "status";
+    if (sub == "status") {
+        const auto rr = retcomm::resolve_runner(paths, exe_dir);
+        const auto m = retcomm::resolve_netplay_module(paths, exe_dir, rr.netplay_module_abi);
+        std::cout << "module:    " << (m.path.empty() ? "(none)" : m.path.string()) << "\n"
+                  << "version:   " << (m.info.version.empty() ? "?" : m.info.version) << " ("
+                  << m.source << ")\n"
+                  << "runner wants ABI: " << rr.netplay_module_abi << "\n"
+                  << "abi/wire:  " << m.info.abi_version << " / " << m.info.wire_version << "\n"
+                  << "why:       " << m.note << "\n"
+                  << "updates:   " << retcomm::netplay_module_dir(paths).string() << "\n";
+        return m.path.empty() ? 1 : 0;
+    }
+    if (sub == "check" || sub == "update") {
+        retcomm::ensure_dirs(paths);
+        const auto r = retcomm::update_netplay_module(paths, exe_dir, sub == "check");
+        std::cout << r.message << "\n";
+        return r.ok ? 0 : 1;
+    }
+    std::cerr << "usage: retcomm netplay-module [status|check|update]\n";
+    return 2;
+}
+
 // retcomm runtime [status|check|update]: the runner cores run in, and its
 // updates (Retro-Runtime docs/RELEASES.md). RETRO_RUNTIME_MANIFEST_URL points
 // the check at another manifest (file:// too), for testing.
@@ -1511,6 +1542,7 @@ int main(int argc, char** argv) {
 
     if (cmd == "root") return cmd_root(paths, args, exe_dir_from(argv[0]));
     if (cmd == "runtime") return cmd_runtime(paths, args, exe_dir_from(argv[0]));
+    if (cmd == "netplay-module") return cmd_netplay_module(paths, args, exe_dir_from(argv[0]));
 
     if (catalog_override.empty()) {
         try {
