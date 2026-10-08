@@ -2901,10 +2901,12 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.f, 20.f));
+    // Scrolls (wheel, touch drag) once its items outgrow the screen — a phone
+    // in landscape is about 480 logical units tall. No scrollbar: it would sit
+    // on the neon edge.
     ImGui::Begin("##nav_drawer", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoScrollWithMouse);
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 wp = ImGui::GetWindowPos();
