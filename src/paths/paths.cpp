@@ -137,7 +137,9 @@ fs::path resolve_catalog_dir(const fs::path& /*exe_dir*/, const fs::path& overri
 }
 
 std::string host_os_key() {
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+    return "android";
+#elif defined(_WIN32)
     return "windows";
 #elif defined(__APPLE__)
     return "macos";

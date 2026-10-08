@@ -14,7 +14,7 @@
 #include <sstream>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #  include <gnu/libc-version.h>
 #elif defined(__APPLE__)
 #  include <sys/sysctl.h>
@@ -32,7 +32,7 @@ bool version_at_least(const std::string& have, const std::string& need) {
 }
 
 std::string os_version() {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     return gnu_get_libc_version();
 #elif defined(__APPLE__)
     char buf[64] = {};
@@ -80,7 +80,7 @@ int version_cmp(const std::string& a, const std::string& b) {
 
 std::string unmet_requirement(const json& reqs) {
     if (!reqs.is_object()) return "";
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     if (reqs.contains("glibc")) {
         const std::string need = reqs["glibc"].get<std::string>();
         const std::string have = os_version();

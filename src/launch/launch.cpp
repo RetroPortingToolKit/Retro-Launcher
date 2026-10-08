@@ -1161,7 +1161,8 @@ bool file_contains(const fs::path& file, const std::string& needle) {
 
 bool launch_supports_netplay_handoff(const LaunchPlan& plan) {
     static std::mutex mu;
-    static std::map<std::string, std::pair<std::string, bool>> memo;  // path -> (stamp, answer)
+    using FileStamp = std::pair<std::uintmax_t, fs::file_time_type>;
+    static std::map<std::string, std::pair<FileStamp, bool>> memo;  // path -> (stamp, answer)
     std::vector<fs::path> files;
     std::error_code ec;
     if (plan.binary.filename() == "AppRun") {
@@ -1173,8 +1174,9 @@ bool launch_supports_netplay_handoff(const LaunchPlan& plan) {
     for (const fs::path& f : files) {
         const auto size = fs::file_size(f, ec);
         if (ec) continue;
-        const auto mtime = fs::last_write_time(f, ec).time_since_epoch().count();
-        const std::string stamp = std::to_string(size) + ":" + std::to_string(mtime);
+        const auto mtime = fs::last_write_time(f, ec);
+        if (ec) continue;
+        const FileStamp stamp{size, mtime};
         bool yes = false;
         {
             std::lock_guard<std::mutex> lk(mu);

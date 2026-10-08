@@ -271,7 +271,9 @@ const char* channel_id_for(RetcommInstallChannel c) {
 }
 
 std::string unsupported_hint() {
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+    return "Install a newer Retro Launcher APK to update the launcher and its bundled runner.";
+#elif defined(_WIN32)
     return "Self-update needs the Windows installer (or portable) build. "
            "Install from the GitHub setup.exe, then use Update Retro.";
 #elif defined(__APPLE__)

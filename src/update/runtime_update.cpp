@@ -47,7 +47,13 @@ std::string runtime_manifest_url() {
 }
 
 std::string runtime_platform_key() {
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+#  if defined(__aarch64__)
+    return "android-arm64";
+#  else
+    return "android-x86_64";
+#  endif
+#elif defined(_WIN32)
 #  if defined(_M_ARM64) || defined(__aarch64__)
     return "windows-arm64";
 #  else
