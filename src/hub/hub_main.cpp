@@ -1,6 +1,7 @@
 #include "hub/hub_boxart.hpp"
 #include "hub/hub_model.hpp"
 #include "hub/hub_osk.hpp"
+#include "hub/hub_touch.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
 #include "hub/hub_title.hpp"
@@ -411,6 +412,13 @@ float resolve_ui_scale_px(SDL_Window* window, float pref) {
     if (window) s = SDL_GetWindowDisplayScale(window);
     if (!(s > 0.f)) s = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (!(s > 0.f)) return 1.f;
+#if defined(__ANDROID__)
+    // Android's display scale is its density, sized for touch-first apps. At
+    // that scale a landscape phone is ~890x410 logical units against the
+    // 1280x800 this UI is laid out for, and the setup wizard and pages fill and
+    // crowd the screen. Draw a little smaller; the presets still pin a size.
+    s *= 0.85f;
+#endif
     return std::clamp(s, 1.f, 4.f);
 }
 
@@ -2120,7 +2128,7 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
 
 void center_modal_next() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 }
 
 // Dismiss the topmost modal when the user clicks the dimmed backdrop (not the
@@ -4953,35 +4961,9 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::EndChild();
 }
 
-// Draw-list only — must not submit ImGui items (breaks SameLine for side-by-side cards).
-void draw_list_wrapped_text(ImDrawList* dl, ImVec2 pos, float wrap_w, ImU32 col, const char* text) {
-    if (!dl || !text || !text[0] || wrap_w <= 1.f) return;
-    ImFont* font = ImGui::GetFont();
-    const float font_size = ImGui::GetFontSize();
-    const float scale = (font && font->FontSize > 0.f) ? (font_size / font->FontSize) : 1.f;
-    const float line_h = ImGui::GetTextLineHeightWithSpacing();
-    const char* end = text + std::strlen(text);
-    const char* s = text;
-    float y = pos.y;
-    while (s < end) {
-        while (s < end && (*s == '\n' || *s == '\r')) {
-            y += line_h;
-            ++s;
-        }
-        if (s >= end) break;
-        const char* line_end =
-            font ? font->CalcWordWrapPositionA(scale, s, end, wrap_w) : end;
-        if (line_end == s) line_end = s + 1; // always advance
-        dl->AddText(font, font_size, ImVec2(pos.x, y), col, s, line_end);
-        s = line_end;
-        while (s < end && (*s == ' ' || *s == '\t')) ++s;
-        y += line_h;
-    }
-}
-
 bool draw_setup_path_card(BoxartCache& boxart, const Theme& th, const char* id,
-                          const char* title, const char* subtitle, const char* asset_file,
-                          float card_w, float card_h) {
+                          const char* title, const char* asset_file, float card_w,
+                          float card_h) {
     ImGui::PushID(id);
     // Single layout item so SameLine keeps both cards on one row.
     const ImVec2 card_min = ImGui::GetCursorScreenPos();
@@ -5001,24 +4983,24 @@ bool draw_setup_path_card(BoxartCache& boxart, const Theme& th, const char* id,
     const fs::path icon = find_hub_asset_file("setup", asset_file);
     const BoxartTexture* tex =
         icon.empty() ? nullptr : boxart.get(std::string("setup:") + id, icon);
+    // Icon over title, centred as one block: the card says which path, the
+    // steps after it say what that path does.
     const float pad = 20.f;
-    const float icon_max = std::min(card_w - pad * 2.f, card_h * 0.42f);
+    const float gap = 12.f;
+    const ImVec2 title_sz = ImGui::CalcTextSize(title);
+    const float icon_max = std::min(card_w - pad * 2.f, card_h * 0.5f);
+    const float icon_y = card_min.y + (card_h - (icon_max + gap + title_sz.y)) * 0.5f;
     if (tex && tex->gl_id && tex->width > 0 && tex->height > 0) {
         const ImVec2 fit = contain_size(static_cast<float>(tex->width),
                                         static_cast<float>(tex->height), icon_max, icon_max);
         const float ix = card_min.x + (card_w - fit.x) * 0.5f;
-        const float iy = card_min.y + pad + 6.f;
+        const float iy = icon_y + (icon_max - fit.y) * 0.5f;
         dl->AddImage((ImTextureID)(intptr_t)tex->gl_id, ImVec2(ix, iy),
                      ImVec2(ix + fit.x, iy + fit.y));
     }
 
-    const ImVec2 title_sz = ImGui::CalcTextSize(title);
-    const float text_y = card_min.y + pad + 6.f + icon_max + 12.f;
-    dl->AddText(ImVec2(card_min.x + (card_w - title_sz.x) * 0.5f, text_y),
+    dl->AddText(ImVec2(card_min.x + (card_w - title_sz.x) * 0.5f, icon_y + icon_max + gap),
                 ImGui::ColorConvertFloat4ToU32(th.text), title);
-    draw_list_wrapped_text(dl, ImVec2(card_min.x + pad, text_y + title_sz.y + 8.f),
-                           card_w - pad * 2.f, ImGui::ColorConvertFloat4ToU32(th.text_muted),
-                           subtitle);
     dl->PopClipRect();
 
     ImGui::PopID();
@@ -5046,11 +5028,19 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
     const float wiz_h = std::min(target_h, vp->WorkSize.y * 0.92f);
     ImGui::SetNextWindowSizeConstraints(ImVec2(wiz_w, wiz_h), ImVec2(wiz_w, wiz_h));
     ImGui::SetNextWindowSize(ImVec2(wiz_w, wiz_h), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("Welcome to Retro###setup_wizard", nullptr,
                                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar))
         return;
 
+    // Each step's Back button also answers B / Escape (Android's Back key
+    // arrives as Escape), like every other page. Only one step draws per frame.
+    auto back_button = [](ImVec2 size) {
+        const bool clicked = ImGui::Button("Back", size);
+        return clicked || (!ImGui::GetIO().WantTextInput &&
+                           (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)));
+    };
     auto push_wrap = [&] {
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + ImGui::GetContentRegionAvail().x);
     };
@@ -5101,7 +5091,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Back", ImVec2(120, 0))) {
+        if (back_button(ImVec2(120, 0))) {
             hub.setup_confirm_create_roots = false;
             hub.setup_missing_roots.clear();
         }
@@ -5125,10 +5115,8 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         const float row_w = ImGui::GetContentRegionAvail().x - side_pad;
         const float card_w = (row_w - gap) * 0.5f;
         const float card_h = std::max(240.f, ImGui::GetContentRegionAvail().y - 4.f);
-        if (draw_setup_path_card(boxart, th, "easy", "Easy Setup",
-                                 "Pick one Emulation folder. Retro creates roms, bios, "
-                                 "and saves under it with default platform folders.",
-                                 "setup_easy_rocket.png", card_w, card_h)) {
+        if (draw_setup_path_card(boxart, th, "easy", "Easy Setup", "setup_easy_rocket.png",
+                                 card_w, card_h)) {
             hub.setup_path = SetupPath::Easy;
             hub.setup_step = 0; // Installation Directory, then the game folder.
             hub.seed_data_root_input();
@@ -5139,8 +5127,6 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         }
         ImGui::SameLine(0.f, gap);
         if (draw_setup_path_card(boxart, th, "advanced", "Advanced Setup",
-                                 "Choose roms, bios, and saves separately. Optionally connect "
-                                 "RomM and edit platform folder mappings.",
                                  "setup_advanced_wrench.png", card_w, card_h)) {
             hub.setup_path = SetupPath::Advanced;
             hub.setup_step = 0;
@@ -5229,7 +5215,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::EndChild();
 
         pin_footer_row(warn_h);
-        if (ImGui::Button("Back", ImVec2(100, 0))) {
+        if (back_button(ImVec2(100, 0))) {
             hub.setup_path = SetupPath::Chooser;
         }
         ImGui::SameLine();
@@ -5288,7 +5274,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::EndChild();
 
         pin_footer_row(warn_h);
-        if (ImGui::Button("Back", ImVec2(100, 0))) {
+        if (back_button(ImVec2(100, 0))) {
             hub.setup_step = 0; // back to the Installation Directory
         }
         ImGui::SameLine();
@@ -5396,7 +5382,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::EndChild();
 
         pin_footer_row(warn_h);
-        if (ImGui::Button("Back", ImVec2(100, 0))) {
+        if (back_button(ImVec2(100, 0))) {
             hub.setup_path = SetupPath::Chooser;
         }
         ImGui::SameLine();
@@ -5490,7 +5476,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::EndChild();
 
         pin_footer_row(warn_h);
-        if (ImGui::Button("Back", ImVec2(100, 0))) {
+        if (back_button(ImVec2(100, 0))) {
             hub.setup_step = 0;
             hub.setup_confirm_create_roots = false;
             hub.setup_missing_roots.clear();
@@ -5566,7 +5552,7 @@ void draw_setup_wizard(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
         ImGui::EndChild();
 
         pin_footer_row();
-        if (ImGui::Button("Back", ImVec2(100, 0))) {
+        if (back_button(ImVec2(100, 0))) {
             hub.setup_step = 1;
         }
         ImGui::SameLine();
@@ -5609,7 +5595,7 @@ void draw_data_root_dialog(HubModel& hub, const Theme& th, SDL_Window* window) {
     if (!hub.show_data_root_dialog) return;
     ImGui::OpenPopup("Retro data folder###data_root_dialog");
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(std::min(660.f, vp->WorkSize.x * 0.94f), 0),
                              ImGuiCond_Always);
     if (!ImGui::BeginPopupModal("Retro data folder###data_root_dialog", nullptr,
@@ -7011,7 +6997,7 @@ void draw_psx_configure_modal(HubModel& hub, const Theme& th, const std::vector<
     ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
                                     std::min(860.f, vp->WorkSize.y * 0.94f)),
                              ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("##psx_pad_cfg", nullptr, ImGuiWindowFlags_None)) {
         ImGui::TextColored(th.accent, "%s", title);
         ImGui::SameLine();
@@ -8045,7 +8031,7 @@ void draw_snes_configure_modal(HubModel& hub, const Theme& th, BoxartCache& boxa
     ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
                                     std::min(860.f, vp->WorkSize.y * 0.94f)),
                              ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("##snes_pad_cfg", nullptr, ImGuiWindowFlags_None)) return;
 
     char title[64];
@@ -9531,6 +9517,7 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             scale_mouse_event(e, ui.coords);
+            if (retcomm::hub::touch_translate_event(e, true)) continue;
             ImGui_ImplSDL3_ProcessEvent(&e);
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -9542,10 +9529,12 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         apply_ui_scale_frame(window, ui);
+        retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
+        retcomm::hub::touch_frame();
         const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(vp->Size.x * 0.7f, 0.f), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x * 0.7f, 0.f), ImGuiCond_Always);
         ImGui::Begin("##direct_error", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings);
@@ -9567,6 +9556,7 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
         glViewport(0, 0, fb_w, fb_h);
         glClearColor(0.f, 0.f, 0.f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
+        retcomm::hub::touch_before_render(ImGui::GetDrawData());
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
@@ -10735,7 +10725,7 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
     ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
                                     std::min(860.f, vp->WorkSize.y * 0.94f)),
                              ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("##core_pad_cfg", nullptr, ImGuiWindowFlags_None)) return;
 
     ImGui::TextColored(th.accent, "CONTROLLER - PLAYER %d", seat + 1);
@@ -11199,7 +11189,7 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
 
         // The pickers, modal over the page.
         const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         if (ImGui::BeginPopupModal(kRomPicker, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             fs::path picked;
             if (draw_gb_file_list(p, th, p.gb.roms, hub.cfg.library_root, &picked)) {
@@ -11218,7 +11208,7 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
-        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         if (ImGui::BeginPopupModal(kSavePicker, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             fs::path picked;
             if (draw_gb_file_list(p, th, p.gb.saves, hub.cfg.library_root, &picked)) {
@@ -11229,7 +11219,7 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
-        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         if (ImGui::BeginPopupModal(kNewSave, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             SeatPak& target = p.input.paks[static_cast<size_t>(p.pak_seat)];
             const fs::path rom = retro::corelink::utf8_path(target.gb_rom);
@@ -12268,7 +12258,7 @@ void draw_tpak_support(DirectHome& h, HubModel& hub, const Theme& th) {
         ImGui::OpenPopup(kId);
     }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->WorkSize.x - 40.f), 0.f));
     if (!ImGui::BeginPopupModal(kId, nullptr,
                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
@@ -13108,7 +13098,7 @@ void draw_direct_update_prompt(DirectHome& h, HubModel& hub, const Theme& th) {
         h.prompt_pending = false;
     }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(std::min(620.f, vp->WorkSize.x - 40.f), 0.f));
     if (!ImGui::BeginPopupModal(kPrompt, nullptr,
                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
@@ -13477,6 +13467,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             scale_mouse_event(e, ui.coords);
+            if (retcomm::hub::touch_translate_event(e, !play)) continue;
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                 e.window.windowID == SDL_GetWindowID(window))
@@ -13498,6 +13489,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         apply_ui_scale_frame(window, ui);
+        retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
 
         if (play) {
@@ -13512,6 +13504,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 h.focus_pending = true;
             }
         } else {
+            retcomm::hub::touch_frame();
             const ImGuiViewport* vp = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(vp->WorkPos);
             ImGui::SetNextWindowSize(vp->WorkSize);
@@ -13628,6 +13621,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         glViewport(0, 0, fb_w, fb_h);
         glClearColor(0.f, 0.f, 0.f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
+        retcomm::hub::touch_before_render(ImGui::GetDrawData());
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
@@ -13693,6 +13687,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             scale_mouse_event(e, ui.coords);
+            retcomm::hub::touch_translate_event(e, false);  // the game owns the pointer
             if (!play.handle_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -13707,6 +13702,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         apply_ui_scale_frame(window, ui);
+        retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
         play.draw();
         ImGui::Render();
@@ -13715,6 +13711,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
         glViewport(0, 0, fb_w, fb_h);
         glClearColor(0.f, 0.f, 0.f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
+        retcomm::hub::touch_before_render(ImGui::GetDrawData());
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
@@ -13891,6 +13888,7 @@ int main(int argc, char** argv) {
 
     // Steam only reads its screen-keyboard hint at startup.
     retcomm::hub::osk_configure_hints();
+    retcomm::hub::touch_configure_hints();
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -13961,6 +13959,7 @@ int main(int argc, char** argv) {
 
     const Theme th = retcomm::hub::crt_theme();
     retcomm::hub::apply_imgui_style(th);
+    retcomm::hub::touch_apply_style(ImGui::GetStyle());
 
     ImGui_ImplSDL3_InitForOpenGL(window, gl);
     // Any connected pad drives the hub, not only the first one SDL enumerated.
@@ -14120,6 +14119,11 @@ int main(int argc, char** argv) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             scale_mouse_event(e, ui.coords);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+            if (retcomm::hub::touch_translate_event(e, !play)) continue;
+#else
+            if (retcomm::hub::touch_translate_event(e, true)) continue;
+#endif
 #if defined(RETCOMM_HUB_HAVE_PLAY)
             if (play) {
                 // The game has the controls: none of the library's shortcuts
@@ -14325,6 +14329,7 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         apply_ui_scale_frame(window, ui);
+        retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
@@ -14342,6 +14347,7 @@ int main(int argc, char** argv) {
         const bool playing = false;
 #endif
         if (!playing) {
+        retcomm::hub::touch_frame();
         if (hub.pending_open_mods) {
             hub.pending_open_mods = false;
             close_settings_pages(hub);
@@ -15032,6 +15038,7 @@ int main(int argc, char** argv) {
         glViewport(0, 0, fb_w, fb_h);
         glClearColor(th.background.x, th.background.y, th.background.z, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
+        retcomm::hub::touch_before_render(ImGui::GetDrawData());
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
