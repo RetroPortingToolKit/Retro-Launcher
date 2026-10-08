@@ -91,6 +91,42 @@ The main loop then:
   caller that waits on `retcomm launch`, such as a Steam shortcut, therefore
   still waits for the game.
 
+## Romhack bases (2026-10-08)
+
+An n64lle game can run as the game itself or as exactly one installed romhack,
+its **base** (n64lle `docs/ROMHACK-PLAN.md`). A romhack is installed beside the game
+package as `romhacks/<id>/`, holding `base.toml`, the patch and a delta package
+(n64lle `tools/n64romhack.py install`). The core picks the base from its option
+`system.romhack`; empty means the game itself.
+
+- **Picker.** In Direct and title-app mode the home page shows a **Base** picker
+  when anything is installed (`src/core/romhacks.cpp` `scan_romhacks`). It writes
+  the title's `system.romhack` to `options/<key>.ini`, the same file the System
+  tab writes, so a session gets it like any other option.
+  - A base the core would refuse is listed but disabled, with the reason as its
+    tooltip: an id that is not its directory's name, or a missing delta.
+- **Saves.** A base keeps its own saves, `saves/<key>@<id>`, apart from the game's
+  `saves/<key>` (`base_save_dir`). The exception is a `base.toml` that says
+  `saves = "shared-with-stock"`, which is the hack author's word that the layout is
+  unchanged. A hack changes the save layout as often as not, so feeding it the
+  game's saves, or the reverse, risks corrupting them. Every place a session's save
+  dir is chosen goes through this: Direct, title-app, library, and the home page's
+  Files row.
+- **Netplay.** `system.romhack` is the one `NETPLAY` option a match keeps; the rest
+  fall back to the core's default. The runner's match key then admits peers on the
+  same base and refuses peers on another, instead of quietly running the game in a
+  romhack player's place.
+- **Mods.** On a base, the Mods page says per package whether it was made for that
+  romhack (its manifest's `[target].bases` lists it) or is **unverified** there
+  (`mod_base_standing`). The core still refuses a mechanical conflict at load.
+  "Last session" shows the core's `base:` and romhack lines with its `mods:` ones.
+
+Checked by `hub_romhack` (ctest): the scan and its refusals, the save dirs, and the
+standings, through the Mods page's own manifest reader. The picker and the Files
+row were checked by screenshot against the n64lle fixture package with three bases
+installed. Clicking an entry in the open picker was not driven: synthetic clicks did
+not reach the window, so that interaction is unexercised.
+
 ## How it was checked (2026-09-25)
 
 On a scratch data root (`RETCOMM_HOME`), with Alex's cached catalog and a copy

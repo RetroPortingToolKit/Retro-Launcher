@@ -742,6 +742,16 @@ bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string
             else if (key == "description") out.description = unquote(val);
         } else if (section == "target" && key == "game_id") {
             game_id = unquote(val);
+        } else if (section == "target" && key == "bases") {
+            // A one-line array of quoted strings, as n64lle's reader takes it.
+            std::string v = trim(val);
+            if (v.size() >= 2 && v.front() == '[' && v.back() == ']') {
+                std::stringstream ss(v.substr(1, v.size() - 2));
+                for (std::string item; std::getline(ss, item, ',');) {
+                    const std::string b = unquote(item);
+                    if (!b.empty()) out.bases.push_back(b);
+                }
+            }
         } else if (section_id(section, "feature", &id)) {
             ModFeatureInfo* f = find_feature(out, id);
             if (!f) return;

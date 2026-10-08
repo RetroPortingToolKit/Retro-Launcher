@@ -42,6 +42,7 @@ constexpr bool kLocalBuild = true;
 #include "retcomm/snes_platform_settings.hpp"
 #include "retcomm/romm_saves.hpp"
 #include "retcomm/mods.hpp"
+#include "retcomm/romhacks.hpp"
 #include "retcomm/core_titles.hpp"
 #include "retcomm/self_update.hpp"
 
@@ -3523,6 +3524,10 @@ bool mod_row_matches(const retcomm::ModPackageInfo& p, const retcomm::ModFeature
     return false;
 }
 
+// The romhack base the Mods page is drawn for (Direct mode sets it before each
+// draw; empty: the stock game). Each package shows where it stands on it.
+std::optional<retcomm::InstalledRomhack> g_mods_page_base;
+
 void draw_mods_page(HubModel& hub, const Theme& th) {
     ModsPageState& st = mods_page_state();
 
@@ -3762,6 +3767,23 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
         ImGui::TextColored(on ? th.good : th.text_muted, "%s", on ? "Enabled" : "Disabled");
         if (sf && sf->channel == "experimental")
             ImGui::TextColored(th.warn, "Experimental — default-off and not validated here.");
+        if (g_mods_page_base) {
+            const auto& b = *g_mods_page_base;
+            switch (retcomm::mod_base_standing(*sp, &b)) {
+            case retcomm::ModBaseStanding::Declared:
+                ImGui::TextColored(th.good, "Made for %s.", b.title.c_str());
+                break;
+            case retcomm::ModBaseStanding::Unverified:
+                ImGui::TextColored(th.warn,
+                                   "Unverified on %s: its author does not list this romhack. "
+                                   "The game refuses it if it conflicts with the romhack; it may "
+                                   "still depend on something the romhack changed.",
+                                   b.title.c_str());
+                break;
+            case retcomm::ModBaseStanding::Stock:
+                break;
+            }
+        }
         if (sp->builtin) {
             ImGui::TextColored(th.warn,
                                "Built into the game. Switch it in the game's own Mods menu — "
@@ -11986,6 +12008,9 @@ struct DirectHome {
     bool focus_pending = true;
 
     retcomm::ModScanResult mods;
+    // Romhack bases installed beside the package (romhacks.hpp); the Base
+    // picker lists them and writes the title's system.romhack.
+    std::vector<retcomm::InstalledRomhack> romhacks;
     std::string status;                     // the last thing that happened
     bool status_bad = false;
     std::vector<std::string> session_notes; // the last session's "mods:" lines
@@ -12325,6 +12350,27 @@ void set_direct_status(DirectHome& h, const std::string& s, bool bad) {
 
 void refresh_direct_mods(DirectHome& h) {
     h.mods = retcomm::scan_game_mods(h.title_dir, {}, h.mods_state_dir);
+    h.romhacks = retcomm::scan_romhacks(h.title_dir);
+}
+
+// The base this title is set to play (its system.romhack option, platform layer
+// then title layer, as a session is given them), and that base's save dir.
+std::string direct_base_id(const DirectHome& h, const HubModel& hub) {
+    const auto opts = retcomm::hub::layer_core_options(
+        retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, {}),
+        retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, h.title_key), {});
+    const auto it = opts.find(retcomm::kRomhackOption);
+    return it == opts.end() ? std::string() : it->second;
+}
+
+fs::path session_save_dir(const fs::path& data_dir, const std::string& title_key,
+                          const fs::path& title_dir, const retcomm::hub::PlayArgs& args) {
+    const auto it = args.options.find(retcomm::kRomhackOption);
+    const std::string base = it == args.options.end() ? std::string() : it->second;
+    if (base.empty()) return data_dir / "saves" / title_key;
+    const auto list = retcomm::scan_romhacks(title_dir);
+    const retcomm::InstalledRomhack* r = retcomm::find_romhack(list, base);
+    return retcomm::base_save_dir(data_dir, title_key, base, r && r->saves_shared);
 }
 
 // What the game said about mods during the session just ended. The core logs
@@ -12338,7 +12384,11 @@ std::vector<std::string> session_mod_lines(const fs::path& core_log) {
     for (std::string l; std::getline(in, l);) {
         const auto tab = l.find('\t');
         const std::string text = tab == std::string::npos ? l : l.substr(tab + 1);
-        if (text.rfind("mods:", 0) == 0) {
+        // The base the session ran on, a romhack refusal, and a state taken on
+        // another base (n64lle romhack.rs, api_unserialize) belong here too.
+        if (text.rfind("mods:", 0) == 0 || text.rfind("base:", 0) == 0 ||
+            text.rfind("romhack ", 0) == 0 ||
+            text.rfind("unserialize: this state was taken on", 0) == 0) {
             out.push_back(text);
             in_mods = true;
         } else if (in_mods && !text.empty() && text[0] == ' ') {
@@ -12674,7 +12724,13 @@ void draw_direct_info(DirectHome& h, const HubModel& hub, const Theme& th,
     row("Core  ", h.d.args.core.string());
     row("ROM   ", h.d.args.rom);
     row("Title ", h.title_dir.string());
-    row("Saves ", (hub.paths.data_dir / "saves" / h.title_key).string());
+    {
+        const std::string base = direct_base_id(h, hub);
+        const retcomm::InstalledRomhack* r = retcomm::find_romhack(h.romhacks, base);
+        row("Saves ", retcomm::base_save_dir(hub.paths.data_dir, h.title_key, base,
+                                             r && r->saves_shared)
+                          .string());
+    }
     if (h.d.title_mode) row("Data  ", h.d.data.dir.string());
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -12753,6 +12809,53 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         if (ImGui::Button("Gamepads", ImVec2(half, 0))) open_tab(true);
     }
     ImGui::Dummy(ImVec2(0, 6));
+
+    // THE BASE (n64lle docs/ROMHACK-PLAN.md R5): the game itself, or one
+    // installed romhack. It is the title's system.romhack core option, so a
+    // session, its saves and its netplay match key all follow it.
+    if (!h.romhacks.empty()) {
+        const std::string cur = direct_base_id(h, hub);
+        const retcomm::InstalledRomhack* sel = retcomm::find_romhack(h.romhacks, cur);
+        const std::string preview =
+            cur.empty() ? std::string("The game") : (sel ? sel->title : cur + " (not installed)");
+        ImGui::TextColored(th.text_muted, "Base");
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo("##base", preview.c_str())) {
+            auto choose = [&](const std::string& id) {
+                auto title = retcomm::hub::load_core_options(hub.paths.data_dir, h.platform,
+                                                             h.title_key);
+                if (id.empty()) title.erase(retcomm::kRomhackOption);
+                else title[retcomm::kRomhackOption] = id;
+                std::string err;
+                if (!retcomm::hub::save_core_options(hub.paths.data_dir, h.platform, h.title_key,
+                                                     title, &err)) {
+                    h.status = "Cannot save the base: " + err;
+                    h.status_bad = true;
+                }
+            };
+            if (ImGui::Selectable("The game", cur.empty())) choose({});
+            for (const retcomm::InstalledRomhack& r : h.romhacks) {
+                const std::string label = r.title + (r.version.empty() ? "" : " " + r.version) +
+                                          (r.error.empty() ? "" : "  (unusable)");
+                ImGui::BeginDisabled(!r.error.empty());
+                if (ImGui::Selectable((label + "##" + r.id).c_str(), r.id == cur)) choose(r.id);
+                ImGui::EndDisabled();
+                if (!r.error.empty() &&
+                    ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", r.error.c_str());
+            }
+            ImGui::EndCombo();
+        }
+        if (sel) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped("%s", sel->saves_shared
+                                         ? "Shares the game's saves (its author says the save "
+                                           "layout is unchanged)."
+                                         : "Keeps its own saves, apart from the game's.");
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
 
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
     ImGui::BeginDisabled(!have_rom);
@@ -13068,7 +13171,8 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     retcomm::hub::PlayArgs args = h.d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     const fs::path session = hub.paths.data_dir / "sessions" / h.title_key;
-    const fs::path saves = hub.paths.data_dir / "saves" / h.title_key;
+    // Per base: a romhack's saves are its own (romhacks.hpp base_save_dir).
+    const fs::path saves = session_save_dir(hub.paths.data_dir, h.title_key, h.title_dir, args);
     std::string err;
     limit_transfer_paks(args, rr);
     if (!play.start(args, rr.path, session, saves, &err)) {
@@ -13194,9 +13298,12 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
     // NETPLAY-flagged options join the match key: each peer's own choice
     // would only get the match refused, so every peer takes the core's default.
+    // Except the BASE (system.romhack): the stock game in a romhack player's
+    // place would be a silent substitution. It stays, so the match key admits
+    // peers on the same base and refuses peers on another.
     if (h.desc_ready && h.desc.ok) {
         for (const auto& o : h.desc.options)
-            if (o.netplay) args.options.erase(o.key);
+            if (o.netplay && o.key != retcomm::kRomhackOption) args.options.erase(o.key);
     }
     args.tpak_rom = {};
     args.tpak_save = {};
@@ -13421,7 +13528,13 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                     open_direct_page(h, hub, DirectPage::Home);
                 } else {
                     ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+                    {
+                        const auto* b = retcomm::find_romhack(h.romhacks, direct_base_id(h, hub));
+                        g_mods_page_base = b ? std::optional<retcomm::InstalledRomhack>(*b)
+                                             : std::nullopt;
+                    }
                     draw_mods_page(hub, th);
+                    g_mods_page_base.reset();
                     ImGui::EndChild();
                 }
             } else if (h.page == DirectPage::Update) {
@@ -13557,10 +13670,14 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     }
     const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
-    const fs::path saves = hub.paths.data_dir / "saves" / stem;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
+    // Per base, as the home page's Play (romhacks.hpp base_save_dir).
+    const fs::path title_dir = !d.args.title_dir.empty() ? d.args.title_dir
+                               : packaged               ? d.args.package.parent_path()
+                                                        : d.args.core.parent_path();
+    const fs::path saves = session_save_dir(hub.paths.data_dir, stem, title_dir, args);
     std::string err;
     limit_transfer_paks(args, rr);
     if (!play.start(args, runner, session, saves, &err)) {
@@ -14142,7 +14259,8 @@ int main(int argc, char** argv) {
                 apply_player_settings(args, hub.paths.data_dir, hub.exe_dir,
                                       rcore_manifest_platform(args.core), req->title_id);
                 const fs::path session = hub.paths.data_dir / "sessions" / req->title_id;
-                const fs::path saves = hub.paths.data_dir / "saves" / req->title_id;
+                const fs::path saves = session_save_dir(hub.paths.data_dir, req->title_id,
+                                                        req->title_dir, args);
                 auto p = std::make_unique<retcomm::hub::PlaySession>();
                 std::string err;
                 // The bundled runner, or a newer one the runtime updater installed.

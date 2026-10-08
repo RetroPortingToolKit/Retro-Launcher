@@ -54,6 +54,7 @@ set(RETCOMM_CORE_SOURCES
     src/core/app_state.cpp
     src/core/texture_packs.cpp
     src/core/mods.cpp
+    src/core/romhacks.cpp
     src/catalog/catalog.cpp
     src/catalog/catalog_sync.cpp
     src/romscan/romscan.cpp
@@ -536,6 +537,12 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${RETCOMM_HUB_SDL_TARGET})
         add_test(NAME hub_core_settings COMMAND retro-hub-settings-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
+        # Romhack bases (romhacks.hpp): what the Base picker lists, a base's save
+        # dir, and a mod's standing on a base.
+        add_executable(retro-hub-romhack-test tests/hub_romhack_test.cpp)
+        target_link_libraries(retro-hub-romhack-test PRIVATE retcomm_core)
+        add_test(NAME hub_romhack COMMAND retro-hub-romhack-test
+            ${CMAKE_CURRENT_BINARY_DIR}/hub_romhack_test.d)
         # The picture's scaling (hub_picture.hpp), rendered through ImGui's GL3
         # backend into an offscreen framebuffer and read back; the PNGs stay in
         # the output directory. Needs a GL 3.2 context: skipped without one.

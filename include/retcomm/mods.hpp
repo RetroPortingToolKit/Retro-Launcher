@@ -75,6 +75,9 @@ struct ModPackageInfo {
     fs::path manifest;
     std::vector<ModFeatureInfo> features;
     std::vector<ModOptionInfo> options;
+    // n64lle [target].bases: the romhack bases its author tested it on, each
+    // "<id>" or "<id>@<version>" (romhacks.hpp mod_base_standing).
+    std::vector<std::string> bases;
     // A package whose manifest declares no [[feature]] is an all-or-nothing
     // one; state.toml carries its switch as [[package]] enabled.
     bool enabled = false;
