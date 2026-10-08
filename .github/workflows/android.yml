@@ -51,6 +51,12 @@ jobs:
           ref: c9a6709bd21750f1ad9597be21abace78c6378c9 # release-3.2.16
           path: .cache/android/SDL
 
+      # setup-gradle validates every gradle-wrapper.jar in the workspace and
+      # SDL's has an unknown checksum. The build only takes SDL's CMake tree,
+      # Java sources and LICENSE, never its Gradle project, so drop the jar.
+      - name: Drop SDL's unused Gradle wrapper
+        run: rm -f .cache/android/SDL/android-project/gradle/wrapper/gradle-wrapper.jar
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
