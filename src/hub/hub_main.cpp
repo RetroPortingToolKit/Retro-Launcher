@@ -13917,10 +13917,14 @@ int main(int argc, char** argv) {
     // platform scales windows for us (macOS retina, Wayland); on Windows and X11
     // it is a no-op. Either way the pixel size is the truth and UiScale turns it
     // back into the logical 1280x800 this UI is written against.
-    SDL_Window* window =
-        SDL_CreateWindow("Retro Launcher", 1280, 800,
-                         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
-                             SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    SDL_WindowFlags window_flags =
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    #if defined(__ANDROID__)
+    // Immersive: targetSdk 35+ draws edge-to-edge, so a windowed hub would sit
+    // under the status and navigation bars.
+    window_flags |= SDL_WINDOW_FULLSCREEN;
+    #endif
+    SDL_Window* window = SDL_CreateWindow("Retro Launcher", 1280, 800, window_flags);
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;

@@ -1,0 +1,139 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      require_signing:
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # Resolve upstream HEAD once. Both hub and child compile against this
+      # same tree; build-arm64-v8a.json inside the APK records its commit.
+      - name: Check out latest Retro-Runtime source
+        uses: actions/checkout@v7
+        with:
+          repository: RetroPortingToolKit/Retro-Runtime
+          path: .cache/android/Retro-Runtime
+          submodules: recursive
+
+      - name: Check out SDL
+        uses: actions/checkout@v7
+        with:
+          repository: libsdl-org/SDL
+          ref: c9a6709bd21750f1ad9597be21abace78c6378c9 # release-3.2.16
+          path: .cache/android/SDL
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.14206865'
+
+      - name: Set release version
+        env:
+          RELEASE_VERSION: ${{ inputs.version || '0.1.1' }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          version = os.environ['RELEASE_VERSION']
+          match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?', version)
+          if not match:
+              raise SystemExit('Android version must be x.y.z, optionally with a prerelease suffix')
+          major, minor, patch = map(int, match.groups())
+          code = major * 1000000 + minor * 1000 + patch
+          if minor >= 1000 or patch >= 1000 or not 0 < code <= 2100000000:
+              raise SystemExit('Version cannot be represented as an Android versionCode')
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f'RETCOMM_VERSION={version}\nANDROID_VERSION_CODE={code}\n')
+          PY
+
+      - name: Compile launcher and runner from source
+        env:
+          RETCOMM_RUNTIME_DIR: ${{ github.workspace }}/.cache/android/Retro-Runtime
+        run: bash scripts/build-android.sh
+
+      - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          REQUIRE_SIGNING: ${{ inputs.require_signing || false }}
+        run: |
+          if [[ -n "$KEYSTORE_BASE64" ]]; then
+            umask 077
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/retro-launcher.jks"
+            echo "ANDROID_KEYSTORE=$RUNNER_TEMP/retro-launcher.jks" >> "$GITHUB_ENV"
+          elif [[ "$REQUIRE_SIGNING" == true ]]; then
+            echo '::error::Release publishing requires the ANDROID_KEYSTORE_BASE64 and Android signing secrets.'
+            exit 1
+          fi
+
+      - name: Package release APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease \
+            -PretroVersion="$RETCOMM_VERSION" -PretroVersionCode="$ANDROID_VERSION_CODE"
+
+      - name: Verify packaged payload
+        run: |
+          mkdir -p dist
+          if [[ -n "${ANDROID_KEYSTORE:-}" ]]; then
+            apk=android/app/build/outputs/apk/release/app-release.apk
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$apk"
+            dest=dist/Retro-Launcher-android-arm64.apk
+          else
+            apk=android/app/build/outputs/apk/release/app-release-unsigned.apk
+            dest=dist/Retro-Launcher-android-arm64-unsigned.apk
+          fi
+          python3 scripts/verify-android-apk.py "$apk" arm64-v8a
+          cp "$apk" "$dest"
+          cp android/app/build/generated/payload/assets/retcomm/build-arm64-v8a.json dist/android-build.json
+          sha256sum "$dest" > "$dest.sha256"
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/retro-launcher.jks"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-arm64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 5

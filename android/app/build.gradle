@@ -1,0 +1,62 @@
+plugins { id 'com.android.application' }
+
+def payload = layout.buildDirectory.dir('generated/payload').get().asFile
+def releaseKeystore = System.getenv('ANDROID_KEYSTORE')
+def requestedAbi = providers.gradleProperty('retroAbi').getOrElse('arm64-v8a')
+
+android {
+    namespace 'org.retroportingtoolkit.launcher'
+    compileSdk 36
+    // The NDK scripts/build-android.sh compiles with; AGP strips with it.
+    ndkVersion '29.0.14206865'
+    defaultConfig {
+        applicationId 'org.retroportingtoolkit.launcher'
+        minSdk 30
+        targetSdk 36
+        versionCode providers.gradleProperty('retroVersionCode').getOrElse('1').toInteger()
+        versionName providers.gradleProperty('retroVersion').getOrElse('0.1.1')
+        ndk { abiFilters requestedAbi }
+    }
+    signingConfigs {
+        if (releaseKeystore) {
+            release {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (releaseKeystore) signingConfig signingConfigs.release
+        }
+    }
+    sourceSets.main {
+        java.srcDir new File(payload, 'java')
+        jniLibs.srcDir new File(payload, 'jniLibs')
+        assets.srcDir new File(payload, 'assets')
+    }
+    packagingOptions {
+        jniLibs {
+            // PackageManager must extract the runner so it can be exec'd.
+            useLegacyPackaging true
+            keepDebugSymbols += ['**/libretro-core-runner.so']
+        }
+    }
+}
+
+tasks.register('verifyNativePayload') {
+    doLast {
+        ['libmain.so', 'libSDL3.so', 'libc++_shared.so', 'libretro-core-runner.so'].each { name ->
+            if (!new File(payload, "jniLibs/${requestedAbi}/${name}").isFile()) {
+                throw new GradleException("Missing ${name}; run scripts/build-android.sh first")
+            }
+        }
+        if (!new File(payload, "assets/retcomm/build-${requestedAbi}.json").isFile()) {
+            throw new GradleException('Missing native build provenance')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'verifyNativePayload' }
