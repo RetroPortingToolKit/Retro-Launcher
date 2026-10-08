@@ -216,7 +216,6 @@ private:
     bool l3r3_prev_ = false;
     bool audio_paused_ = true;    // the SDL stream's state, as last set
     bool was_paused_ = false;
-    std::uint64_t noted_frames_ = 0, noted_ns_ = 0;
 };
 
 } // namespace retcomm::hub
