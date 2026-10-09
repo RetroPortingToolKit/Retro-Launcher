@@ -86,9 +86,7 @@ bool WsConnection::connect(const std::string& url, std::string* error, long conn
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, connect_timeout_s);
     curl_easy_setopt(c, CURLOPT_USERAGENT, "retcomm-launcher");
     curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "ws,wss");
-#if defined(_WIN32) && defined(CURLSSLOPT_NATIVE_CA)
-    curl_easy_setopt(c, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
-#endif
+    http_apply_tls_trust(c);
     const CURLcode rc = curl_easy_perform(c);
     if (rc != CURLE_OK) {
         if (error) *error = curl_easy_strerror(rc);

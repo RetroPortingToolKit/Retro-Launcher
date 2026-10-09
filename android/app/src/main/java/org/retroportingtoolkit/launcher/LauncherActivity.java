@@ -1,15 +1,21 @@
 package org.retroportingtoolkit.launcher;
 
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInstaller;
 import android.graphics.Insets;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 
@@ -74,7 +80,49 @@ public final class LauncherActivity extends SDLActivity {
         nativeSetenv("RETCOMM_ASSET_DIR", root + "/assets");
         nativeSetenv("RETRO_CORE_RUNNER", nativeDir + "/libretro-core-runner.so");
         nativeSetenv("LD_LIBRARY_PATH", nativeDir);
+        // The .debug package: the release APK installs beside it, not over it, so
+        // self-update only checks (self_update.cpp).
+        boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        nativeSetenv("RETRO_ANDROID_DEBUGGABLE", debuggable ? "1" : "0");
         return new String[0];
+    }
+
+    /**
+     * The hub's self-update (hub_android.cpp): hand a downloaded APK to the
+     * package installer, which checks its signature against this app's, asks
+     * the player, and replaces and restarts the app. Returns null once the
+     * installer has it, else why not. Called on the update job's thread.
+     */
+    public String installApk(String path) {
+        PackageInstaller installer = getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionParams params =
+                new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setAppPackageName(getPackageName());
+        File apk = new File(path);
+        int id;
+        try {
+            id = installer.createSession(params);
+        } catch (IOException | RuntimeException e) {
+            return e.toString();
+        }
+        try (PackageInstaller.Session session = installer.openSession(id)) {
+            try (InputStream in = new FileInputStream(apk);
+                 OutputStream out = session.openWrite("base.apk", 0, apk.length())) {
+                byte[] buffer = new byte[1 << 16];
+                int count;
+                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                session.fsync(out);
+            }
+            // Mutable: the installer fills in the status extras.
+            PendingIntent status = PendingIntent.getBroadcast(this, id,
+                    new Intent(this, InstallStatusReceiver.class),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+            session.commit(status.getIntentSender());
+            return null;
+        } catch (IOException | RuntimeException e) {
+            installer.abandonSession(id);
+            return e.toString();
+        }
     }
 
     private void copyAssets(String path, File target) throws IOException {

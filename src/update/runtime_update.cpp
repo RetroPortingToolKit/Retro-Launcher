@@ -203,7 +203,11 @@ RuntimeUpdateResult update_runtime(const Paths& paths, const fs::path& exe_dir, 
     r.current_version = current.version.empty() ? "none" : current.version;
     if (current.source == "override") {
         r.ok = true;
+#if defined(__ANDROID__)
+        r.message = "Runtime update: the runner comes with the APK (" + r.current_version + ")";
+#else
         r.message = "Runtime update: skipped, RETRO_CORE_RUNNER is set";
+#endif
         return r;
     }
 

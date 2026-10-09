@@ -33,6 +33,11 @@ HttpResponse http_post_json(const std::string& url, const std::string& body,
 // easy handle (the WebSocket client does).
 void http_global_init();
 
+// Point a curl easy handle (a CURL*) at the platform's trusted CAs where the
+// TLS backend does not find them itself: the Windows store for an OpenSSL
+// libcurl, Android's system store. Every handle that speaks TLS needs it.
+void http_apply_tls_trust(void* curl);
+
 // Stream download to a file path (creates parent dirs).
 // When expected_size > 0 and dest already has that many bytes, skips the transfer.
 // Resumes from dest.part when present (Range). Retries once without resume on

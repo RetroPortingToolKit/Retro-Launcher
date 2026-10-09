@@ -61,6 +61,9 @@ constexpr bool kLocalBuild = true;
 #endif
 #include <SDL3/SDL_dialog.h>
 #include "hub/hub_gl.hpp"
+#if defined(__ANDROID__)
+#include "hub/hub_android.hpp"
+#endif
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -4542,10 +4545,17 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                         &hub.settings.check_updates_on_startup))
         hub.settings.dirty = true;
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+#if defined(__ANDROID__)
+    ImGui::TextWrapped(
+        "When enabled, Retro checks for catalog, launcher, and game updates after the hub "
+        "starts. Turn off to skip the startup prompt (Check Updates in the menu still works). "
+        "Save to apply.");
+#else
     ImGui::TextWrapped(
         "When enabled, Retro checks for launcher, toolchain, and game updates after the hub "
         "starts. Turn off to skip the startup prompt (Check Updates in the menu still works). "
         "Save to apply.");
+#endif
     ImGui::PopStyleColor();
 
     ImGui::Dummy(ImVec2(0, 8));
@@ -4671,6 +4681,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
 
     ImGui::Dummy(ImVec2(0, 10));
     if (ImGui::CollapsingHeader("Advanced")) {
+#if !defined(__ANDROID__)  // local builds and their caches: nothing builds on the device
         if (ImGui::Checkbox("Auto-clean cmake build directories after install",
                             &hub.settings.auto_clean_build_dirs))
             hub.settings.dirty = true;
@@ -4747,6 +4758,7 @@ void draw_settings_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
 
         ImGui::Dummy(ImVec2(0, 10));
         ImGui::Separator();
+#endif
         // Use U+26A0 only (no U+FE0F) — variation selectors render as "?" without emoji fonts.
         {
             const bool busy = hub.job_running.load();
@@ -13891,6 +13903,9 @@ int main(int argc, char** argv) {
     // Steam only reads its screen-keyboard hint at startup.
     retcomm::hub::osk_configure_hints();
     retcomm::hub::touch_configure_hints();
+#if defined(__ANDROID__)
+    retcomm::hub::android_register_apk_installer();
+#endif
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -14865,7 +14880,12 @@ int main(int argc, char** argv) {
             ImGui::TextWrapped(
                 "A newer Retro Launcher release is available.\n\n"
                 "Installed: %s\nLatest: %s\n\n"
+#if defined(__ANDROID__)
+                "Update now? The app downloads the APK, then Android asks you to confirm "
+                "the install and restarts it.",
+#else
                 "Update now? The app will download the package and restart.",
+#endif
                 cur.empty() ? "?" : cur.c_str(),
                 latest.empty() ? "?" : latest.c_str());
             ImGui::PopTextWrapPos();

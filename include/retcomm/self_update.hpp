@@ -3,6 +3,7 @@
 #include "retcomm/paths.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -28,12 +29,14 @@ enum class RetcommInstallChannel {
     MacosApp,
     WindowsInstaller,
     WindowsPortable, // still updatable; Windows primary channel is Installer
+    AndroidApk,      // the release APK, handed to Android's package installer
 };
 
 struct RetcommInstallInfo {
     RetcommInstallChannel channel = RetcommInstallChannel::Unsupported;
     bool self_update_supported = false;
-    std::string channel_id; // appimage | macos-app | windows-installer | windows-portable | dev
+    std::string channel_id; // appimage | macos-app | windows-installer | windows-portable |
+                            // android-apk | dev
     std::string hint;       // why update is disabled / how to install
     fs::path path;          // AppImage file, .app bundle, or install directory
 };
@@ -50,6 +53,8 @@ struct SelfUpdateResult {
     bool ok = false;
     bool skipped = false;           // already on latest
     bool restart_scheduled = false; // apply script launched; caller should exit
+    bool installer_opened = false;  // Android: the system installer has the APK and asks
+                                    // the player to confirm; it restarts the app itself
     std::string current_tag;
     std::string latest_tag;
     std::string asset_name;
@@ -60,9 +65,17 @@ struct SelfUpdateResult {
 // newer release, download the host-OS asset for this install channel, and
 // schedule an in-place replace after this process exits.
 //
-// Supported: Linux AppImage, macOS .app (via DMG), Windows setup.exe / portable.exe.
+// Supported: Linux AppImage, macOS .app (via DMG), Windows setup.exe / portable.exe,
+// Android release APK (set_apk_installer).
 // Unsupported layouts (dev binaries, loose copies) fail with a clear hint.
 SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions& opts = {});
+
+// Android: how a downloaded APK reaches the system installer. The hub registers
+// it (LauncherActivity.installApk, through JNI); it returns an empty string once
+// the installer has the APK, else why not. Without one, the APK channel can only
+// check.
+using ApkInstallerFn = std::function<std::string(const fs::path& apk)>;
+void set_apk_installer(ApkInstallerFn fn);
 
 // Query-only: compare the running launcher version to the latest GitHub release
 // (no download). Unsupported install channels report update_available=false.

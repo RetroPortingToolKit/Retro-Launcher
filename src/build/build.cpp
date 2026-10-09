@@ -3808,6 +3808,13 @@ PackEnsureResult ensure_pack(const Paths& paths, const TitleBuildPack& pack, boo
                              bool force) {
     PackEnsureResult r;
     std::error_code ec;
+#if defined(__ANDROID__)
+    // Nothing builds on the device: titles come as packages for Android cores.
+    if (toolchain) {
+        r.message = "the toolchain is not used on Android";
+        return r;
+    }
+#endif
 
     fs::path ov = override_dir;
     if (ov.empty()) {
@@ -5360,6 +5367,12 @@ ToolchainUpdateInfo check_toolchain_update(const Paths& paths, const std::string
                                            const std::string& github) {
     ToolchainUpdateInfo info;
     info.pack_id = pack_id.empty() ? "cmake-clang-v1" : pack_id;
+#if defined(__ANDROID__)
+    (void)paths;
+    (void)github;
+    info.message = "the toolchain is not used on Android";
+    return info;
+#endif
     const std::string repo =
         github.empty() ? "RetroPortingToolKit/RetroPorting-Toolchains" : github;
 

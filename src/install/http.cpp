@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -61,6 +62,31 @@ void apply_headers(CURL* curl, const std::vector<std::pair<std::string, std::str
     if (*list) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, *list);
 }
 
+#if defined(__ANDROID__)
+// Android's trust store is a directory of PEM files named by OpenSSL's old
+// (pre-1.0) subject hash, so an OpenSSL 3 CApath lookup never finds one and
+// every HTTPS request failed with "SSL peer certificate ... was not OK". Read
+// them all, once, into one bundle. The conscrypt APEX holds the updatable store
+// (Android 14+); /system/etc/security/cacerts is the original one.
+const std::string& android_ca_bundle() {
+    static const std::string bundle = [] {
+        std::string out;
+        for (const char* dir :
+             {"/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"}) {
+            std::error_code ec;
+            for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                std::ifstream in(it->path(), std::ios::binary);
+                out.append(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+                out.push_back('\n');
+            }
+            if (!out.empty()) break;
+        }
+        return out;
+    }();
+    return bundle;
+}
+#endif
+
 CURL* make_easy(const std::string& url) {
     ensure_curl_global();
     CURL* curl = curl_easy_init();
@@ -83,14 +109,7 @@ CURL* make_easy(const std::string& url) {
 #if defined(CURL_HTTP_VERSION_2TLS)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
 #endif
-#if defined(_WIN32) && defined(CURLSSLOPT_NATIVE_CA)
-    // Verify against the Windows certificate store. Release builds link a
-    // Schannel libcurl (vcpkg) that already does, and ignore this; an OpenSSL
-    // libcurl — what the mingw cross dev build gets — otherwise looks for a CA
-    // bundle at a Unix path that does not exist on Windows and fails every
-    // HTTPS request with "SSL peer certificate ... was not OK".
-    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
-#endif
+    http_apply_tls_trust(curl);
     return curl;
 }
 
@@ -299,6 +318,26 @@ HttpResponse http_get(const std::string& url,
     if (hdrs) curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
     return res;
+}
+
+void http_apply_tls_trust(void* handle) {
+    CURL* curl = static_cast<CURL*>(handle);
+#if defined(_WIN32) && defined(CURLSSLOPT_NATIVE_CA)
+    // Verify against the Windows certificate store. Release builds link a
+    // Schannel libcurl (vcpkg) that already does, and ignore this; an OpenSSL
+    // libcurl — what the mingw cross dev build gets — otherwise looks for a CA
+    // bundle at a Unix path that does not exist on Windows and fails every
+    // HTTPS request with "SSL peer certificate ... was not OK".
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
+#elif defined(__ANDROID__)
+    const std::string& bundle = android_ca_bundle();
+    if (!bundle.empty()) {
+        curl_blob blob{const_cast<char*>(bundle.data()), bundle.size(), CURL_BLOB_NOCOPY};
+        curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
+    }
+#else
+    (void)curl;
+#endif
 }
 
 void http_global_init() { ensure_curl_global(); }

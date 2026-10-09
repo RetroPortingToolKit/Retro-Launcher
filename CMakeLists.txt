@@ -461,6 +461,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             src/hub/hub_osk.cpp
             src/hub/hub_touch.cpp
             src/hub/hub_netplay.cpp
+            src/hub/hub_android.cpp
         )
         set_target_properties(retro-hub PROPERTIES OUTPUT_NAME main)
     else()
@@ -483,6 +484,9 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${CMAKE_CURRENT_SOURCE_DIR}/../recomp-ui/src/third_party)
     endif()
     target_link_libraries(retro-hub PRIVATE retcomm_core retcomm_imgui)
+    if(ANDROID)
+        target_link_libraries(retro-hub PRIVATE log)  # the activity log, mirrored to logcat
+    endif()
     target_compile_definitions(retro-hub PRIVATE "RETCOMM_COMMIT=\"${RETCOMM_COMMIT}\"")
     if(RETCOMM_RELEASE_BUILD)
         target_compile_definitions(retro-hub PRIVATE RETCOMM_RELEASE_BUILD=1)

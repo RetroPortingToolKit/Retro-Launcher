@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -254,6 +255,19 @@ json read_json_file(const fs::path& p) {
     }
 }
 
+std::mutex& apk_installer_mu() {
+    static std::mutex mu;
+    return mu;
+}
+ApkInstallerFn& apk_installer_slot() {
+    static ApkInstallerFn fn;
+    return fn;
+}
+[[maybe_unused]] ApkInstallerFn apk_installer() {
+    std::lock_guard<std::mutex> lock(apk_installer_mu());
+    return apk_installer_slot();
+}
+
 const char* channel_id_for(RetcommInstallChannel c) {
     switch (c) {
     case RetcommInstallChannel::LinuxAppImage:
@@ -264,6 +278,8 @@ const char* channel_id_for(RetcommInstallChannel c) {
         return "windows-installer";
     case RetcommInstallChannel::WindowsPortable:
         return "windows-portable";
+    case RetcommInstallChannel::AndroidApk:
+        return "android-apk";
     case RetcommInstallChannel::Unsupported:
     default:
         return "dev";
@@ -272,7 +288,8 @@ const char* channel_id_for(RetcommInstallChannel c) {
 
 std::string unsupported_hint() {
 #if defined(__ANDROID__)
-    return "Install a newer Retro Launcher APK to update the launcher and its bundled runner.";
+    return "This debug build checks for releases but is not updated in place: install the "
+           "release APK beside it, or rebuild with tools/build-android-debug.sh.";
 #elif defined(_WIN32)
     return "Self-update needs the Windows installer (or portable) build. "
            "Install from the GitHub setup.exe, then use Update Retro.";
@@ -291,6 +308,7 @@ const GhAsset* pick_launcher_asset(const GhRelease& rel, RetcommInstallChannel c
     if (os == "linux") preferred = "*linux*";
     else if (os == "windows") preferred = "*windows*";
     else if (os == "macos") preferred = "*macos*";
+    else if (os == "android") preferred = "*android*";
 
     const GhAsset* best = nullptr;
     int best_score = -1;
@@ -322,6 +340,16 @@ const GhAsset* pick_launcher_asset(const GhRelease& rel, RetcommInstallChannel c
                 score += 40;
             else
                 score -= 100;
+            break;
+        case RetcommInstallChannel::AndroidApk:
+            // Signed, and for this device's ABI: Android refuses the others.
+#if defined(__aarch64__)
+            if (ends_with_ci(n, ".apk") && n.find("arm64") != std::string::npos) score += 40;
+#else
+            if (ends_with_ci(n, ".apk") && n.find("x86_64") != std::string::npos) score += 40;
+#endif
+            else score -= 100;
+            if (n.find("unsigned") != std::string::npos) score -= 100;
             break;
         case RetcommInstallChannel::Unsupported:
         default:
@@ -1105,6 +1133,11 @@ bool schedule_retcomm_relaunch(std::string* error) {
 
 std::string retcomm_app_version() { return RETCOMM_VERSION; }
 
+void set_apk_installer(ApkInstallerFn fn) {
+    std::lock_guard<std::mutex> lock(apk_installer_mu());
+    apk_installer_slot() = std::move(fn);
+}
+
 std::string retcomm_github_slug() { return RETCOMM_GITHUB_SLUG; }
 
 std::string retcomm_installed_tag(const Paths& /*paths*/) {
@@ -1187,6 +1220,20 @@ RetcommInstallInfo retcomm_install_info() {
         return info;
     }
     return info;
+#elif defined(__ANDROID__)
+    info.channel = RetcommInstallChannel::AndroidApk;
+    info.channel_id = channel_id_for(info.channel);
+    // LauncherActivity sets it for a debuggable package: the .debug id, signed
+    // with the debug key, which the release APK installs beside, not over.
+    const char* debuggable = std::getenv("RETRO_ANDROID_DEBUGGABLE");
+    if (debuggable && std::string(debuggable) == "1") return info;
+    if (!apk_installer()) {
+        info.hint = "No APK installer is registered in this process.";
+        return info;
+    }
+    info.self_update_supported = true;
+    info.hint.clear();
+    return info;
 #else
     const fs::path appimage = running_appimage_path();
     if (!appimage.empty()) {
@@ -1210,6 +1257,40 @@ SelfUpdateCheckInfo check_retcomm_update(const Paths& /*paths*/, const SelfUpdat
     info.current_tag = retcomm_app_version();
     const RetcommInstallInfo install = retcomm_install_info();
     info.supported = install.self_update_supported;
+#if defined(__ANDROID__)
+    {
+        // A release is an update here only if it carries this device's APK: the
+        // tag alone would offer every desktop-only release. A debug build checks
+        // too, and says what it found, but is not offered the update.
+        const std::string slug = retcomm_github_slug();
+        std::string err;
+        GhRelease rel;
+        if (!fetch_latest_release(slug, rel, &err, opts.allow_prerelease)) {
+            info.message = "GitHub release check failed for " + slug + ": " + err;
+            return info;
+        }
+        info.ok = true;
+        info.latest_tag = rel.tag;
+        const GhAsset* apk = pick_launcher_asset(rel, RetcommInstallChannel::AndroidApk);
+        if (!apk) {
+            info.message = "Release " + rel.tag + " has no Android APK for this device yet.";
+            return info;
+        }
+        if (normalize_tag(info.current_tag) == normalize_tag(rel.tag)) {
+            info.message = "Retro Launcher is up to date (" + rel.tag + ").";
+            return info;
+        }
+        if (!install.self_update_supported) {
+            info.message = "Retro Launcher " + rel.tag + " is available (" + apk->name + "). " +
+                           (install.hint.empty() ? unsupported_hint() : install.hint);
+            return info;
+        }
+        info.update_available = true;
+        info.message =
+            "Retro Launcher update available: " + info.current_tag + " → " + rel.tag;
+        return info;
+    }
+#endif
     if (!install.self_update_supported) {
         info.message = install.hint.empty() ? unsupported_hint() : install.hint;
         return info;
@@ -1254,7 +1335,7 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
     if (latest_tag.empty()) {
         return fail(result, "GitHub release check failed for " + slug + ": " + err +
                                 "\nPublish a Release with host installers "
-                                "(AppImage / DMG / Windows setup.exe).");
+                                "(AppImage / DMG / Windows setup.exe / Android APK).");
     }
     result.latest_tag = latest_tag;
 
@@ -1270,15 +1351,16 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
     if (!fetch_latest_release(slug, rel, &err, opts.allow_prerelease) || rel.tag.empty()) {
         return fail(result, "GitHub release asset list failed for " + slug + ": " + err +
                                 "\nPublish a Release with host installers "
-                                "(AppImage / DMG / Windows setup.exe).");
+                                "(AppImage / DMG / Windows setup.exe / Android APK).");
     }
     result.latest_tag = rel.tag;
 
     const GhAsset* asset = pick_launcher_asset(rel, install.channel);
     if (!asset) {
         return fail(result, "Release " + rel.tag + " has no asset for channel " + channel_name +
-                                " (" + host_os_key() + "). Expected AppImage, macOS DMG, or "
-                                "windows-*-setup.exe / Retro-Launcher-portable-windows.zip.");
+                                " (" + host_os_key() + "). Expected AppImage, macOS DMG, "
+                                "windows-*-setup.exe / Retro-Launcher-portable-windows.zip, or "
+                                "Retro-Launcher-android-<abi>.apk.");
     }
     result.asset_name = asset->name;
     const std::string asset_lower = to_lower(asset->name);
@@ -1299,6 +1381,22 @@ SelfUpdateResult self_update_retcomm(const Paths& paths, const SelfUpdateOptions
     if (!http_download(asset->browser_download_url, download, &err, headers)) {
         return fail(result, "download failed: " + err);
     }
+
+#if defined(__ANDROID__)
+    if (install.channel == RetcommInstallChannel::AndroidApk) {
+        // Android checks the APK's signature against the installed app's and
+        // replaces it; the installer asks the player first, then restarts us.
+        const ApkInstallerFn installer = apk_installer();
+        const std::string why = installer ? installer(download) : "no APK installer registered";
+        if (!why.empty()) return fail(result, "the package installer did not take the APK: " + why);
+        save_launcher_state(paths, rel.tag, asset->name, channel_name);
+        result.ok = true;
+        result.installer_opened = true;
+        result.message = "Retro Launcher " + rel.tag + " downloaded (" + asset->name +
+                         "). Confirm the install in the dialog Android shows.";
+        return result;
+    }
+#endif
 
 #if defined(_WIN32)
     if (install.channel == RetcommInstallChannel::WindowsPortable) {

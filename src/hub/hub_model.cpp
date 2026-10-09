@@ -35,6 +35,9 @@
 #endif
 #include <windows.h>
 #endif
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 namespace retcomm::hub {
 
@@ -265,6 +268,11 @@ void HubModel::append_log(const std::string& line, LogLevel level) {
         if (end == std::string::npos) end = text.size();
         std::string one = text.substr(start, end - start);
         while (!one.empty() && one.back() == '\r') one.pop_back();
+#if defined(__ANDROID__)
+        // The console's Export cannot write through Android's document picker;
+        // `adb logcat -s Retro` reads the same lines.
+        if (!one.empty()) __android_log_write(ANDROID_LOG_INFO, "Retro", one.c_str());
+#endif
         if (!one.empty()) {
             if (!log_lines.empty() && log_lines.back().text == one) {
                 // Prefer a stronger level if the same line is re-posted (status + log).
@@ -2055,6 +2063,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     append_log(nm.message);
                 }
                 bool toolchain_upd = false;
+#if !defined(__ANDROID__)  // nothing builds on the device (ensure_pack)
                 {
                     set_status("Checking toolchain…");
                     auto tc = check_toolchain_update(paths);
@@ -2066,6 +2075,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     toolchain_status = tc.message;
                     toolchain_upd = tc.update_available;
                 }
+#endif
                 set_status("Checking game updates…");
                 refresh_rows(/*check_updates=*/true, /*force_github_tags=*/true);
                 int game_updates = 0;
@@ -2272,6 +2282,8 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                 }
                 if (ur.ok && ur.skipped)
                     set_status("Retro up to date (" + ur.current_tag + ")");
+                else if (ur.ok && ur.installer_opened)
+                    set_status("Confirm the Retro update in Android's installer");
                 else if (ur.ok)
                     set_status("Retro update complete");
                 else

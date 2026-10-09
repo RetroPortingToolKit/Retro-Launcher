@@ -54,12 +54,15 @@ COMMON=(-G Ninja "-DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmak
 if [[ ! -f "$WORK/curl-8.21.0/CMakeLists.txt" ]]; then
   tar -xf "$WORK/downloads/curl-8.21.0.tar.xz" -C "$WORK"
 fi
+# No default CA path: Android names its CA files by OpenSSL's old subject hash,
+# which OpenSSL 3 never looks up. The launcher hands curl the system store
+# itself (http_apply_tls_trust).
 cmake -S "$WORK/curl-8.21.0" -B "$WORK/$ABI/curl-build" "${COMMON[@]}" \
   -DBUILD_SHARED_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
   -DCURL_USE_OPENSSL=ON "-DOPENSSL_ROOT_DIR=$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON \
   -DHTTP_ONLY=ON -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF \
   -DUSE_NGHTTP2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DCURL_ZLIB=OFF \
-  -DCURL_CA_PATH=/system/etc/security/cacerts -DCURL_CA_BUNDLE=none
+  -DCURL_CA_PATH=none -DCURL_CA_BUNDLE=none
 cmake --build "$WORK/$ABI/curl-build" -j"$JOBS"
 cmake --install "$WORK/$ABI/curl-build"
 cmake -S "$SDL_SRC" -B "$WORK/$ABI/sdl-build" "${COMMON[@]}" \
