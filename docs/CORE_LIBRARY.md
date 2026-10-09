@@ -158,4 +158,7 @@ of his library index, and the Pokémon Stadium core built from n64lle
 - **Per-title options, save choice, and the Transfer Pak cartridge in the
   title page.** The play session starts with the core's defaults and no
   accessories.
-- **Generic cores with game packages.**
+- **Generic cores with game packages from a scan.** A generic core's sidecar
+  alone is still refused here; such a title comes in as a **title bundle**
+  through **Add/Scan Files → Install title (.zip)** (docs/ANDROID.md,
+  "Installing a title"), which registers its `title.json`.

@@ -3,12 +3,15 @@
 #include "imgui.h"
 
 #include "hub/hub_gl.hpp"
+#include "runner_probe.hpp" // Retro-Runtime: probe_runner
 
 #include <algorithm>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
+#include <map>
 #include <optional>
+#include <string>
 
 namespace retcomm::hub {
 
@@ -28,6 +31,22 @@ constexpr std::uint64_t kTurboBudgetNs = 10 * 1000000ull;
 // out over kTurboFadeMs so the splices do not click.
 constexpr double kTurboSoundLowMs = 40.0;
 constexpr double kTurboSoundHighMs = 100.0;
+
+// Whether the runner can lend a core a GL context (`gl 1` in its --version).
+// A runner built without SDL3 -- the Android APK's -- exits on --gl, so a
+// session asks for one only when the runner says it has one. Asked once per
+// runner for the life of the hub; a runner that cannot be asked keeps the
+// old behaviour (its start will say what is wrong).
+bool runner_lends_gl(const fs::path& runner) {
+    static std::map<std::string, bool> known;
+    const std::string key = corelink::path_utf8(runner);
+    if (auto it = known.find(key); it != known.end()) return it->second;
+    corelink::RunnerVersion v;
+    std::string err;
+    const bool gl = corelink::probe_runner(runner, v, &err) ? v.gl : true;
+    known.emplace(key, gl);
+    return gl;
+}
 constexpr double kTurboFadeMs = 4.0;
 constexpr int kVolumeStep = 10;
 
@@ -113,7 +132,10 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.title_dir = args.title_dir.empty() ? owner.parent_path() : args.title_dir;
     spec.session_dir = session_dir;
     spec.save_dir = save_dir;
-    spec.gl = args.gl;
+    spec.gl = args.gl && runner_lends_gl(runner);
+    if (args.gl && !spec.gl)
+        SDL_Log("retro-hub: %s lends no GL context (gl 0); the core runs without one",
+                corelink::path_utf8(runner).c_str());
     spec.options = args.options;
     spec.tpak_roms = args.tpak_rom;
     spec.env = args.env;

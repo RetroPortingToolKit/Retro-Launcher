@@ -3155,11 +3155,18 @@ void draw_library_panel(HubModel& hub, const Theme& th, SDL_Window* window) {
                             hub.library_import_platform, "BIOS files", exts, /*allow_many=*/false);
         }
         ImGui::EndDisabled();
+        // Not tied to the platform above: the bundle's title.json says which.
+        if (ImGui::Button("Install title (.zip)", ImVec2(-1, 0))) {
+            begin_file_pick(hub, window, retcomm::hub::FilePickKind::InstallTitle, std::string(),
+                            "Title bundles", {"zip"}, /*allow_many=*/false);
+        }
         ImGui::EndDisabled();
         ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
         ImGui::TextWrapped(
             "Copies into your library / saves / BIOS folders, then scans new files for that "
-            "platform. Multi-track discs: select the .cue and .bin tracks together.");
+            "platform. Multi-track discs: select the .cue and .bin tracks together. A title "
+            "bundle (title.json with its core and game package) installs a game that runs "
+            "through a core.");
         ImGui::PopStyleColor();
     }
 
@@ -14077,7 +14084,6 @@ int main(int argc, char** argv) {
         const fs::path cat = retcomm::resolve_catalog_dir(fs::path(argv[0]).parent_path(), {},
                                                           &hub.paths);
         hub.catalog = retcomm::load_catalog(cat);
-        hub.apply_core_titles();
         std::string cat_log = "Catalog: " + cat.string() + " (" +
                               std::to_string(hub.catalog.titles.size()) + " titles";
         if (!hub.catalog.release_tag.empty())
@@ -14089,6 +14095,9 @@ int main(int argc, char** argv) {
       } catch (const std::exception& e) {
         hub.append_log(std::string("catalog error: ") + e.what());
       }
+      // Registered core titles are local files: they join the library whether
+      // or not a catalog could be loaded (a first run with no network has none).
+      hub.apply_core_titles();
     }
     hub.launcher_version = retcomm::retcomm_app_version();
     hub.refresh_rows(false);

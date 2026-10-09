@@ -5,8 +5,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInstaller;
+import android.database.Cursor;
 import android.graphics.Insets;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -123,6 +126,24 @@ public final class LauncherActivity extends SDLActivity {
             installer.abandonSession(id);
             return e.toString();
         }
+    }
+
+    /**
+     * The name a file the picker returned goes by (hub_import.cpp): a content://
+     * URI carries none of its own, and a ROM's extension is how the library
+     * knows its platform. "" when the provider has no display name.
+     */
+    public String displayName(String uri) {
+        try (Cursor c = getContentResolver().query(Uri.parse(uri),
+                new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String name = c.getString(0);
+                return name != null ? name : "";
+            }
+        } catch (RuntimeException e) {
+            // An unreadable provider: no name, and the caller says so.
+        }
+        return "";
     }
 
     private void copyAssets(String path, File target) throws IOException {

@@ -376,6 +376,8 @@ enum class FilePickKind : int {
     ImportBios,
     ImportTexturePack,
     ExportActivityLog,
+    // A title bundle (.zip: title.json, core, game package; hub_import.hpp).
+    InstallTitle,
 };
 
 // Body page: platform cards → title grid for a platform → one title's page.

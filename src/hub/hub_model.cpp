@@ -3,6 +3,7 @@
 
 #include "retcomm/core_titles.hpp"
 #include "hub/hub_boxart.hpp"
+#include "hub/hub_import.hpp"
 
 #include "retcomm/build.hpp"
 #include "retcomm/cache_gc.hpp"
@@ -3236,6 +3237,42 @@ void HubModel::apply_pending_file_pick() {
         return;
     }
 
+    if (kind == FilePickKind::InstallTitle) {
+        retcomm::hub::InstalledTitle it;
+        std::string err;
+        if (!retcomm::hub::install_title_bundle(picked.front(), paths.data_dir / "titles",
+                                                fs::temp_directory_path() / "retcomm-import", &it,
+                                                &err)) {
+            append_log("Install title failed: " + err, LogLevel::Error);
+            set_status("Install title failed");
+            return;
+        }
+        // Registered like any core title (config.json core_titles), replacing
+        // an earlier install of the same bundle.
+        AppConfig c = load_app_config(paths.config_path);
+        c.core_titles.erase(std::remove_if(c.core_titles.begin(), c.core_titles.end(),
+                                           [&](const CoreTitleRef& r) {
+                                               std::error_code e;
+                                               return fs::equivalent(r.manifest, it.manifest, e);
+                                           }),
+                            c.core_titles.end());
+        CoreTitleRef ref;
+        ref.manifest = it.manifest;
+        c.core_titles.push_back(std::move(ref));
+        save_app_config(paths.config_path, c);
+        cfg = c;
+        unmerge_core_title(catalog, it.id);
+        apply_core_titles();
+        append_log("Installed " + it.name + " (" + it.manifest.parent_path().string() + ")",
+                   LogLevel::Good);
+        show_toast("Installed " + it.name);
+        // Its ROM may already be in the library: bind it now.
+        if (const Title* t = catalog.find(it.id)) scans_platform_filter = t->platform;
+        set_status("Installed " + it.name + " — scanning…");
+        start_job(HubJob::ScanRoms);
+        return;
+    }
+
     if (platform.empty() && title_id.empty()) return;
 
     cfg = load_app_config(paths.config_path);
@@ -3248,15 +3285,16 @@ void HubModel::apply_pending_file_pick() {
         }
         int ok = 0;
         for (const auto& p : picked) {
-            const fs::path src(p);
-            if (!fs::is_regular_file(src, ec)) {
-                append_log("Import: not a file: " + p);
+            // A path, or an Android content:// URI (hub_import.hpp).
+            const std::string name = retcomm::hub::picked_name(p);
+            if (name.empty()) {
+                append_log("Import: no file name for " + p);
                 continue;
             }
-            const fs::path dest = dest_dir / src.filename();
-            fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
-            if (ec) {
-                append_log("Import failed (" + src.filename().string() + "): " + ec.message());
+            const fs::path dest = dest_dir / name;
+            std::string err;
+            if (!retcomm::hub::copy_picked(p, dest, &err)) {
+                append_log("Import failed (" + name + "): " + err);
                 continue;
             }
             append_log("Imported " + dest.string());
@@ -3279,7 +3317,7 @@ void HubModel::apply_pending_file_pick() {
         if (picked.size() >= 2) {
             std::string set_name;
             for (const auto& p : picked) {
-                const fs::path src(p);
+                const fs::path src(retcomm::hub::picked_name(p));
                 std::string ext = src.extension().string();
                 for (char& c : ext)
                     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -3288,7 +3326,8 @@ void HubModel::apply_pending_file_pick() {
                     break;
                 }
             }
-            if (set_name.empty()) set_name = fs::path(picked.front()).stem().string();
+            if (set_name.empty())
+                set_name = fs::path(retcomm::hub::picked_name(picked.front())).stem().string();
             if (!set_name.empty()) dest_dir /= set_name;
         }
         if (!copy_into(dest_dir)) {
@@ -3296,13 +3335,14 @@ void HubModel::apply_pending_file_pick() {
             return;
         }
         {
-            std::string name = fs::path(picked.front()).filename().string();
+            std::string name = retcomm::hub::picked_name(picked.front());
             for (const auto& p : picked) {
-                std::string ext = fs::path(p).extension().string();
+                const std::string pn = retcomm::hub::picked_name(p);
+                std::string ext = fs::path(pn).extension().string();
                 for (char& c : ext)
                     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 if (ext == ".cue") {
-                    name = fs::path(p).filename().string();
+                    name = pn;
                     break;
                 }
             }

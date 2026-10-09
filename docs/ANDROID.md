@@ -93,6 +93,45 @@ payload is still built with release optimizations. Set `ANDROID_ABI=x86_64`
 for the native build and pass `-PretroAbi=x86_64` to Gradle to test on an
 emulator.
 
+## Installing a title
+
+A game runs through a **core** built for Android (n64lle's
+`tools/build_core.sh --platform android-arm64`), and a generic core needs the
+title's **game package** built for Android too (n64lle's cross build,
+`tools/emit_game.sh --arch arm64 --arm android`). Both are ROM-derived local
+builds, never published, so they reach a phone as a **title bundle**: a zip
+holding a schema 1 `title.json` (docs/RELEASES.md, "Title-app mode") at its
+root or in one folder, with the core, its `.rcore.toml`, the game package and
+`game.toml` beside it.
+
+**Add/Scan Files → Install title (.zip)** opens Android's file picker. The hub
+copies the pick out of its `content://` URI (SDL's stream), unpacks it into
+`<data dir>/titles/<id>/` (replacing an earlier install of that id), checks
+that `title.json` reads and that everything it names is inside the bundle,
+registers it in `config.json` `core_titles`, and scans for its ROM. **Import
+ROM** takes the ROM the same way, named by the provider's display name
+(`LauncherActivity.displayName`, over JNI), into the library's platform folder.
+Both work the same on a desktop, from a path.
+
+The core and the package are `dlopen`ed by the bundled runner from that app
+storage. Measured 2026-10-09 on a Pixel 6 Pro (Android 17, targetSdk 36):
+Pokemon Stadium installed this way, its ROM imported from Downloads, played
+from the library on the Vulkan renderer (Mali-G78) with no fault.
+
+What this needed in the shared code:
+
+- **No `--gl` without GL.** The Android runner has no SDL3 and reports `gl 0`;
+  a session asks for a GL context only when the runner reports one
+  (`hub_play.cpp` `runner_lends_gl`), so a play no longer exits on `--gl`.
+  n64lle then draws with Vulkan, or software, and says which.
+- **TLS on Android** (72455fb, `http_apply_tls_trust`): Android names its CA
+  files by OpenSSL's old subject hash and OpenSSL 3 looks a CApath up by the
+  new one, so nothing verified until the system store was loaded into every
+  handle. The catalog, box art and the netplay NAT probe all ride on it.
+
+Registered core titles also join the library when no catalog could be loaded
+(a first start without network), instead of being skipped with it.
+
 ## Platform scope
 
 This introduces the Android launcher build and packaging path. Desktop game

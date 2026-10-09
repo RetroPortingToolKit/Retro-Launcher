@@ -1,5 +1,7 @@
 #include "retcomm/netplay_nat.hpp"
 
+#include "retcomm/http.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -286,6 +288,7 @@ bool http(const std::string& url, const std::string& soap_action, const std::str
           std::string* out, long* status) {
     CURL* c = curl_easy_init();
     if (!c) return false;
+    http_apply_tls_trust(c);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, 4000L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_sink);
