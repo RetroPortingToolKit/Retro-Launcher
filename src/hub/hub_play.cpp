@@ -369,13 +369,20 @@ void PlaySession::poll_states_pad(std::uint64_t now) {
 void PlaySession::service_states() {
     const std::uint64_t now = SDL_GetTicksNS();
     // Closing: whatever is held now stays out of the game until released.
-    const bool open = states_.is_open();
-    if (states_were_open_ && !open) {
-        rcore_pad pads[RCORE_MAX_SEATS];
-        fill_pads(pads);
-        guard_.arm(pads, kSeats);
-    }
-    states_were_open_ = open;
+    // Checked again after the state result below, which closes the menu on a
+    // load and asks for the next frame at once: armed only on the next call,
+    // that frame went out with the A that chose the slot still held, and the
+    // restored game -- whose RAM says it was not held -- took it as a press.
+    const auto guard_on_close = [&] {
+        const bool open = states_.is_open();
+        if (states_were_open_ && !open) {
+            rcore_pad pads[RCORE_MAX_SEATS];
+            fill_pads(pads);
+            guard_.arm(pads, kSeats);
+        }
+        states_were_open_ = open;
+    };
+    guard_on_close();
     if (std::string t = states_.take_toast(); !t.empty()) osd_.toast(t, now);
 
     using Req = retro::overlay::SavestateMenu::Request;
@@ -397,6 +404,7 @@ void PlaySession::service_states() {
         SDL_Log("retro-hub: state %s %s: %s", r->save ? "save" : "load",
                 r->path.string().c_str(), r->ok ? "ok" : r->detail.c_str());
         states_.finish(r->ok, r->detail);
+        guard_on_close();
         if (r->ok && !r->save) next_grant_ns_ = 0;
     }
 }
