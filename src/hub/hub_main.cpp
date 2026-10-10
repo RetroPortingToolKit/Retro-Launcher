@@ -11108,60 +11108,21 @@ bool draw_gb_file_list(CoreSettingsPage& p, const Theme& th, const std::vector<f
     return chose;
 }
 
-// The Gamepads tab shows one seat at a time, picked from a row of tabs; the
-// seat's card and the pak panels under it share this width.
-constexpr float kSeatPanelMaxW = 460.f;
-// Two panels side by side need this much each.
-constexpr float kSeatPanelMinW = 300.f;
-
-// The player tabs: one button per seat, scrolling sideways when they do not
-// fit (a touch drag moves them, hub_touch.cpp). No explanation: they are tabs.
-void draw_seat_tabs(CoreSettingsPage& p, const Theme& th) {
-    constexpr float kTabW = 120.f;
-    const float gap = th.spacing_sm;
-    const int n = retcomm::hub::kInputSeats;
-    p.seat_tab = std::clamp(p.seat_tab, 0, n - 1);
-    const float need = static_cast<float>(n) * kTabW + static_cast<float>(n - 1) * gap;
-    const bool overflows = need > ImGui::GetContentRegionAvail().x;
-    const float h = ImGui::GetFrameHeight() + (overflows ? ImGui::GetStyle().ScrollbarSize : 0.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
-    ImGui::BeginChild("seat_tabs", ImVec2(0, h), ImGuiChildFlags_NavFlattened,
-                      ImGuiWindowFlags_HorizontalScrollbar);
-    ImGui::PopStyleVar();
-    for (int s = 0; s < n; ++s) {
-        if (s) ImGui::SameLine(0, gap);
-        char label[24];
-        std::snprintf(label, sizeof label, "PLAYER %d##seat%d", s + 1, s);
-        const ImVec2 sz(kTabW, 0);
-        const bool picked = s == p.seat_tab ? accent_button(label, th, sz) : ImGui::Button(label, sz);
-        if (picked && s != p.seat_tab) {
-            p.seat_tab = s;
-            p.configuring = -1;
-            cancel_core_capture(p);
-        }
-        if (s == p.seat_tab && picked) ImGui::SetScrollHereX();
-    }
-    ImGui::EndChild();
-}
-
 void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& th,
-                               BoxartCache& boxart, bool beside) {
+                               BoxartCache& boxart, int seat) {
     using retcomm::hub::SeatPak;
-    // The selected seat's pak only; the tabs above pick the seat.
-    if (p.input.paks[static_cast<size_t>(p.seat_tab)].kind != SeatPak::TransferPak) return;
+    // A native picker's answer goes to the seat it was opened for (pak_seat),
+    // shown or not: the player may have switched tabs while it was open.
+    take_gb_file_pick(p);
+    if (p.input.paks[static_cast<size_t>(seat)].kind != SeatPak::TransferPak) return;
     // Direct mode: no library, so the OS file picker (native) instead of lists.
     const bool native = p.direct;
-    take_gb_file_pick(p);
     if (!native && !p.gb_scanned) start_gb_scan(hub, p);
     if (p.gb_scan.valid() && p.gb_scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
         p.gb = p.gb_scan.get();
     const bool scanning = !native && p.gb_scan.valid();
     const bool picking = gb_file_pick_busy(p);
 
-    if (!beside) {
-        ImGui::Dummy(ImVec2(0, th.spacing_md));
-        ImGui::Separator();
-    }
     ImGui::TextColored(th.text_muted, "TRANSFER PAK");
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     if (native) {
@@ -11192,16 +11153,14 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
     constexpr const char* kRomPicker = "Choose a Game Boy ROM";
     constexpr const char* kSavePicker = "Choose a save";
     constexpr const char* kNewSave = "Create New Save";
-    // The selected seat's panel, under its controller card.
-    const float cardw = std::min(ImGui::GetContentRegionAvail().x, kSeatPanelMaxW);
+    // The selected player's pak, in the Gamepads tab's accessory panel.
     static const fs::path pak_art = find_hub_asset_file("controllers", "n64_transfer_pak.png");
     {
-        const int s = p.seat_tab;
+        const int s = seat;
         SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
         ImGui::PushID(s);
-        ImGui::BeginChild("tpak", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
-                                                        ImGuiChildFlags_NavFlattened);
-        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
+        ImGui::BeginChild("tpak", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                                                    ImGuiChildFlags_NavFlattened);
         // The pak itself (assets/src/n64_transfer_pak.svg).
         if (const BoxartTexture* tex = pak_art.empty() ? nullptr : boxart.get("pad:n64:tpak", pak_art);
             tex && tex->width > 0) {
@@ -11354,12 +11313,12 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
 // the recording device, its level, a Test of the recognizer, the recognizer
 // and model, and the title's vocabulary. The microphone runs while a panel is
 // on screen (meter only); Test puts the recognizer on it for a few seconds.
-void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool beside) {
+void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, int seat) {
     using retcomm::hub::SeatPak;
     namespace vru = retcomm::hub::vru;
     CoreSettingsPage::VruPanel& v = p.vru;
-    // The selected seat's microphone only; the tabs above pick the seat.
-    if (p.input.paks[static_cast<size_t>(p.seat_tab)].kind != SeatPak::Vru) {
+    // The microphone runs while a panel is on screen: the selected player's.
+    if (p.input.paks[static_cast<size_t>(seat)].kind != SeatPak::Vru) {
         stop_vru_panel(p);
         return;
     }
@@ -11399,12 +11358,9 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool 
         }
     }
     // One VRU seat drives the one microphone: the first seat set to it.
-    int first = -1, last = -1;
-    for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
-        if (p.input.paks[static_cast<size_t>(s)].kind != SeatPak::Vru) continue;
-        if (first < 0) first = s;
-        last = s;
-    }
+    int first = -1;
+    for (int s = 0; s < retcomm::hub::kInputSeats && first < 0; ++s)
+        if (p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru) first = s;
     const std::string& device = p.input.paks[static_cast<size_t>(first)].vru_device;
     if (v.mic_started && v.mic_device == device && !v.mic.running()) {
         // The worker ended on its own (the device would not open, or went
@@ -11438,10 +11394,6 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool 
         if (!partial.empty() && v.test_text.rfind("heard: ", 0) != 0) v.test_text = partial + "\xE2\x80\xA6";
     }
 
-    if (!beside) {
-        ImGui::Dummy(ImVec2(0, th.spacing_md));
-        ImGui::Separator();
-    }
     ImGui::TextColored(th.text_muted, "VRU MICROPHONE");
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped("The port is the voice unit: it reads no controller. In the game, hold Z on "
@@ -11450,14 +11402,12 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool 
                        "machine; the English model is downloaded once.");
     ImGui::PopStyleColor();
 
-    const float cardw = std::min(ImGui::GetContentRegionAvail().x, kSeatPanelMaxW);
     {
-        const int s = p.seat_tab;
+        const int s = seat;
         SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
         ImGui::PushID(s);
-        ImGui::BeginChild("vru", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
-                                                       ImGuiChildFlags_NavFlattened);
-        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
+        ImGui::BeginChild("vru", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                                                   ImGuiChildFlags_NavFlattened);
         ImGui::TextColored(th.text_muted, "Microphone");
         ImGui::SetNextItemWidth(-1.f);
         {
@@ -11582,64 +11532,102 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool 
 void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
                             BoxartCache& boxart) {
     using namespace retcomm::hub;
-    // No border: the page is already the panel, and this is only its scrolling
-    // body above the pinned footer.
-    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_NavFlattened,
-                      page_wheel_flags(hub));
-    draw_seat_tabs(p, th);
-    ImGui::Dummy(ImVec2(0, 8));
+    // The tabs stay put; each panel below scrolls on its own, so a short
+    // screen (a phone in landscape) keeps the player row and both panels in
+    // view instead of scrolling them all away together.
+    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+    ImGui::TextWrapped("The console's four controller ports. Pick a player (L1 / R1 on a gamepad).");
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Each player's controller is on the left (Configure opens its maps) and what "
+                          "is plugged into it on the right. Auto seats take the gamepads that are not "
+                          "claimed, in the order they connected; with none, port 1 is the keyboard.");
+    ImGui::Dummy(ImVec2(0, 4));
 
     const std::vector<ConnectedPad> pads = connected_pads();
     std::vector<std::string> guids;
     for (const auto& c : pads) guids.push_back(c.guid);
     const auto plan = plan_seats(p.input, guids);
 
-    // The seat's controller on the left and, when it holds a Transfer Pak or the
-    // VRU, that accessory on the right; stacked when the screen is too narrow
-    // for two panels.
-    const SeatPak::Kind seat_pak = p.input.paks[static_cast<size_t>(p.seat_tab)].kind;
-    const bool has_accessory = seat_pak == SeatPak::TransferPak || seat_pak == SeatPak::Vru;
-    const float page_w = ImGui::GetContentRegionAvail().x;
-    const float acc_gap = th.spacing_md;
-    const bool beside = has_accessory && page_w >= kSeatPanelMinW * 2.f + acc_gap;
-    const float cardw = beside ? (page_w - acc_gap) * 0.5f : std::min(page_w, kSeatPanelMaxW);
-
+    // The player tabs, one row: the selected one in the accent colour, each
+    // with its device's dot. L1 / R1 step through them while nothing modal is
+    // open (the controller page and the pickers have the pads then).
+    const float gap = th.spacing_md;
+    int& sel = p.seat_tab;
+    sel = std::clamp(sel, 0, kInputSeats - 1);
+    if (p.configuring < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) sel = (sel + kInputSeats - 1) % kInputSeats;
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) sel = (sel + 1) % kInputSeats;
+    }
     {
-        const int s = p.seat_tab;
-        ImGui::PushID(s);
-        ImGui::BeginChild("seatcard", ImVec2(cardw, 0),
-                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-        ImGui::TextColored(th.text_muted, "PLAYER %d", s + 1);
-        ImGui::Dummy(ImVec2(0, 4));
-        // The controller this port takes (assets/src/n64_controller.svg).
-        if (p.platform == "n64") {
-            static const fs::path art = find_hub_asset_file("controllers", "n64_controller.png");
-            if (const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("pad:n64:card", art);
-                tex && tex->width > 0) {
-                const float w = std::min(ImGui::GetContentRegionAvail().x, 260.f);
-                const float h = w * static_cast<float>(tex->height) / static_cast<float>(tex->width);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
-                                     (ImGui::GetContentRegionAvail().x - w) * 0.5f);
-                ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(w, h));
-                ImGui::Dummy(ImVec2(0, 2));
+        const float tabw = (ImGui::GetContentRegionAvail().x - gap * (kInputSeats - 1)) / kInputSeats;
+        constexpr float tabh = 36.f;
+        for (int t = 0; t < kInputSeats; ++t) {
+            if (t) ImGui::SameLine(0, gap);
+            ImGui::PushID(t);
+            const std::string label = "Player " + std::to_string(t + 1);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const bool pressed = t == sel ? accent_button(label.c_str(), th, ImVec2(tabw, tabh))
+                                          : ImGui::Button(label.c_str(), ImVec2(tabw, tabh));
+            if (pressed && t != sel) {
+                sel = t;
+                p.configuring = -1;
+                cancel_core_capture(p);
             }
+            const SeatPlan& tp = plan[static_cast<size_t>(t)];
+            const bool on = tp.connected() || tp.vru;
+            constexpr float r = 4.f;
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(at.x + 12.f, at.y + tabh * 0.5f), r,
+                ImGui::ColorConvertFloat4ToU32(on ? th.good : th.text_muted));
+            ImGui::PopID();
         }
-        const bool vru_seat = p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru;
-        ImGui::SetNextItemWidth(-1.f);
-        if (vru_seat) {
-            // The port is the voice unit's: no controller reads here, as on
-            // the console (the pad, if any, goes to the next Auto seat).
-            ImGui::BeginDisabled();
-            if (ImGui::BeginCombo("##src", "VRU Microphone (no controller)")) ImGui::EndCombo();
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("This port holds the VRU Microphone, so it reads no controller. "
-                                  "Set Pak to None to give it a controller again.");
-        } else {
-            draw_core_seat_source_combo(p, s, pads);
-        }
-        ImGui::Dummy(ImVec2(0, 4));
+    }
+    ImGui::Dummy(ImVec2(0, th.spacing_sm));
 
+    // The selected player: the controller on the left, its accessory on the right.
+    const int s = sel;
+    const float colw = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+    const float colh = std::max(80.f, ImGui::GetContentRegionAvail().y);
+    ImGui::PushID(s);
+    ImGui::BeginChild("seatcard", ImVec2(colw, colh), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "CONTROLLER");
+    ImGui::Dummy(ImVec2(0, 4));
+    // The controller this port takes (assets/src/n64_controller.svg).
+    if (p.platform == "n64") {
+        static const fs::path art = find_hub_asset_file("controllers", "n64_controller.png");
+        if (const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("pad:n64:card", art);
+            tex && tex->width > 0) {
+            // As large as fits with the device and Configure still in view
+            // below it (about 130 px), so a short panel shows the controls.
+            const float aspect = static_cast<float>(tex->height) / static_cast<float>(tex->width);
+            const float maxh = std::max(60.f, ImGui::GetContentRegionAvail().y - 130.f);
+            const float w = std::min({ImGui::GetContentRegionAvail().x, 320.f, maxh / aspect});
+            const float h = w * aspect;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - w) * 0.5f);
+            ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(w, h));
+            ImGui::Dummy(ImVec2(0, 2));
+        }
+    }
+    const bool vru_seat = p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru;
+    ImGui::SetNextItemWidth(-1.f);
+    if (vru_seat) {
+        // The port is the voice unit's: no controller reads here, as on
+        // the console (the pad, if any, goes to the next Auto seat).
+        ImGui::BeginDisabled();
+        if (ImGui::BeginCombo("##src", "VRU Microphone (no controller)")) ImGui::EndCombo();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("This port holds the VRU Microphone, so it reads no controller. "
+                              "Set Pak to None to give it a controller again.");
+    } else {
+        draw_core_seat_source_combo(p, s, pads);
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    {
         const float cw = ImGui::GetContentRegionAvail().x;
         const float half = (cw - th.spacing_sm) * 0.5f;
         constexpr float btnh = 32.f;
@@ -11653,84 +11641,89 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
         }
         ImGui::EndDisabled();
         ImGui::SameLine(0, th.spacing_sm);
-        {
-            const SeatPlan& sp = plan[static_cast<size_t>(s)];
-            std::string st = "no device";
-            if (sp.vru) st = "voice unit";
-            else if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
-            else if (sp.keyboard) st = "keyboard";
-            const bool on = sp.connected() || sp.vru;
-            const float sw = 18.f + ImGui::CalcTextSize(st.c_str()).x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btnh - ImGui::GetTextLineHeight()) * 0.5f);
-            const ImVec2 c = ImGui::GetCursorScreenPos();
-            constexpr float r = 4.f;
-            ImGui::GetWindowDrawList()->AddCircleFilled(
-                ImVec2(c.x + r, c.y + ImGui::GetTextLineHeight() * 0.5f), r,
-                ImGui::ColorConvertFloat4ToU32(on ? th.good : th.text_muted));
-            ImGui::Dummy(ImVec2(r * 2.f + 6.f, 0));
-            ImGui::SameLine(0, 0);
-            ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
-                                ImVec2(ImGui::GetWindowPos().x +
-                                           ImGui::GetWindowContentRegionMax().x,
-                                       ImGui::GetCursorScreenPos().y + btnh),
-                                true);
-            ImGui::TextColored(on ? th.good : th.text_muted, "%s", st.c_str());
-            ImGui::PopClipRect();
-        }
+        const SeatPlan& sp = plan[static_cast<size_t>(s)];
+        std::string st = "no device";
+        if (sp.vru) st = "voice unit";
+        else if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
+        else if (sp.keyboard) st = "keyboard";
+        const bool on = sp.connected() || sp.vru;
+        const float sw = 18.f + ImGui::CalcTextSize(st.c_str()).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (half - sw) * 0.5f));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btnh - ImGui::GetTextLineHeight()) * 0.5f);
+        const ImVec2 c = ImGui::GetCursorScreenPos();
+        constexpr float r = 4.f;
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(c.x + r, c.y + ImGui::GetTextLineHeight() * 0.5f), r,
+            ImGui::ColorConvertFloat4ToU32(on ? th.good : th.text_muted));
+        ImGui::Dummy(ImVec2(r * 2.f + 6.f, 0));
+        ImGui::SameLine(0, 0);
+        ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
+                            ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x,
+                                   ImGui::GetCursorScreenPos().y + btnh),
+                            true);
+        ImGui::TextColored(on ? th.good : th.text_muted, "%s", st.c_str());
+        ImGui::PopClipRect();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine(0, gap);
+    ImGui::BeginChild("accessory", ImVec2(0, colh), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                      page_wheel_flags(hub));
+    ImGui::TextColored(th.text_muted, "ACCESSORY");
+    ImGui::Dummy(ImVec2(0, 4));
+    if (p.platform == "n64") {
         // The controller's expansion slot.
-        if (p.platform == "n64") {
-            using retcomm::hub::SeatPak;
-            SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
-            ImGui::Dummy(ImVec2(0, 4));
-            ImGui::SetNextItemWidth(-1.f);
-            const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak"
-                              : pak.kind == SeatPak::Vru       ? "VRU Microphone"
-                                                               : "None";
-            // The VRU is offered only when the described core declares the
-            // n64.vru accessory for this seat (an older core: the entry stays,
-            // disabled, and says why), the way Transfer Pak support is read
-            // from what the title declares.
-            const retcomm::hub::CoreAccessoryDecl* vru_decl =
-                p.desc.ok ? p.desc.accessory(retcomm::hub::kVruAccessoryId) : nullptr;
-            const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
-            if (ImGui::BeginCombo("##pak", (std::string("Pak: ") + now).c_str())) {
-                if (ImGui::Selectable("None", pak.kind == SeatPak::None)) pak.kind = SeatPak::None;
-                if (ImGui::Selectable("Transfer Pak", pak.kind == SeatPak::TransferPak))
-                    pak.kind = SeatPak::TransferPak;
-                ImGui::BeginDisabled(!vru_here && pak.kind != SeatPak::Vru);
-                if (ImGui::Selectable("VRU Microphone", pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
-                ImGui::EndDisabled();
-                if (!vru_here && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip(
-                        !p.desc_ready ? "Waiting for the core to describe itself."
-                        : !p.desc.ok  ? "No core description: the VRU is offered once a core "
-                                        "that declares it has described itself."
-                        : !vru_decl   ? "%s %s does not declare the VRU Microphone (n64.vru). "
-                                        "A newer core is needed."
-                                      : "%s %s does not take the VRU on this port.",
-                        p.desc.core_id.c_str(), p.desc.core_version.c_str());
-                ImGui::EndCombo();
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak, or the "
-                                  "VRU Microphone (the port becomes the voice unit; Hey You, "
-                                  "Pikachu! has it on port 4). The Controller Pak and Rumble Pak "
-                                  "are not implemented yet.");
+        SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+        ImGui::SetNextItemWidth(-1.f);
+        const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak"
+                          : pak.kind == SeatPak::Vru       ? "VRU Microphone"
+                                                           : "None";
+        // The VRU is offered only when the described core declares the
+        // n64.vru accessory for this seat (an older core: the entry stays,
+        // disabled, and says why), the way Transfer Pak support is read
+        // from what the title declares.
+        const CoreAccessoryDecl* vru_decl = p.desc.ok ? p.desc.accessory(kVruAccessoryId) : nullptr;
+        const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
+        if (ImGui::BeginCombo("##pak", (std::string("Pak: ") + now).c_str())) {
+            if (ImGui::Selectable("None", pak.kind == SeatPak::None)) pak.kind = SeatPak::None;
+            if (ImGui::Selectable("Transfer Pak", pak.kind == SeatPak::TransferPak))
+                pak.kind = SeatPak::TransferPak;
+            ImGui::BeginDisabled(!vru_here && pak.kind != SeatPak::Vru);
+            if (ImGui::Selectable("VRU Microphone", pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
+            ImGui::EndDisabled();
+            if (!vru_here && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(
+                    !p.desc_ready ? "Waiting for the core to describe itself."
+                    : !p.desc.ok  ? "No core description: the VRU is offered once a core "
+                                    "that declares it has described itself."
+                    : !vru_decl   ? "%s %s does not declare the VRU Microphone (n64.vru). "
+                                    "A newer core is needed."
+                                  : "%s %s does not take the VRU on this port.",
+                    p.desc.core_id.c_str(), p.desc.core_version.c_str());
+            ImGui::EndCombo();
         }
-        ImGui::EndChild();
-        ImGui::PopID();
-    }
-    if (has_accessory) {
-        if (beside) {
-            ImGui::SameLine(0, acc_gap);
-            ImGui::BeginChild("seat_accessory", ImVec2(page_w - cardw - acc_gap, 0),
-                              ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("What is plugged into this controller: a Transfer Pak, or the "
+                              "VRU Microphone (the port becomes the voice unit; Hey You, "
+                              "Pikachu! has it on port 4). The Controller Pak and Rumble Pak "
+                              "are not implemented yet.");
+        ImGui::Dummy(ImVec2(0, th.spacing_sm));
+        if (pak.kind == SeatPak::None) {
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped("Nothing is plugged into player %d's controller.", s + 1);
+            ImGui::PopStyleColor();
         }
-        draw_transfer_pak_section(hub, p, th, boxart, beside);
-        draw_vru_section(hub, p, th, beside);
-        if (beside) ImGui::EndChild();
+        draw_transfer_pak_section(hub, p, th, boxart, s);
+        draw_vru_section(hub, p, th, s);
+    } else {
+        stop_vru_panel(p);
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextWrapped("This console's controllers take no accessories here.");
+        ImGui::PopStyleColor();
     }
+    ImGui::EndChild();
+    ImGui::PopID();
+
     ImGui::EndChild();
     draw_core_configure_modal(p, th, boxart);
 }
