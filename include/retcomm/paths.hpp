@@ -53,7 +53,7 @@ fs::path resolve_catalog_dir(const fs::path& exe_dir,
                              const fs::path& override_dir = {},
                              const Paths* paths = nullptr);
 
-std::string host_os_key(); // "linux" | "windows" | "macos"
+std::string host_os_key(); // "linux" | "windows" | "macos" | "android"
 
 // Open a directory (or a file's parent) in the OS file manager, detached.
 // Uses explorer / open / xdg-open as appropriate. Returns false on failure.

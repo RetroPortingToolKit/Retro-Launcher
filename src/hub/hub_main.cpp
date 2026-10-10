@@ -590,6 +590,12 @@ using retcomm::hub::TitleRow;
 bool core_settings_platform(const std::string& platform);
 const char* core_settings_button_label(const std::string& platform);
 bool core_settings_dirty();
+// The page's title and its System / Gamepads switch, drawn by the header
+// (draw_marquee) rather than inside the page. The label is null where the page
+// has no switch.
+std::string core_settings_header_title();
+const char* core_settings_switch_label();
+void core_settings_switch();
 bool save_core_settings(HubModel& hub, std::string* err);
 void close_core_settings(HubModel& hub);
 void open_core_settings_for_library(HubModel& hub, const std::string& platform,
@@ -629,7 +635,13 @@ void begin_folder_pick(HubModel& hub, SDL_Window* window, FolderPickTarget targe
     }
     const char* start = nullptr;
     if (current_path && current_path[0] != '\0') start = current_path;
+#if defined(__ANDROID__)
+    (void)window;
+    (void)start;
+    retcomm::hub::android_show_folder_dialog(on_folder_dialog, &hub);  // SDL has no folder dialog here
+#else
     SDL_ShowOpenFolderDialog(on_folder_dialog, &hub, window, start, false);
+#endif
 }
 
 void SDLCALL on_file_dialog(void* userdata, const char* const* filelist, int /*filter*/) {
@@ -1202,14 +1214,28 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         }
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX, p0.y + 14.f));
+    // A core's settings page names itself here ("<core> Settings") in place of
+    // the product name and its tagline.
+    std::string brand = "Retro Launcher";
+    bool core_page = false;
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (hub.show_core_settings) {
+        core_page = true;
+        brand = core_settings_header_title();
+    }
+#endif
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX,
+                                     core_page ? p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f
+                                               : p0.y + 14.f));
     ImGui::PushStyleColor(ImGuiCol_Text, th.good);
-    ImGui::TextUnformatted("Retro Launcher");
+    ImGui::TextUnformatted(brand.c_str());
     ImGui::PopStyleColor();
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX, p0.y + 40.f));
-    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-    ImGui::TextUnformatted("Retro Compilation Manager");
-    ImGui::PopStyleColor();
+    if (!core_page) {
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + kBrandX, p0.y + 40.f));
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextUnformatted("Retro Compilation Manager");
+        ImGui::PopStyleColor();
+    }
 
     // Status chip (left of top-right actions).
     std::string chip = "Ready";
@@ -1256,8 +1282,9 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         const float chip_h = chip_sz.y + chip_pad_y * 2.f;
         // Clear of both brand lines (title + subtitle), not just the name.
         const float brand_w =
-            std::max(ImGui::CalcTextSize("Retro Launcher").x,
-                     ImGui::CalcTextSize("Retro Compilation Manager").x);
+            core_page ? ImGui::CalcTextSize(brand.c_str()).x
+                      : std::max(ImGui::CalcTextSize(brand.c_str()).x,
+                                 ImGui::CalcTextSize("Retro Compilation Manager").x);
         const float chip_x = p0.x + kBrandX + brand_w + 28.f;
         const float chip_y = p0.y + (h - chip_h) * 0.5f;
         const ImVec2 c0(chip_x, chip_y);
@@ -1308,6 +1335,16 @@ void draw_marquee(HubModel& hub, const Theme& th, float width) {
         ImGui::SetCursorScreenPos(ImVec2(p0.x + width - 16.f - cancel_w, btn_y));
         if (ImGui::Button(cancel_label, ImVec2(cancel_w, kMenuH)))
             hub.show_library_panel = false;
+    } else if (core_page) {
+        // Save and Cancel live in the page's footer; the corner holds the one
+        // switch between the page's two halves.
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        if (const char* label = core_settings_switch_label()) {
+            const float w = std::max(120.f, ImGui::CalcTextSize(label).x + frame_pad_x * 2.f);
+            ImGui::SetCursorScreenPos(ImVec2(p0.x + width - 16.f - w, btn_y));
+            if (good_button(label, th, ImVec2(w, kMenuH))) core_settings_switch();
+        }
+#endif
     } else if (in_settings) {
         const char* save_label = "Save";
         const char* cancel_label = "Cancel";
@@ -1916,6 +1953,18 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
             cards.push_back({plat, platform_display_name(plat),
                              std::to_string(n) + (n == 1 ? " title" : " titles")});
         }
+#if defined(__ANDROID__)
+        // The library lists only what plays here (title_runs_on_host): until a
+        // title bundle is installed, nothing.
+        if (cards.empty()) {
+            ImGui::Dummy(ImVec2(0, 24.f));
+            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+            ImGui::TextWrapped(
+                "No games for this device yet. Games run here through a core: install a "
+                "title bundle from the menu, Add/Scan Files, Install title (.zip).");
+            ImGui::PopStyleColor();
+        }
+#endif
 
         // Home tiles: portrait cards (~ES style), larger than the title grid
         // and centred on both axes so the page reads as a dashboard from a
@@ -9814,6 +9863,7 @@ struct CoreSettingsPage {
     std::map<std::string, std::string> disp_plat, disp_plat_saved, disp_title, disp_title_saved;
 
     bool gamepads_tab = false;
+    int seat_tab = 0;         // the Gamepads tab's selected player
     // Direct mode, local builds: the core's developer options on a page of
     // their own (the green Developer button), not beside the player's.
     bool developer_page = false;
@@ -11058,21 +11108,47 @@ bool draw_gb_file_list(CoreSettingsPage& p, const Theme& th, const std::vector<f
     return chose;
 }
 
-// The Gamepads tab's grid: how many seat columns fit, and each one's width.
-// The Transfer Pak panels use the same one, so each sits under its seat.
-int seat_grid(float availw, float gap, float* cardw) {
-    int cols = std::clamp(static_cast<int>((availw + gap) / (280.f + gap)), 1, 4);
-    if (cols == 3) cols = 2; // four seats: a 2x2 grid reads better than 3+1
-    *cardw = (availw - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-    return cols;
+// The Gamepads tab shows one seat at a time, picked from a row of tabs; the
+// seat's card and the pak panels under it share this width.
+constexpr float kSeatPanelMaxW = 460.f;
+// Two panels side by side need this much each.
+constexpr float kSeatPanelMinW = 300.f;
+
+// The player tabs: one button per seat, scrolling sideways when they do not
+// fit (a touch drag moves them, hub_touch.cpp). No explanation: they are tabs.
+void draw_seat_tabs(CoreSettingsPage& p, const Theme& th) {
+    constexpr float kTabW = 120.f;
+    const float gap = th.spacing_sm;
+    const int n = retcomm::hub::kInputSeats;
+    p.seat_tab = std::clamp(p.seat_tab, 0, n - 1);
+    const float need = static_cast<float>(n) * kTabW + static_cast<float>(n - 1) * gap;
+    const bool overflows = need > ImGui::GetContentRegionAvail().x;
+    const float h = ImGui::GetFrameHeight() + (overflows ? ImGui::GetStyle().ScrollbarSize : 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+    ImGui::BeginChild("seat_tabs", ImVec2(0, h), ImGuiChildFlags_NavFlattened,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PopStyleVar();
+    for (int s = 0; s < n; ++s) {
+        if (s) ImGui::SameLine(0, gap);
+        char label[24];
+        std::snprintf(label, sizeof label, "PLAYER %d##seat%d", s + 1, s);
+        const ImVec2 sz(kTabW, 0);
+        const bool picked = s == p.seat_tab ? accent_button(label, th, sz) : ImGui::Button(label, sz);
+        if (picked && s != p.seat_tab) {
+            p.seat_tab = s;
+            p.configuring = -1;
+            cancel_core_capture(p);
+        }
+        if (s == p.seat_tab && picked) ImGui::SetScrollHereX();
+    }
+    ImGui::EndChild();
 }
 
 void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& th,
-                               BoxartCache& boxart) {
+                               BoxartCache& boxart, bool beside) {
     using retcomm::hub::SeatPak;
-    bool any = false;
-    for (const SeatPak& pak : p.input.paks) any = any || pak.kind == SeatPak::TransferPak;
-    if (!any) return;
+    // The selected seat's pak only; the tabs above pick the seat.
+    if (p.input.paks[static_cast<size_t>(p.seat_tab)].kind != SeatPak::TransferPak) return;
     // Direct mode: no library, so the OS file picker (native) instead of lists.
     const bool native = p.direct;
     take_gb_file_pick(p);
@@ -11082,8 +11158,10 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
     const bool scanning = !native && p.gb_scan.valid();
     const bool picking = gb_file_pick_busy(p);
 
-    ImGui::Dummy(ImVec2(0, th.spacing_md));
-    ImGui::Separator();
+    if (!beside) {
+        ImGui::Dummy(ImVec2(0, th.spacing_md));
+        ImGui::Separator();
+    }
     ImGui::TextColored(th.text_muted, "TRANSFER PAK");
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     if (native) {
@@ -11114,23 +11192,12 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
     constexpr const char* kRomPicker = "Choose a Game Boy ROM";
     constexpr const char* kSavePicker = "Choose a save";
     constexpr const char* kNewSave = "Create New Save";
-    // One panel per seat with a pak, in the controller cards' columns, so each
-    // sits under its controller; a seat without one leaves its column empty.
-    const float gap = th.spacing_md;
-    float cardw = 0.f;
-    const int cols = seat_grid(ImGui::GetContentRegionAvail().x, gap, &cardw);
-    int last = -1;
-    for (int s = 0; s < retcomm::hub::kInputSeats; ++s)
-        if (p.input.paks[static_cast<size_t>(s)].kind == SeatPak::TransferPak) last = s;
+    // The selected seat's panel, under its controller card.
+    const float cardw = std::min(ImGui::GetContentRegionAvail().x, kSeatPanelMaxW);
     static const fs::path pak_art = find_hub_asset_file("controllers", "n64_transfer_pak.png");
-    for (int s = 0; s <= last; ++s) {
-        if (s % cols) ImGui::SameLine(0, gap);
-        else if (s) ImGui::Dummy(ImVec2(0, gap));
+    {
+        const int s = p.seat_tab;
         SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
-        if (pak.kind != SeatPak::TransferPak) {
-            ImGui::Dummy(ImVec2(cardw, 1.f));
-            continue;
-        }
         ImGui::PushID(s);
         ImGui::BeginChild("tpak", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
                                                         ImGuiChildFlags_NavFlattened);
@@ -11287,13 +11354,12 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
 // the recording device, its level, a Test of the recognizer, the recognizer
 // and model, and the title's vocabulary. The microphone runs while a panel is
 // on screen (meter only); Test puts the recognizer on it for a few seconds.
-void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
+void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool beside) {
     using retcomm::hub::SeatPak;
     namespace vru = retcomm::hub::vru;
     CoreSettingsPage::VruPanel& v = p.vru;
-    bool any = false;
-    for (const SeatPak& pak : p.input.paks) any = any || pak.kind == SeatPak::Vru;
-    if (!any) {
+    // The selected seat's microphone only; the tabs above pick the seat.
+    if (p.input.paks[static_cast<size_t>(p.seat_tab)].kind != SeatPak::Vru) {
         stop_vru_panel(p);
         return;
     }
@@ -11372,8 +11438,10 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
         if (!partial.empty() && v.test_text.rfind("heard: ", 0) != 0) v.test_text = partial + "\xE2\x80\xA6";
     }
 
-    ImGui::Dummy(ImVec2(0, th.spacing_md));
-    ImGui::Separator();
+    if (!beside) {
+        ImGui::Dummy(ImVec2(0, th.spacing_md));
+        ImGui::Separator();
+    }
     ImGui::TextColored(th.text_muted, "VRU MICROPHONE");
     ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
     ImGui::TextWrapped("The port is the voice unit: it reads no controller. In the game, hold Z on "
@@ -11382,17 +11450,10 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
                        "machine; the English model is downloaded once.");
     ImGui::PopStyleColor();
 
-    const float gap = th.spacing_md;
-    float cardw = 0.f;
-    const int cols = seat_grid(ImGui::GetContentRegionAvail().x, gap, &cardw);
-    for (int s = 0; s <= last; ++s) {
-        if (s % cols) ImGui::SameLine(0, gap);
-        else if (s) ImGui::Dummy(ImVec2(0, gap));
+    const float cardw = std::min(ImGui::GetContentRegionAvail().x, kSeatPanelMaxW);
+    {
+        const int s = p.seat_tab;
         SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
-        if (pak.kind != SeatPak::Vru) {
-            ImGui::Dummy(ImVec2(cardw, 1.f));
-            continue;
-        }
         ImGui::PushID(s);
         ImGui::BeginChild("vru", ImVec2(cardw, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
                                                        ImGuiChildFlags_NavFlattened);
@@ -11521,16 +11582,11 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th) {
 void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th, float panel_h,
                             BoxartCache& boxart) {
     using namespace retcomm::hub;
-    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_Borders,
+    // No border: the page is already the panel, and this is only its scrolling
+    // body above the pinned footer.
+    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_NavFlattened,
                       page_wheel_flags(hub));
-    ImGui::TextColored(th.text_muted, "CONTROLLERS");
-    ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-    ImGui::TextWrapped(
-        "Seats 1-4: the console's four controller ports. Each seat carries its own device and "
-        "maps \xe2\x80\x94 open it with Configure. Auto seats take the gamepads that are not "
-        "claimed, in the order they connected; with none, port 1 is the keyboard.");
-    ImGui::PopStyleColor();
+    draw_seat_tabs(p, th);
     ImGui::Dummy(ImVec2(0, 8));
 
     const std::vector<ConnectedPad> pads = connected_pads();
@@ -11538,13 +11594,18 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
     for (const auto& c : pads) guids.push_back(c.guid);
     const auto plan = plan_seats(p.input, guids);
 
-    const float gap = th.spacing_md;
-    float cardw = 0.f;
-    const int cols = seat_grid(ImGui::GetContentRegionAvail().x, gap, &cardw);
+    // The seat's controller on the left and, when it holds a Transfer Pak or the
+    // VRU, that accessory on the right; stacked when the screen is too narrow
+    // for two panels.
+    const SeatPak::Kind seat_pak = p.input.paks[static_cast<size_t>(p.seat_tab)].kind;
+    const bool has_accessory = seat_pak == SeatPak::TransferPak || seat_pak == SeatPak::Vru;
+    const float page_w = ImGui::GetContentRegionAvail().x;
+    const float acc_gap = th.spacing_md;
+    const bool beside = has_accessory && page_w >= kSeatPanelMinW * 2.f + acc_gap;
+    const float cardw = beside ? (page_w - acc_gap) * 0.5f : std::min(page_w, kSeatPanelMaxW);
 
-    for (int s = 0; s < kInputSeats; ++s) {
-        if (s % cols) ImGui::SameLine(0, gap);
-        else if (s) ImGui::Dummy(ImVec2(0, gap));
+    {
+        const int s = p.seat_tab;
         ImGui::PushID(s);
         ImGui::BeginChild("seatcard", ImVec2(cardw, 0),
                           ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
@@ -11660,8 +11721,16 @@ void draw_core_gamepads_tab(HubModel& hub, CoreSettingsPage& p, const Theme& th,
         ImGui::EndChild();
         ImGui::PopID();
     }
-    draw_transfer_pak_section(hub, p, th, boxart);
-    draw_vru_section(hub, p, th);
+    if (has_accessory) {
+        if (beside) {
+            ImGui::SameLine(0, acc_gap);
+            ImGui::BeginChild("seat_accessory", ImVec2(page_w - cardw - acc_gap, 0),
+                              ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+        }
+        draw_transfer_pak_section(hub, p, th, boxart, beside);
+        draw_vru_section(hub, p, th, beside);
+        if (beside) ImGui::EndChild();
+    }
     ImGui::EndChild();
     draw_core_configure_modal(p, th, boxart);
 }
@@ -11674,76 +11743,67 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
 
     ImGui::BeginChild("core_settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    // Direct mode has no header above the page, so it keeps its own title and
+    // description; in the library the header carries the title and the switch.
+    if (p.direct) {
     std::string title = p.desc.ok ? p.desc.core_id : std::string(platform_display_name(p.platform));
-    for (char& c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-    ImGui::Text("%s %s", title.c_str(), p.developer_page ? "DEVELOPER" : "SETTINGS");
-    ImGui::PopStyleColor();
-
-    constexpr float kTabW = 110.f;
-    {
-        const float right = ImGui::GetWindowContentRegionMax().x;
-        // Direct mode has no tab switch (its home page opens either tab); a
-        // local build has the Developer page there instead.
-        const bool dev_button = p.direct && kLocalBuild;
-        const bool top_button = !p.direct || dev_button;
-        const float wrap_x = top_button ? right - kTabW - 12.f : right;
-        const float desc_y = ImGui::GetCursorPosY();
-        ImGui::PushTextWrapPos(wrap_x);
-        if (p.developer_page) {
-            ImGui::TextWrapped(
-                "Options the core marks as developer-only: diagnostics, and the engine's policy "
-                "knobs. Leave them alone to play; an unset knob is the engine's own default. "
-                "Saved with the rest of %s's settings.",
-                (p.title_name.empty() ? p.title_key : p.title_name).c_str());
-        } else if (p.gamepads_tab) {
-            ImGui::TextWrapped(
-                "Controller seats for every %s title, here and in the library. Saved to "
-                "input.ini; the next game started reads them.",
-                platform_display_name(p.platform));
-        } else {
-            std::string from;
-            if (p.desc_ready && p.desc.ok)
-                from = " Declared by " + p.desc.core_id + " " + p.desc.core_version +
-                       (p.desc.cached ? " (remembered from an earlier run)." : ".");
-            if (p.direct)
+        for (char& c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::Text("%s %s", title.c_str(), p.developer_page ? "DEVELOPER" : "SETTINGS");
+        ImGui::PopStyleColor();
+    
+        constexpr float kTabW = 110.f;
+        {
+            const float right = ImGui::GetWindowContentRegionMax().x;
+            // Direct mode has no tab switch (its home page opens either tab); a
+            // local build has the Developer page there instead.
+            const bool dev_button = p.direct && kLocalBuild;
+            const bool top_button = !p.direct || dev_button;
+            const float wrap_x = top_button ? right - kTabW - 12.f : right;
+            const float desc_y = ImGui::GetCursorPosY();
+            ImGui::PushTextWrapPos(wrap_x);
+            if (p.developer_page) {
                 ImGui::TextWrapped(
-                    "What the core says it can be told when %s starts, as this title's "
-                    "settings file holds them. A --opt on the command line wins over it.%s",
-                    (p.title_name.empty() ? p.title_key : p.title_name).c_str(), from.c_str());
-            else
+                    "Options the core marks as developer-only: diagnostics, and the engine's policy "
+                    "knobs. Leave them alone to play; an unset knob is the engine's own default. "
+                    "Saved with the rest of %s's settings.",
+                    (p.title_name.empty() ? p.title_key : p.title_name).c_str());
+            } else if (p.gamepads_tab) {
                 ImGui::TextWrapped(
-                    "What the core says it can be told when a game starts. Every %s title reads "
-                    "these; a title can override them, and a --opt on the command line wins over "
-                    "both.%s",
-                    platform_display_name(p.platform), from.c_str());
-        }
-        ImGui::PopTextWrapPos();
-        if (dev_button) {
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(desc_y);
-            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kTabW));
-            if (good_button(p.developer_page ? "Back" : "Developer", th, ImVec2(kTabW, 0))) {
-                p.developer_page = !p.developer_page;
-                p.configuring = -1;
-                cancel_core_capture(p);
+                    "Controller seats for every %s title, here and in the library. Saved to "
+                    "input.ini; the next game started reads them.",
+                    platform_display_name(p.platform));
+            } else {
+                std::string from;
+                if (p.desc_ready && p.desc.ok)
+                    from = " Declared by " + p.desc.core_id + " " + p.desc.core_version +
+                           (p.desc.cached ? " (remembered from an earlier run)." : ".");
+                if (p.direct)
+                    ImGui::TextWrapped(
+                        "What the core says it can be told when %s starts, as this title's "
+                        "settings file holds them. A --opt on the command line wins over it.%s",
+                        (p.title_name.empty() ? p.title_key : p.title_name).c_str(), from.c_str());
+                else
+                    ImGui::TextWrapped(
+                        "What the core says it can be told when a game starts. Every %s title reads "
+                        "these; a title can override them, and a --opt on the command line wins over "
+                        "both.%s",
+                        platform_display_name(p.platform), from.c_str());
             }
-        } else if (!p.direct) {
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(desc_y);
-            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kTabW));
-            if (p.gamepads_tab) {
-                if (good_button("System", th, ImVec2(kTabW, 0))) {
-                    p.gamepads_tab = false;
+            ImGui::PopTextWrapPos();
+            if (dev_button) {
+                ImGui::SameLine();
+                ImGui::SetCursorPosY(desc_y);
+                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - kTabW));
+                if (good_button(p.developer_page ? "Back" : "Developer", th, ImVec2(kTabW, 0))) {
+                    p.developer_page = !p.developer_page;
                     p.configuring = -1;
                     cancel_core_capture(p);
                 }
-            } else if (good_button("Gamepads", th, ImVec2(kTabW, 0))) {
-                p.gamepads_tab = true;
             }
         }
+        ImGui::Separator();
     }
-    ImGui::Separator();
 
     // Which layer the System tab edits, when the page was opened for a title.
     if ((p.developer_page || !p.gamepads_tab) && !p.title_key.empty()) {
@@ -11831,6 +11891,29 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
 }
 
 bool core_settings_dirty() { return core_settings_page().dirty(); }
+
+std::string core_settings_header_title() {
+    const CoreSettingsPage& p = core_settings_page();
+    const std::string name = p.desc.ok ? p.desc.core_id : std::string(platform_display_name(p.platform));
+    return name + (p.developer_page ? " Developer" : " Settings");
+}
+
+const char* core_settings_switch_label() {
+    const CoreSettingsPage& p = core_settings_page();
+    if (p.direct || p.developer_page) return nullptr;
+    return p.gamepads_tab ? "System" : "Gamepads";
+}
+
+void core_settings_switch() {
+    CoreSettingsPage& p = core_settings_page();
+    if (p.gamepads_tab) {
+        p.gamepads_tab = false;
+        p.configuring = -1;
+        cancel_core_capture(p);
+    } else {
+        p.gamepads_tab = true;
+    }
+}
 
 // The library's way in: the platform header's Configure, with the title when
 // it was pressed on a title's page.

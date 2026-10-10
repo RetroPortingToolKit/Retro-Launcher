@@ -164,6 +164,23 @@ void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::
     }
 }
 
+bool title_runs_on_host(const Title& t) {
+#if defined(__ANDROID__)
+    return !t.core_manifest.empty();
+#else
+    (void)t;
+    return true;
+#endif
+}
+
+std::size_t drop_titles_not_on_host(Catalog& catalog) {
+    const auto before = catalog.titles.size();
+    catalog.titles.erase(std::remove_if(catalog.titles.begin(), catalog.titles.end(),
+                                        [](const Title& t) { return !title_runs_on_host(t); }),
+                         catalog.titles.end());
+    return before - catalog.titles.size();
+}
+
 void unmerge_core_title(Catalog& catalog, const std::string& id) {
     for (auto it = catalog.titles.begin(); it != catalog.titles.end();) {
         if (it->id != id) {

@@ -9,7 +9,11 @@ import android.database.Cursor;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
+import android.widget.Toast;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -26,6 +30,10 @@ import org.libsdl.app.SDLSurface;
 public final class LauncherActivity extends SDLActivity {
     /** In libmain (hub_touch.cpp): the on-screen keyboard's height in pixels. */
     private static native void nativeImeInset(int bottom);
+    /** In libmain (hub_android.cpp): the folder pick's answer; null = cancelled or failed. */
+    private static native void nativeFolderPicked(String path);
+
+    private static final int REQUEST_PICK_FOLDER = 0x5246;  // "RF"; SDL's own codes start elsewhere
 
     @Override protected String[] getLibraries() {
         return new String[] {"c++_shared", "SDL3", "main"};
@@ -144,6 +152,84 @@ public final class LauncherActivity extends SDLActivity {
             // An unreadable provider: no name, and the caller says so.
         }
         return "";
+    }
+
+    /**
+     * The library's Browse button (hub_android.cpp): pick a folder and answer
+     * nativeFolderPicked with its path on the device's storage. SDL's file
+     * dialog has no folder mode on Android.
+     *
+     * The hub reads libraries with ordinary file calls, which Android allows an
+     * app on shared storage only with "All files access"; without it the picked
+     * folder would be listed as empty. So that is asked for first, in Settings,
+     * and the pick starts the next time Browse is pressed.
+     */
+    public void pickFolder() {
+        runOnUiThread(() -> {
+            if (!Environment.isExternalStorageManager()) {
+                Toast.makeText(this, "Allow \"All files access\" for Retro, then press Browse again.",
+                        Toast.LENGTH_LONG).show();
+                try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + getPackageName())));
+                } catch (RuntimeException e) {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                }
+                nativeFolderPicked(null);
+                return;
+            }
+            try {
+                startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQUEST_PICK_FOLDER);
+            } catch (RuntimeException e) {
+                Toast.makeText(this, "No folder picker is available on this device.",
+                        Toast.LENGTH_LONG).show();
+                nativeFolderPicked(null);
+            }
+        });
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != REQUEST_PICK_FOLDER) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            nativeFolderPicked("");  // cancelled
+            return;
+        }
+        String path = folderPath(data.getData());
+        if (path == null) {
+            Toast.makeText(this, "Choose a folder on the device's storage or an SD card, not an "
+                    + "app's or cloud folder.", Toast.LENGTH_LONG).show();
+            nativeFolderPicked(null);
+            return;
+        }
+        nativeFolderPicked(path);
+    }
+
+    /**
+     * A picked tree as the path std::filesystem opens: "primary:Roms" is
+     * /storage/emulated/0/Roms, "1234-ABCD:Roms" an SD card's /storage/1234-ABCD/Roms.
+     * Anything else (a provider's own tree: Downloads, a cloud drive) has no
+     * path, so null.
+     */
+    private static String folderPath(Uri tree) {
+        String id;
+        try {
+            id = DocumentsContract.getTreeDocumentId(tree);
+        } catch (RuntimeException e) {
+            return null;
+        }
+        int colon = id.indexOf(':');
+        if (colon < 0) return null;
+        String volume = id.substring(0, colon);
+        String rest = id.substring(colon + 1);
+        String root;
+        if (volume.equals("primary")) root = Environment.getExternalStorageDirectory().getPath();
+        else if (volume.equals("raw")) return rest.isEmpty() ? null : rest;
+        else if (volume.matches("[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}")) root = "/storage/" + volume;
+        else return null;
+        return rest.isEmpty() ? root : root + "/" + rest;
     }
 
     private void copyAssets(String path, File target) throws IOException {

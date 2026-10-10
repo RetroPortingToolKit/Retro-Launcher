@@ -373,6 +373,7 @@ bool HubModel::remove_core_title(const Title& t, std::string* message) {
     save_app_config(paths.config_path, c);
     cfg = c;
     unmerge_core_title(catalog, id);
+    drop_titles_not_on_host(catalog);
     say("Removed " + name + " from the library; its files were not touched");
     return true;
 }
@@ -381,6 +382,9 @@ void HubModel::apply_core_titles() {
     std::vector<std::string> problems;
     merge_core_titles(catalog, cfg, &problems);
     for (const auto& p : problems) append_log(p);
+    if (const std::size_t n = drop_titles_not_on_host(catalog))
+        append_log("Library: " + std::to_string(n) + " catalog title(s) hidden, not available on " +
+                   host_os_key());
 }
 
 void HubModel::refresh_rows(bool check_updates, bool force_github_tags) {

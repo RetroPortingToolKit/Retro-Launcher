@@ -50,6 +50,16 @@ void unmerge_core_title(Catalog& catalog, const std::string& id);
 // of a duplicate row. Problems are appended to *log, one line each.
 void merge_core_titles(Catalog& catalog, const AppConfig& cfg, std::vector<std::string>* log);
 
+// Whether this device can play the title. On Android only a title with a core
+// (core_manifest: an installed title bundle) can: the catalog lists desktop
+// builds and has no Android entry yet. Elsewhere every title.
+bool title_runs_on_host(const Title& t);
+
+// Removes the titles title_runs_on_host refuses; returns how many. The hub runs
+// it after every catalog load and core change, so the library, the Home cards,
+// box art, ROM scans and update checks only ever see what plays here.
+std::size_t drop_titles_not_on_host(Catalog& catalog);
+
 // The sidecar a title runs through, if any: a core title's own, or a
 // *.rcore.toml with a [title] matching the title's id inside its install.
 fs::path core_manifest_for(const Title& t, const fs::path& install_dir);
