@@ -19,7 +19,7 @@ on any platform, so the desktop can try it. Off, every menu is the old one.
 | In-game quick menu | Rail: Resume, Save states, Show FPS, Close game. Cards: state (or the "not paused" banner in netplay), core, volume | `PlaySession::draw_menu_overlay`, `hub_play.cpp` |
 | Shared chrome | scrim, top bar, tabs, rail, panel, cards, rows, legend, the L3 + R3 hold | `hub_overlay.{hpp,cpp}` |
 
-The Library tab, a title's page, Mods, Netplay and every settings page are the
+The Library (platform cards, then a platform's covers with filter chips) and the game page (cover, state, Play, rows; "All options" opens the full older page) are redone. Mods, Netplay and every settings page are the
 pages the hub already had, drawn in the shell's body; the overlay does not
 restyle their insides yet. The drawer is gone in the shell: Start, L3 + R3 and
 the edge swipe go Home.
@@ -36,14 +36,15 @@ the edge swipe go Home.
 
 ## Not redone yet
 
-The insides of the old pages (title grid and title page, Mods, the Netplay lobby,
-the settings pages) and the first-run wizard and dialogs keep their old look.
+The insides of the old pages (Mods, the Netplay lobby, the settings pages, and
+what "All options" opens) and the first-run wizard and dialogs keep their old look.
 Rail icons, the left-edge handle drawn while the menu is closed, and the
 in-game Save states page from the draft are not built.
 
 ## Checked
 
 On the Pixel_10 emulator (x86_64): every tab, a settings page with its pinned
-Save / Cancel, Back, and the edge swipe. Not checked: a title grid or title page
-(the catalog has nothing for Android), the in-game menu (no game bundle),
-gamepad input, L3 + R3.
+Save / Cancel, Back, and the edge swipe; the platform cards, a platform's cover
+grid and a game page (in a test build with the Android title filter lifted, since
+the catalog has no Android entries yet), and "All options". Not checked: the
+Play button, the in-game menu (no game bundle), gamepad input, L3 + R3.

@@ -9057,6 +9057,11 @@ void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
 void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 
+void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
+                        const retcomm::hub::overlay::Metrics& m);
+void draw_shell_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window,
+                       const retcomm::hub::overlay::Metrics& m);
+
 void draw_hub_root(HubModel& hub, const Theme& th, BoxartCache& boxart) {
     if (!retcomm::hub::overlay::enabled()) {
         draw_library(hub, boxart, th);
@@ -9064,11 +9069,16 @@ void draw_hub_root(HubModel& hub, const Theme& th, BoxartCache& boxart) {
     }
     const retcomm::hub::overlay::Metrics m =
         retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size);
+    // A platform's covers are the Library whichever tab got there.
+    if (hub.library_nav != retcomm::hub::LibraryNav::Platforms) {
+        draw_shell_library(hub, boxart, th, m);
+        return;
+    }
     switch (g_shell_tab) {
     case 0: draw_shell_home(hub, boxart, th, m); break;
     case 3: draw_shell_updates(hub, th, m); break;
     case 4: draw_shell_settings(hub, th, m); break;
-    default: draw_library(hub, boxart, th); break;
+    default: draw_shell_library(hub, boxart, th, m); break;
     }
 }
 
@@ -9112,7 +9122,11 @@ void draw_hub_pages(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Win
     } else if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
         // One title, full window: the page splits itself into info + actions.
         ImGui::BeginChild("title_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-        draw_detail(hub, boxart, th, window);
+        if (retcomm::hub::overlay::enabled())
+            draw_shell_detail(hub, boxart, th, window,
+                              retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        else
+            draw_detail(hub, boxart, th, window);
         ImGui::EndChild();
     } else {
         // Home (platform cards) and the title grid each own the whole body.
@@ -9386,6 +9400,341 @@ void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::ove
     }
     if (ov::list_row(m, "log", "Activity log", "also the ` key")) hub.log_overlay_open = true;
     ImGui::EndChild();
+}
+
+
+// ---- the overlay shell: Library and the game page ---------------------------------
+
+int g_lib_filter = 0;       // 0 all, 1 installed, 2 with an update
+bool g_detail_all = false;  // the game page's "All options": the full, older page
+int g_detail_last = -2;
+
+void shell_platform_settings(HubModel& hub, const std::string& platform, const TitleRow* row) {
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (core_settings_platform(platform)) {
+        open_core_settings_for_library(hub, platform, row);
+        return;
+    }
+#endif
+    if (retcomm::is_snes_platform(platform)) hub.open_snes_settings();
+    else hub.open_psx_settings();
+}
+
+// The platform cards, then one platform's covers.
+void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
+                        const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    std::string enter_platform;
+    int open_index = -1;
+    bool platform_settings = false;
+    const bool platforms_level = hub.library_nav == retcomm::hub::LibraryNav::Platforms;
+    if (platforms_level) g_detail_all = false;
+
+    ImGui::BeginChild("##slib", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        const float gap = 14.f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (platforms_level) {
+            std::map<std::string, std::pair<int, int>> counts; // total, installed
+            for (const TitleRow& r : hub.rows) {
+                if (r.platform.empty() || !title_passes_library_filter(r, hub)) continue;
+                ++counts[r.platform].first;
+                if (r.installed) ++counts[r.platform].second;
+            }
+            if (counts.empty()) {
+                ov::muted("No games for this device yet. Games run here through a core: install a "
+                          "title bundle from Settings, Add / scan files, Install title (.zip).");
+            }
+            const float target = m.compact ? 210.f : 250.f;
+            const int cols = std::max(1, static_cast<int>((avail + gap) / (target + gap)));
+            const float w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+            const float h = m.compact ? 92.f : 116.f;
+            const ImVec2 origin = ImGui::GetCursorPos();
+            int i = 0;
+            for (const auto& [plat, count] : counts) {
+                const int col = i % cols, row = i / cols;
+                ImGui::SetCursorPos(ImVec2(origin.x + static_cast<float>(col) * (w + gap),
+                                           origin.y + static_cast<float>(row) * (h + gap)));
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                ImGui::PushID(plat.c_str());
+                if (i == 0 && hub.home_focus_pending &&
+                    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+                    hub.home_focus_pending = false;
+                    ImGui::SetKeyboardFocusHere();
+                    ImGui::SetNavCursorVisible(true);
+                }
+                if (ImGui::InvisibleButton("##plat", ImVec2(w, h), ImGuiButtonFlags_EnableNav))
+                    enter_platform = plat;
+                const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+                const ImVec2 p1(p0.x + w, p0.y + h);
+                ov::card_frame(p0, p1, hot, ImGui::IsItemFocused());
+                float text_x = p0.x + 18.f;
+                const fs::path icon = platform_icon_path(plat);
+                if (const BoxartTexture* tex =
+                        icon.empty() ? nullptr : boxart.get(std::string("platform:") + plat, icon);
+                    tex && tex->width > 0) {
+                    const float iw = std::min(84.f, w * 0.34f);
+                    const float ih = iw * static_cast<float>(tex->height) / static_cast<float>(tex->width);
+                    dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)),
+                                 ImVec2(p0.x + 16.f, p0.y + (h - ih) * 0.5f),
+                                 ImVec2(p0.x + 16.f + iw, p0.y + (h + ih) * 0.5f));
+                    text_x = p0.x + 16.f + iw + 16.f;
+                }
+                ImGui::SetWindowFontScale(1.2f);
+                dl->AddText(ImVec2(text_x, p0.y + h * 0.5f - 26.f),
+                            ImGui::ColorConvertFloat4ToU32(th.text), platform_display_name(plat));
+                ImGui::SetWindowFontScale(1.f);
+                char sub[64];
+                if (count.second > 0)
+                    std::snprintf(sub, sizeof sub, "%d %s - %d installed", count.first,
+                                  count.first == 1 ? "game" : "games", count.second);
+                else
+                    std::snprintf(sub, sizeof sub, "%d %s", count.first,
+                                  count.first == 1 ? "game" : "games");
+                dl->PushClipRect(p0, p1, true); // never past the card's edge
+                dl->AddText(ImVec2(text_x, p0.y + h * 0.5f + 6.f),
+                            ImGui::ColorConvertFloat4ToU32(th.text_muted), sub);
+                dl->PopClipRect();
+                ImGui::PopID();
+                ++i;
+            }
+            const int rows = (i + cols - 1) / cols;
+            ImGui::SetCursorPos(ImVec2(origin.x, origin.y + static_cast<float>(rows) * (h + gap)));
+            ImGui::Dummy(ImVec2(0.f, 0.f));
+        } else {
+            const std::string plat = hub.library_platform;
+            // Header: the platform, how many, the filter chips, its settings.
+            int total = 0;
+            for (const TitleRow& r : hub.rows)
+                if (r.platform == plat && title_passes_library_filter(r, hub)) ++total;
+            ImGui::SetWindowFontScale(1.3f);
+            ImGui::TextUnformatted(platform_display_name(plat));
+            ImGui::SetWindowFontScale(1.f);
+            ImGui::SameLine();
+            ImGui::TextColored(th.text_muted, "%d %s", total, total == 1 ? "game" : "games");
+            static const char* kChips[] = {"All", "Installed", "Updates"};
+            const float chips_w = 3 * 110.f + 2 * 8.f + 190.f;
+            if (avail > chips_w + 200.f) {
+                ImGui::SameLine(avail - chips_w);
+            } else {
+                ImGui::Dummy(ImVec2(0.f, 4.f));
+            }
+            for (int c = 0; c < 3; ++c) {
+                if (c) ImGui::SameLine();
+                ImGui::PushID(c);
+                if (ov::action_button(kChips[c], g_lib_filter == c, 110.f)) g_lib_filter = c;
+                ImGui::PopID();
+            }
+            ImGui::SameLine();
+            if (ov::action_button("Platform settings", false)) platform_settings = true;
+            ImGui::Dummy(ImVec2(0.f, 10.f));
+
+            std::unordered_set<std::string> queued;
+            for (const auto& q : hub.job_queue)
+                if (!q.title_id.empty() && retcomm::hub::hub_job_is_queueable(q.job))
+                    queued.insert(q.title_id);
+            const bool install_busy = hub.job_running.load() && retcomm::hub::hub_job_is_install(hub.job);
+            const std::string busy_id = install_busy ? hub.job_title_id : std::string();
+
+            auto shown = [&](const TitleRow& r) {
+                if (r.platform != plat || !title_passes_library_filter(r, hub)) return false;
+                if (g_lib_filter == 1) return r.installed;
+                if (g_lib_filter == 2) return r.update_available;
+                return true;
+            };
+            // The ring goes to the selected card; pin the selection to one drawn.
+            {
+                bool sel_drawn = false;
+                int first = -1;
+                for (int i = 0; i < static_cast<int>(hub.rows.size()); ++i) {
+                    if (!shown(hub.rows[static_cast<size_t>(i)])) continue;
+                    if (first < 0) first = i;
+                    if (i == hub.selected) sel_drawn = true;
+                }
+                if (!sel_drawn && first >= 0) hub.selected = first;
+            }
+            const float aspect = platform_boxart_aspect(plat);
+            const float prefer = m.compact ? 124.f : (aspect >= 0.95f ? 176.f : 150.f);
+            const int cols = std::max(1, static_cast<int>((avail + gap) / (prefer + gap)));
+            const float tile_w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+            const ImVec2 origin = ImGui::GetCursorPos();
+            float y = origin.y, row_h = 0.f;
+            int n = 0;
+            for (int i = 0; i < static_cast<int>(hub.rows.size()); ++i) {
+                const TitleRow& r = hub.rows[static_cast<size_t>(i)];
+                if (!shown(r)) continue;
+                const int col = n % cols;
+                if (n > 0 && col == 0) {
+                    y += row_h + gap;
+                    row_h = 0.f;
+                }
+                ImGui::PushID(r.id.c_str());
+                ImGui::SetCursorPos(ImVec2(origin.x + static_cast<float>(col) * (tile_w + gap), y));
+                const ImVec2 tile_min = ImGui::GetCursorScreenPos();
+                const bool busy = r.id == busy_id;
+                const bool is_queued = !busy && queued.count(r.id) > 0;
+                const BoxartTexture* tex =
+                    r.boxart_path.empty() ? nullptr : boxart.get(r.id, r.boxart_path);
+                ImVec4 badge = is_queued ? th.focus : chip_color(r, th);
+                const TileStatusIcon status = is_queued ? TileStatusIcon::Queued : tile_status_icon(r);
+                const bool rom_ready = r.has_rom && !r.installed && !r.install_dir_present &&
+                                       !r.update_available;
+                const float tile_h = draw_grid_tile(
+                    tile_min, tile_w, hub.selected == i, th, tex, aspect, r.name.c_str(), nullptr,
+                    &badge, busy, !r.installed || r.update_available || is_queued,
+                    r.update_available && !is_queued, status, is_queued, rom_ready && !is_queued, 1.f);
+                ImGui::SetCursorScreenPos(tile_min);
+                if (hub.grid_focus_pending && hub.selected == i &&
+                    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+                    hub.grid_focus_pending = false;
+                    ImGui::SetKeyboardFocusHere();
+                    ImGui::SetNavCursorVisible(true);
+                }
+                if (ImGui::InvisibleButton("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav))
+                    open_index = i;
+                if (ImGui::IsItemFocused()) {
+                    dl->AddRect(tile_min, ImVec2(tile_min.x + tile_w, tile_min.y + tile_h),
+                                ImGui::ColorConvertFloat4ToU32(th.focus), th.radius_sm, 0, 3.f);
+                    if (hub.selected != i) {
+                        hub.selected = i;
+                        hub.detail_scroll_top = true;
+                    }
+                }
+                row_h = std::max(row_h, tile_h);
+                ++n;
+                ImGui::PopID();
+            }
+            if (n == 0) ov::muted(g_lib_filter == 0 ? "No games here yet." : "Nothing matches this filter.");
+            ImGui::SetCursorPos(ImVec2(origin.x, y + row_h + gap));
+            ImGui::Dummy(ImVec2(0.f, 0.f));
+        }
+    }
+    ImGui::EndChild();
+
+    if (!enter_platform.empty()) {
+        g_shell_tab = 1;
+        enter_platform_titles(hub, enter_platform.c_str());
+    }
+    if (open_index >= 0) {
+        g_detail_all = false;
+        open_title_page(hub, open_index);
+    }
+    if (platform_settings) shell_platform_settings(hub, hub.library_platform, nullptr);
+}
+
+// One game: its cover, name and state, the one thing to do next, and rows for
+// the rest. "All options" opens the full page the hub has always had.
+void draw_shell_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window,
+                       const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    if (g_detail_all) {
+        if (hub.selected != g_detail_last) g_detail_last = hub.selected;
+        draw_detail(hub, boxart, th, window);
+        return;
+    }
+    if (hub.selected != g_detail_last) g_detail_last = hub.selected;
+
+    TitleRow row;
+    bool have = false;
+    bool busy_here = false;
+    std::string status_line;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        have = hub.selected >= 0 && hub.selected < static_cast<int>(hub.rows.size());
+        if (have) row = hub.rows[static_cast<size_t>(hub.selected)];
+        busy_here = hub.job_running.load() && hub.job_title_id == row.id;
+        status_line = hub.status;
+    }
+    if (!have) {
+        go_back_to_titles(hub);
+        return;
+    }
+
+    bool play = false, mods = false, settings = false, all = false;
+    ImGui::BeginChild("##sdetail", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const bool wide = avail >= 600.f;
+    const float cover_w = wide ? std::min(260.f, avail * 0.30f) : std::min(200.f, avail);
+    const float gap = 20.f;
+
+    // Cover.
+    const float aspect = platform_boxart_aspect(row.platform);
+    const float cover_h = cover_w / std::max(0.4f, aspect);
+    {
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(cover_w, cover_h));
+        const BoxartTexture* tex = row.boxart_path.empty() ? nullptr : boxart.get(row.id, row.boxart_path);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (tex && tex->width > 0) {
+            const float s = std::min(cover_w / static_cast<float>(tex->width),
+                                     cover_h / static_cast<float>(tex->height));
+            const float iw = static_cast<float>(tex->width) * s, ih = static_cast<float>(tex->height) * s;
+            dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)),
+                                ImVec2(p0.x, p0.y), ImVec2(p0.x + iw, p0.y + ih), ImVec2(0, 0),
+                                ImVec2(1, 1), IM_COL32_WHITE, 12.f);
+        } else {
+            ov::card_frame(p0, ImVec2(p0.x + cover_w, p0.y + cover_h), false, false);
+        }
+    }
+    if (wide) ImGui::SameLine(0.f, gap);
+    else ImGui::Dummy(ImVec2(0.f, 12.f));
+
+    ImGui::BeginChild("##sdetail_info", ImVec2(0.f, 0.f),
+                      wide ? ImGuiChildFlags_NavFlattened : (ImGuiChildFlags_NavFlattened | ImGuiChildFlags_AutoResizeY));
+    ImGui::SetWindowFontScale(1.5f);
+    ImGui::TextWrapped("%s", row.name.c_str());
+    ImGui::SetWindowFontScale(1.f);
+    std::string sub = platform_display_name(row.platform);
+    if (!row.installed_tag.empty()) sub += "  -  " + row.installed_tag;
+    ImGui::TextColored(th.text_muted, "%s", sub.c_str());
+    ImGui::TextColored(chip_color(row, th), "%s", chip_label(row));
+    if (!row.description.empty()) {
+        ImGui::Dummy(ImVec2(0.f, 6.f));
+        ov::muted(row.description.c_str());
+    }
+    ImGui::Dummy(ImVec2(0.f, 12.f));
+
+    if (busy_here) {
+        ov::muted(status_line.empty() ? "Working..." : status_line.c_str());
+    } else if (row.installed) {
+        ImGui::BeginDisabled(hub.launch_running.load());
+        if (ov::action_button("Play", true, 180.f)) play = true;
+        ImGui::EndDisabled();
+        if (row.update_available) {
+            ImGui::SameLine();
+            if (ov::action_button("Update available...", false)) all = true;
+        }
+    } else {
+        std::string why = !row.install_issue.empty() ? row.install_issue
+                          : row.has_rom             ? "Ready to install."
+                                                    : "Not installed yet.";
+        ov::muted(why.c_str());
+        ImGui::Dummy(ImVec2(0.f, 4.f));
+        if (ov::action_button("Install...", true, 180.f)) all = true;
+    }
+    ImGui::Dummy(ImVec2(0.f, 14.f));
+
+    if (ov::list_row(m, "set", (std::string(platform_display_name(row.platform)) + " settings").c_str()))
+        settings = true;
+    if (row.installed && ov::list_row(m, "mods", "Mods")) mods = true;
+    if (ov::list_row(m, "all", "All options", "ROM, BIOS, saves, texture packs, manage")) all = true;
+    ImGui::EndChild();
+    ImGui::EndChild();
+
+    if (play) {
+        if (hub.cfg.check_updates_before_launch) {
+            const auto* t = hub.catalog.find(row.id);
+            hub.start_job(t && !t->release.github.empty() ? HubJob::CheckLaunchUpdate : HubJob::Launch,
+                          row.id);
+        } else {
+            hub.start_job(HubJob::Launch, row.id);
+        }
+    }
+    if (mods) hub.pending_open_mods = true;
+    if (settings) shell_platform_settings(hub, row.platform, &row);
+    if (all) g_detail_all = true;
 }
 
 // The shell: tabs on top, the page in the body, hints (or Save / Cancel while a

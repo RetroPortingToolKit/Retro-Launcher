@@ -75,6 +75,10 @@ void end_body();
 bool list_row(const Metrics& m, const char* id, const char* label, const std::string& value = {},
               bool enabled = true);
 
+// The card behind a tile or row: dark glass, violet when `hot` (hovered or
+// focused), with the focus ring when `ring`. Draws into the window's list.
+void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding = 12.f);
+
 // A button in the overlay's style. `primary` fills it with the accent.
 bool action_button(const char* label, bool primary, float width = 0.f);
 

@@ -316,6 +316,13 @@ bool list_row(const Metrics& m, const char* id, const char* label, const std::st
     return pressed && enabled;
 }
 
+void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, b, hot ? IM_COL32(139, 92, 246, 120) : kCardBg, rounding);
+    dl->AddRect(a, b, kLine, rounding);
+    if (ring) dl->AddRect(a, b, kFocus, rounding, 0, 2.5f);
+}
+
 bool action_button(const char* label, bool primary, float width) {
     ImGui::PushStyleColor(ImGuiCol_Button, primary ? v4(kAccent) : ImVec4(1.f, 1.f, 1.f, 0.09f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, primary ? v4(kAccent2) : ImVec4(1.f, 1.f, 1.f, 0.16f));
