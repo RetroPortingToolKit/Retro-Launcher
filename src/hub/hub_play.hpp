@@ -192,7 +192,7 @@ private:
     // The quick menu is two pages: the main one and the save-state browser.
     enum class MenuPage { Main, States };
     MenuPage menu_page_ = MenuPage::Main;
-    int states_tab_ = 0;      // 0 Save, 1 Load
+    int states_view_ = -1;    // the slot shown alone, -1 = the twelve slots
     int states_confirm_ = -1; // a slot waiting for "Overwrite?" / "Delete?"
     bool states_confirm_delete_ = false;
     void draw_states_page(const retcomm::hub::overlay::Metrics& m);

@@ -16,7 +16,7 @@ on any platform, so the desktop can try it. Off, every menu is the old one.
 | Home | Continue playing, recently played (kept in `recent.json`), update and netplay summaries | `draw_shell_home` |
 | Updates | Launcher, catalog and game updates, with their actions | `draw_shell_updates` |
 | Settings | A list: library, RomM, add / scan files, one entry per platform, activity log | `draw_shell_settings` |
-| In-game quick menu | Rail: Resume, Save states, Show FPS, Close game. The Save states page is the hub's own (`hub_states.{hpp,cpp}`): Save and Load tabs over twelve slots with thumbnails, an overwrite and delete confirmation, and the runner doing the work. The runtime's pixel browser is no longer used. Closing the menu holds back whatever was pressed, so Resume or a load never presses a button in the game. Cards: state (or the "not paused" banner in netplay), core, volume | `PlaySession::draw_menu_overlay`, `hub_play.cpp` |
+| In-game quick menu | Rail: Resume, Save states, Show FPS, Close game. The Save states page is the hub's own (`hub_states.{hpp,cpp}`): two steps: the twelve slots as thumbnails, then the slot you pick alone, with Save, Load and Delete (an overwrite and a delete ask first), and the runner doing the work. The runtime's pixel browser is no longer used. Closing the menu holds back whatever was pressed, so Resume or a load never presses a button in the game. Cards: state (or the "not paused" banner in netplay), core, volume | `PlaySession::draw_menu_overlay`, `hub_play.cpp` |
 | Shared chrome | scrim, top bar, tabs, rail, panel, cards, rows, legend, the L3 + R3 hold | `hub_overlay.{hpp,cpp}` |
 
 The Library (platform cards, then a platform's covers with filter chips) and the game page (cover, state, Play, rows; "All options" opens the full older page) are redone. Mods, Netplay and every settings page are the
@@ -48,5 +48,5 @@ Save / Cancel, Back, and the edge swipe; the platform cards, a platform's cover
 grid and a game page (in a test build with the Android title filter lifted, since
 the catalog has no Android entries yet), and "All options". In game, on a bundle made from Retro-Runtime's
 fake test core: Play, the quick menu from the corner button, and the Save states
-page (save, load, overwrite confirmation, delete). Not checked: gamepad input,
+page (the slot grid, the focused slot, save, load, overwrite confirmation, delete). Not checked: gamepad input,
 L3 + R3, a real game's thumbnails.

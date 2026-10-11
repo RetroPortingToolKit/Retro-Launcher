@@ -263,6 +263,7 @@ void PlaySession::set_paused(bool paused) {
     if (paused && !menu_open_) {
         menu_focus_ = true;
         menu_page_ = MenuPage::Main;
+        states_view_ = -1;
         states_confirm_ = -1;
     }
     if (!paused && menu_open_) {
@@ -334,6 +335,7 @@ void PlaySession::open_states() {
     states_.clear_status();
     if (!menu_open_) set_paused(true);
     menu_page_ = MenuPage::States;
+    states_view_ = -1;
     states_confirm_ = -1;
 }
 
@@ -672,69 +674,142 @@ void PlaySession::draw_loading() {
     ImGui::End();
 }
 
-// The Save states page of the quick menu: Save and Load tabs over twelve slots,
-// each a thumbnail, a time and a hint. The hub's own page, so it looks like every
-// other menu and a press in it never reaches the game. The runner does the work
-// (service_states).
+// The Save states page of the quick menu, in two steps: the twelve slots as
+// thumbnails, and, once one is picked, that slot alone with its Save, Load and
+// Delete. The hub's own page, so it looks like every other menu and a press in it
+// never reaches the game. The runner does the work (service_states).
+namespace {
+
+// "Oct 11  16:12", or "" for a time SDL cannot place.
+std::string state_time_text(std::int64_t saved_unix) {
+    SDL_DateTime dt{};
+    if (!SDL_TimeToDateTime(SDL_Time(saved_unix) * 1000000000ll, &dt, true)) return {};
+    static const char* kMon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%s %d  %d:%02d",
+                  kMon[(dt.month >= 1 && dt.month <= 12) ? dt.month - 1 : 0], dt.day, dt.hour,
+                  dt.minute);
+    return buf;
+}
+
+void state_status_line(const StatesBrowser& st, bool busy) {
+    const std::string& text = st.status();
+    if (!busy && text.empty()) return;
+    ImGui::TextColored(!busy && st.status_bad() ? ImVec4(1.f, 0.6f, 0.64f, 1.f)
+                                                : ImVec4(0.6f, 0.94f, 0.8f, 1.f),
+                       "%s", busy ? "Working..." : text.c_str());
+}
+
+// A thumbnail, or a placeholder saying why there is none, in [t0, t1].
+void draw_state_picture(ImDrawList* dl, const StatesBrowser::Slot& s, ImVec2 t0, ImVec2 t1,
+                        float rounding) {
+    if (s.tex) {
+        dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(s.tex)), t0, t1,
+                            ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, rounding);
+        return;
+    }
+    dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 14), rounding);
+    const char* none = !s.exists ? "Empty" : s.readable ? "No picture" : "Unreadable";
+    const ImVec2 ts = ImGui::CalcTextSize(none);
+    dl->AddText(ImVec2((t0.x + t1.x - ts.x) * 0.5f, (t0.y + t1.y - ts.y) * 0.5f),
+                IM_COL32(153, 163, 188, 255), none);
+}
+
+} // namespace
+
 void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
     namespace hov = retcomm::hub::overlay;
     const bool busy = states_.busy();
-    ImGui::BeginDisabled(busy);
-    if (hov::action_button("Save", states_tab_ == 0, 120.f)) {
-        states_tab_ = 0;
-        states_confirm_ = -1;
-    }
-    ImGui::SameLine();
-    if (hov::action_button("Load", states_tab_ == 1, 120.f)) {
-        states_tab_ = 1;
-        states_confirm_ = -1;
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    {
-        const std::string& st = states_.status();
-        const char* text = busy ? "Working..." : st.c_str();
-        if (busy || !st.empty())
-            ImGui::TextColored(!busy && states_.status_bad() ? ImVec4(1.f, 0.6f, 0.64f, 1.f)
-                                                              : ImVec4(0.6f, 0.94f, 0.8f, 1.f),
-                               "%s", text);
-    }
-    ImGui::Dummy(ImVec2(0.f, 8.f));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Above the grid, where a phone shows it: what to do with the slot picked last: confirm an overwrite or a delete,
-    // or offer a delete.
-    const int sel = std::clamp(states_.selected, 0, StatesBrowser::kSlots - 1);
-    if (states_confirm_ >= 0) {
-        char q[64];
-        std::snprintf(q, sizeof q, states_confirm_delete_ ? "Delete slot %d?" : "Overwrite slot %d?",
-                      states_confirm_ + 1);
-        ImGui::TextUnformatted(q);
-        ImGui::SameLine();
-        if (hov::action_button(states_confirm_delete_ ? "Delete" : "Overwrite", true)) {
-            if (states_confirm_delete_) states_.remove(states_confirm_);
-            else states_.ask(StatesBrowser::Request::Save, states_confirm_);
+    // ---- one slot, alone ---------------------------------------------------------
+    if (states_view_ >= 0) {
+        const int i = states_view_;
+        const StatesBrowser::Slot& s = states_.slot(i);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const bool wide = avail >= 520.f;
+        const float pic_w = wide ? std::min(avail * 0.46f, 380.f) : std::min(avail, 260.f);
+        const float pic_h = pic_w * 0.75f; // the thumbnails are 160 x 120
+        {
+            const ImVec2 t0 = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(pic_w, pic_h));
+            draw_state_picture(dl, s, t0, ImVec2(t0.x + pic_w, t0.y + pic_h), 10.f);
+        }
+        if (wide) ImGui::SameLine(0.f, 20.f);
+        else ImGui::Dummy(ImVec2(0.f, 10.f));
+
+        ImGui::BeginGroup();
+        ImGui::SetWindowFontScale(1.4f);
+        ImGui::Text("Slot %d", i + 1);
+        ImGui::SetWindowFontScale(1.f);
+        if (s.exists && s.readable) {
+            const std::string when = state_time_text(s.saved_unix);
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "Saved %s", when.c_str());
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "Frame %llu",
+                               static_cast<unsigned long long>(s.frame));
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "%s",
+                               s.exists ? "This file cannot be read" : "Nothing saved here yet");
+        }
+        if (!s.mark.empty()) ImGui::TextColored(ImVec4(0.96f, 0.65f, 0.14f, 1.f), "%s", s.mark.c_str());
+        ImGui::Dummy(ImVec2(0.f, 8.f));
+        state_status_line(states_, busy);
+        ImGui::Dummy(ImVec2(0.f, 6.f));
+
+        if (states_confirm_ == i) {
+            // Asked first: overwriting or deleting cannot be undone.
+            ImGui::Text(states_confirm_delete_ ? "Delete this slot?" : "Overwrite this slot?");
+            if (hov::action_button(states_confirm_delete_ ? "Delete" : "Overwrite", true)) {
+                if (states_confirm_delete_) {
+                    states_.remove(i);
+                    states_view_ = -1;
+                } else {
+                    states_.ask(StatesBrowser::Request::Save, i);
+                }
+                states_confirm_ = -1;
+            }
+            ImGui::SameLine();
+            if (hov::action_button("Cancel", false)) states_confirm_ = -1;
+        } else {
+            ImGui::BeginDisabled(busy);
+            if (hov::action_button(s.exists ? "Save over this slot" : "Save here", true)) {
+                if (s.exists) {
+                    states_confirm_ = i;
+                    states_confirm_delete_ = false;
+                } else {
+                    states_.ask(StatesBrowser::Request::Save, i);
+                }
+            }
+            ImGui::BeginDisabled(!(s.exists && s.readable));
+            if (hov::action_button("Load", false)) states_.ask(StatesBrowser::Request::Load, i);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!s.exists);
+            if (hov::action_button("Delete", false)) {
+                states_confirm_ = i;
+                states_confirm_delete_ = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+        }
+        ImGui::EndGroup();
+        ImGui::Dummy(ImVec2(0.f, 12.f));
+        if (hov::action_button("All slots", false)) {
+            states_view_ = -1;
             states_confirm_ = -1;
         }
-        ImGui::SameLine();
-        if (hov::action_button("Cancel", false)) states_confirm_ = -1;
-    } else if (states_.slot(sel).exists && !busy) {
-        char d[32];
-        std::snprintf(d, sizeof d, "Delete slot %d", sel + 1);
-        if (hov::action_button(d, false)) {
-            states_confirm_ = sel;
-            states_confirm_delete_ = true;
-        }
+        return;
     }
-    ImGui::Dummy(ImVec2(0.f, 8.f));
 
+    // ---- the slots ---------------------------------------------------------------
+    state_status_line(states_, busy);
     const float gap = 10.f;
     const float avail = ImGui::GetContentRegionAvail().x;
     const int cols = avail >= 520.f ? 4 : 3;
     const float w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-    const float th = w * 0.75f; // the thumbnails are 160 x 120
-    const float card_h = th + (m.compact ? 40.f : 48.f);
+    const float card_h = (w - 12.f) * 0.75f + (m.compact ? 40.f : 48.f);
     const ImVec2 origin = ImGui::GetCursorPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     int pick = -1;
     for (int i = 0; i < StatesBrowser::kSlots; ++i) {
         const StatesBrowser::Slot& s = states_.slot(i);
@@ -749,37 +824,19 @@ void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
         ImGui::EndDisabled();
         const bool focused = ImGui::IsItemFocused();
         if (focused) states_.selected = i;
-        const bool hot = ImGui::IsItemHovered() || focused;
         const ImVec2 p1(p0.x + w, p0.y + card_h);
-        hov::card_frame(p0, p1, hot, focused && ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+        hov::card_frame(p0, p1, ImGui::IsItemHovered() || focused,
+                        focused && ImGui::GetIO().NavVisible);
         const ImVec2 t0(p0.x + 6.f, p0.y + 6.f), t1(p1.x - 6.f, p0.y + 6.f + (w - 12.f) * 0.75f);
-        if (s.tex) {
-            dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(s.tex)), t0, t1,
-                                ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 8.f);
-        } else {
-            dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 14), 8.f);
-            const char* none = !s.exists ? "Empty" : s.readable ? "No picture" : "Unreadable";
-            const ImVec2 ts = ImGui::CalcTextSize(none);
-            dl->AddText(ImVec2((t0.x + t1.x - ts.x) * 0.5f, (t0.y + t1.y - ts.y) * 0.5f),
-                        IM_COL32(153, 163, 188, 255), none);
-        }
-        // "Slot 3" and when it was saved, on the line under the picture.
+        draw_state_picture(dl, s, t0, t1, 8.f);
         char label[32];
         std::snprintf(label, sizeof label, "Slot %d", i + 1);
         const float ty = t1.y + 5.f;
         dl->AddText(ImVec2(p0.x + 10.f, ty), IM_COL32(233, 237, 248, 255), label);
         if (s.exists && s.readable) {
-            SDL_DateTime dt{};
-            char when[32] = "";
-            if (SDL_TimeToDateTime(SDL_Time(s.saved_unix) * 1000000000ll, &dt, true)) {
-                static const char* kMon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-                std::snprintf(when, sizeof when, "%s %d  %d:%02d",
-                              kMon[(dt.month >= 1 && dt.month <= 12) ? dt.month - 1 : 0], dt.day,
-                              dt.hour, dt.minute);
-            }
-            const ImVec2 ws = ImGui::CalcTextSize(when);
-            dl->AddText(ImVec2(p1.x - 10.f - ws.x, ty), IM_COL32(153, 163, 188, 255), when);
+            const std::string when = state_time_text(s.saved_unix);
+            const ImVec2 ws = ImGui::CalcTextSize(when.c_str());
+            dl->AddText(ImVec2(p1.x - 10.f - ws.x, ty), IM_COL32(153, 163, 188, 255), when.c_str());
         }
         if (!s.mark.empty()) {
             const ImVec2 ms = ImGui::CalcTextSize(s.mark.c_str());
@@ -790,23 +847,13 @@ void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
     }
     const int rows = (StatesBrowser::kSlots + cols - 1) / cols;
     ImGui::SetCursorPos(ImVec2(origin.x, origin.y + static_cast<float>(rows) * (card_h + gap)));
-
+    ImGui::Dummy(ImVec2(0.f, 0.f));
     if (pick >= 0) {
         states_.selected = pick;
-        const StatesBrowser::Slot& s = states_.slot(pick);
-        if (states_tab_ == 0) {
-            if (!s.exists) states_.ask(StatesBrowser::Request::Save, pick);
-            else {
-                states_confirm_ = pick;
-                states_confirm_delete_ = false;
-            }
-        } else if (s.exists && s.readable) {
-            states_.ask(StatesBrowser::Request::Load, pick);
-        } else {
-            states_.clear_status();
-        }
+        states_view_ = pick;
+        states_confirm_ = -1;
+        states_.clear_status();
     }
-
 }
 
 // The quick menu as the overlay (docs/OVERLAY_UI.md): a flat dark layer over
@@ -851,32 +898,34 @@ void PlaySession::draw_menu_overlay() {
     if (hov::begin_panel(m, "##qm_panel", panel_x)) {
         if (menu_page_ == MenuPage::States) {
             draw_states_page(m);
-        } else if (netplay_) {
-            hov::banner("The game is not paused. It keeps running behind this menu, and your "
-                        "controller sends nothing until you close it.");
         } else {
-            hov::begin_card("##qm_state", "State");
-            hov::muted("Paused. The game is stopped while this menu is open.");
+            if (netplay_) {
+                hov::banner("The game is not paused. It keeps running behind this menu, and your "
+                            "controller sends nothing until you close it.");
+            } else {
+                hov::begin_card("##qm_state", "State");
+                hov::muted("Paused. The game is stopped while this menu is open.");
+                hov::end_card();
+                ImGui::Dummy(ImVec2(0.f, 10.f));
+            }
+            hov::begin_card("##qm_core", "Core");
+            hov::kv("Core", core_label);
+            hov::kv("Frames run", std::to_string(link_.frames_done()));
+            if (id.engine_dirty) hov::kv("Build", "dev build");
             hov::end_card();
             ImGui::Dummy(ImVec2(0.f, 10.f));
+            hov::begin_card("##qm_sound", "Sound");
+            int vol = prefs_.volume;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, m.compact ? 8.f : 12.f));
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderInt("##volume", &vol, 0, 100, "Volume %d%%")) {
+                prefs_.volume = vol;
+                if (audio_) SDL_SetAudioStreamGain(audio_, float(vol) / 100.0f);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) save_prefs();
+            ImGui::PopStyleVar();
+            hov::end_card();
         }
-        hov::begin_card("##qm_core", "Core");
-        hov::kv("Core", core_label);
-        hov::kv("Frames run", std::to_string(link_.frames_done()));
-        if (id.engine_dirty) hov::kv("Build", "dev build");
-        hov::end_card();
-        ImGui::Dummy(ImVec2(0.f, 10.f));
-        hov::begin_card("##qm_sound", "Sound");
-        int vol = prefs_.volume;
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, m.compact ? 8.f : 12.f));
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::SliderInt("##volume", &vol, 0, 100, "Volume %d%%")) {
-            prefs_.volume = vol;
-            if (audio_) SDL_SetAudioStreamGain(audio_, float(vol) / 100.0f);
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) save_prefs();
-        ImGui::PopStyleVar();
-        hov::end_card();
         hov::end_panel();
     }
 
@@ -888,9 +937,11 @@ void PlaySession::draw_menu_overlay() {
     // B steps back, from wherever the focus is: off the Save states page, then
     // out of the menu.
     if (menu_open_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-        if (on_states) {
-            menu_page_ = MenuPage::Main;
+        if (on_states && states_view_ >= 0) {
+            states_view_ = -1; // out of one slot, to the slots
             states_confirm_ = -1;
+        } else if (on_states) {
+            menu_page_ = MenuPage::Main;
         } else {
             set_paused(false);
         }
