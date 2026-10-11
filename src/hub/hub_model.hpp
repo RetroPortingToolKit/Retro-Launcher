@@ -516,9 +516,12 @@ struct HubModel {
     std::atomic<bool> launcher_update_prompt_pending{false};
     std::string launcher_current_version;
     std::string launcher_latest_tag;
+    bool launcher_update_available = false; // an update this install can take; guarded by mu
     // After launcher prompt: summary when CheckUpdates finds outdated titles.
     std::atomic<bool> game_updates_prompt_pending{false};
     int game_updates_prompt_count = 0; // guarded by mu
+    std::vector<std::string> recent_ids_; // guarded by mu
+    bool recent_loaded_ = false;
     // Held while the launcher self-update modal is up — released on Later, dropped on Update.
     bool deferred_followup_updates = false; // guarded by mu
     int deferred_game_updates_count = 0;    // guarded by mu
@@ -674,6 +677,11 @@ struct HubModel {
     // Enqueue Update for every installed title with update_available; starts the
     // first when the worker is idle.
     int queue_all_updates();
+
+    // The titles last played, newest first (the overlay Home screen's "Recently
+    // played"). Kept in <data dir>/recent.json; read on first use.
+    std::vector<std::string> recent_titles(); // ids; loads the file once
+    void note_recent_title(const std::string& id);
     // Pop the next queued job and start it (no-op if busy or empty).
     bool start_next_queued_job();
     // When the worker is idle and the queue is empty, run deferred post-build

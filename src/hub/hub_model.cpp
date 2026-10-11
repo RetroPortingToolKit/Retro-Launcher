@@ -21,6 +21,8 @@
 #include "retcomm/http.hpp"
 #include "retcomm/image_compose.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -1020,6 +1022,43 @@ static bool enqueue_hub_job(HubModel* hub, HubJob j, const std::string& title_id
     return enqueue_hub_job(hub, std::move(item));
 }
 
+namespace {
+constexpr size_t kRecentMax = 12;
+fs::path recent_path(const Paths& paths) { return paths.data_dir / "recent.json"; }
+} // namespace
+
+std::vector<std::string> HubModel::recent_titles() {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!recent_loaded_) {
+        recent_loaded_ = true;
+        try {
+            std::ifstream in(recent_path(paths));
+            if (in) {
+                const nlohmann::json j = nlohmann::json::parse(in);
+                if (j.is_array())
+                    for (const auto& v : j)
+                        if (v.is_string()) recent_ids_.push_back(v.get<std::string>());
+            }
+        } catch (const std::exception&) {
+            recent_ids_.clear(); // an unreadable file is an empty history
+        }
+    }
+    return recent_ids_;
+}
+
+void HubModel::note_recent_title(const std::string& id) {
+    if (id.empty()) return;
+    recent_titles(); // load before changing it
+    std::lock_guard<std::mutex> lock(mu);
+    recent_ids_.erase(std::remove(recent_ids_.begin(), recent_ids_.end(), id), recent_ids_.end());
+    recent_ids_.insert(recent_ids_.begin(), id);
+    if (recent_ids_.size() > kRecentMax) recent_ids_.resize(kRecentMax);
+    std::error_code ec;
+    fs::create_directories(paths.data_dir, ec);
+    std::ofstream out(recent_path(paths), std::ios::trunc);
+    if (out) out << nlohmann::json(recent_ids_).dump();
+}
+
 int HubModel::queue_all_updates() {
     std::vector<std::string> ids;
     {
@@ -1100,6 +1139,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
             append_log("Launch already in progress");
             return false;
         }
+        note_recent_title(title_id);
         if (launch_worker.joinable()) launch_worker.join();
         launch_worker = std::thread([this, j, title_id] {
             try {
@@ -2051,6 +2091,7 @@ bool HubModel::start_job(HubJob j, const std::string& title_id, bool force_boxar
                     std::lock_guard<std::mutex> lock(mu);
                     launcher_current_version = lc.current_tag;
                     launcher_latest_tag = lc.latest_tag;
+                    launcher_update_available = lc.ok && lc.update_available;
                     // Do not open the modal yet — job_running would disable Update.
                     launcher_upd = lc.ok && lc.update_available;
                 }

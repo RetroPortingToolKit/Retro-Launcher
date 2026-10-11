@@ -1135,7 +1135,15 @@ ImGuiWindowFlags page_wheel_flags(const HubModel& hub) {
     return hub.drawer_t > 0.f ? ImGuiWindowFlags_NoScrollWithMouse : 0;
 }
 
+void shell_home(HubModel& hub); // the overlay shell's way back to Home (below)
+
 void open_nav_drawer(HubModel& hub) {
+    // The overlay shell has no drawer: its tabs are the navigation, and the
+    // gestures that opened the drawer (Start, L3 + R3, the edge swipe) go Home.
+    if (retcomm::hub::overlay::enabled()) {
+        shell_home(hub);
+        return;
+    }
     hub.drawer_open = true;
     hub.drawer_focus_pending = true;
 }
@@ -1871,7 +1879,7 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
     // Header: HOME on the platform picker; the platform's own name on its grid.
     {
         const bool on_titles = hub.library_nav == retcomm::hub::LibraryNav::Titles;
-        const char* header = "HOME";
+        const char* header = retcomm::hub::overlay::enabled() ? "LIBRARY" : "HOME";
         if (on_titles && !hub.library_platform.empty())
             header = platform_display_name(hub.library_platform);
         const std::string config_platform = on_titles ? hub.library_platform : std::string();
@@ -2937,127 +2945,9 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
     ImGui::EndPopup();
 }
 
-// The menu as the overlay (docs/OVERLAY_UI.md): the same entries as the drawer,
-// on a flat dark layer with a rail on the left and what the launcher knows in
-// cards beside it. Shares the drawer's open/closed state, so every place that
-// keys off it (the inert page, the Start button, focus hand-off) still works.
-void draw_overlay_menu(HubModel& hub, const Theme& th, float t) {
-    namespace ov = retcomm::hub::overlay;
-    (void)th;
-    const ov::Metrics m = ov::metrics(ImGui::GetMainViewport()->Size);
-    if (hub.drawer_focus_pending) ImGui::SetNextWindowFocus();
-    ov::begin("##overlay_menu", t, /*solid=*/true);  // a page, not a game, is behind it
-
-    const std::string status = [&] {
-        std::lock_guard<std::mutex> lock(hub.mu);
-        return hub.status;
-    }();
-    ov::top_bar(m, "Menu", "Retro Launcher", hub.job_running.load() ? status : std::string());
-
-    bool focus_first = hub.drawer_focus_pending && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    std::vector<ov::RailItem> items;
-    items.push_back({"Home", {}, false, true, false});
-    items.push_back({"Library settings", {}, false, true, false});
-    items.push_back({"RomM sync settings", {}, false, true, false});
-    items.push_back({"Add / scan files", {}, false, true, false});
-    items.push_back({"Netplay", {}, false, true, false});
-    items.push_back({"Check for updates", {}, false, !hub.job_running.load(), false});
-    items.push_back({"Close menu", {}, true, true, true});
-    const int picked = ov::rail(m, "##ov_rail", items, &focus_first);
-    if (hub.drawer_focus_pending && !focus_first) hub.drawer_focus_pending = false;
-    switch (picked) {
-    case 0:
-        close_settings_pages(hub);
-        go_home(hub);
-        close_nav_drawer(hub);
-        break;
-    case 1:
-        close_nav_drawer(hub);
-        hub.open_settings();
-        break;
-    case 2:
-        close_nav_drawer(hub);
-        hub.open_romm_settings();
-        break;
-    case 3:
-        close_nav_drawer(hub);
-        hub.pending_open_library = true;
-        break;
-    case 4:
-        close_nav_drawer(hub);
-        close_settings_pages(hub);
-        hub.show_netplay = true;
-        break;
-    case 5:
-        close_nav_drawer(hub);
-        hub.start_job(HubJob::CheckUpdates);
-        break;
-    case 6:
-        close_nav_drawer(hub);
-        break;
-    default:
-        break;
-    }
-
-    const float panel_x = m.pad + m.rail_w + 16.f;
-    if (ov::begin_panel(m, "##ov_panel", panel_x)) {
-        std::string launcher_now, launcher_latest, catalog_tag;
-        int game_updates = 0;
-        {
-            std::lock_guard<std::mutex> lock(hub.mu);
-            launcher_now = hub.launcher_current_version;
-            launcher_latest = hub.launcher_latest_tag;
-            game_updates = hub.game_updates_prompt_count;
-        }
-        const retcomm::RetcommInstallInfo install = retcomm::retcomm_install_info();
-        ov::begin_card("##ov_launcher", "Launcher");
-        ov::kv("Version", retcomm::retcomm_app_version());
-        ov::kv("Channel", install.channel_id.empty() ? "dev" : install.channel_id);
-        if (!launcher_latest.empty() && launcher_latest != launcher_now)
-            ov::kv("Latest release", launcher_latest, true);
-        ov::end_card();
-        ImGui::Dummy(ImVec2(0.f, 10.f));
-        ov::begin_card("##ov_catalog", "Catalog");
-        ov::kv("Release", hub.catalog.release_tag.empty() ? "none" : hub.catalog.release_tag);
-        ov::kv("Games on this device", std::to_string(hub.catalog.titles.size()));
-        ov::kv("Game updates", game_updates > 0 ? std::to_string(game_updates) : "none", game_updates > 0);
-        ov::end_card();
-        ImGui::Dummy(ImVec2(0.f, 10.f));
-        ov::begin_card("##ov_status", "Status");
-        ov::muted(status.empty() ? "Ready" : status.c_str());
-        ov::end_card();
-        ov::end_panel();
-    }
-
-    ov::legend(m, {{"A", "Select"}, {"B", "Close"}}, {{"L3 + R3", "Open / close"}});
-    ov::end();
-
-    // Escape or B backs out, from wherever the focus is.
-    if (hub.drawer_open && !hub.log_overlay_open &&
-        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-         ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
-        close_nav_drawer(hub);
-
-    // A tap on the bare layer, outside the rail and the panel, closes it.
-    if (hub.drawer_open && !hub.log_overlay_open &&
-        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        const ImGuiViewport* vp = ImGui::GetMainViewport();
-        const ImVec2 mp = ImGui::GetIO().MousePos;
-        const bool in_bar = mp.y < vp->Pos.y + m.top || mp.y > vp->Pos.y + vp->Size.y - m.legend;
-        const bool in_rail = mp.x >= vp->Pos.x + m.pad && mp.x <= vp->Pos.x + m.pad + m.rail_w;
-        const bool in_panel = mp.x >= vp->Pos.x + panel_x && mp.x <= vp->Pos.x + vp->Size.x - m.pad;
-        if (!in_bar && !in_rail && !in_panel) close_nav_drawer(hub);
-    }
-}
-
 // `t` is the eased slide from tick_nav_drawer(), already advanced this frame.
 void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
     if (hub.drawer_t <= 0.f) return;
-    if (retcomm::hub::overlay::enabled()) {
-        draw_overlay_menu(hub, th, t);
-        return;
-    }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float w = nav_drawer_width();
@@ -9094,6 +8984,514 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
     ImGui::PopStyleColor(); // WindowBg
 }
 
+
+// ---- the overlay shell ---------------------------------------------------------
+//
+// With the overlay UI on (hub_overlay.hpp, docs/OVERLAY_UI.md) the header and
+// the drawer give way to one shell: a top bar of tabs, a body, and a legend of
+// button hints along the bottom. Home, Library, Netplay, Updates and Settings
+// are the five tabs; the pages under them are the ones the hub already had.
+
+// 0 Home, 1 Library, 3 Updates, 4 Settings. Netplay (2) is hub.show_netplay.
+int g_shell_tab = 0;
+
+// The tab on screen: a page the hub opened decides it, else the last one chosen.
+int shell_tab_now(const HubModel& hub) {
+    if (hub.show_netplay) return 2;
+    if (any_settings_page_open(hub) || hub.show_library_panel) return 4;
+    if (hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms) return 1;
+    return g_shell_tab;
+}
+
+void shell_select_tab(HubModel& hub, int tab) {
+    close_settings_pages(hub); // also the netplay page, Add / scan files, Mods
+    switch (tab) {
+    case 0:
+    case 1:
+    case 3:
+    case 4:
+        g_shell_tab = tab;
+        go_home(hub);
+        break;
+    case 2:
+        hub.show_netplay = true;
+        break;
+    default:
+        break;
+    }
+}
+
+void shell_home(HubModel& hub) {
+    if (any_settings_page_open(hub) && active_settings_dirty(hub)) return; // unsaved edits
+    shell_select_tab(hub, 0);
+}
+
+// B (or Back) when no page handled it: step out of what is open, then to Home.
+void shell_back_fallback(HubModel& hub) {
+    if (any_settings_page_open(hub) || hub.show_library_panel) {
+        close_settings_pages(hub);
+        return;
+    }
+    if (hub.show_mods_page) {
+        hub.show_mods_page = false;
+        return;
+    }
+    if (hub.show_netplay) {
+        shell_select_tab(hub, 0);
+        return;
+    }
+    if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
+        go_back_to_titles(hub);
+        return;
+    }
+    if (hub.library_nav == retcomm::hub::LibraryNav::Titles) {
+        go_home(hub);
+        return;
+    }
+    if (shell_tab_now(hub) != 0) shell_select_tab(hub, 0);
+}
+
+// What sits at the root of a tab when no page is open.
+void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
+                     const retcomm::hub::overlay::Metrics& m);
+void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+
+void draw_hub_root(HubModel& hub, const Theme& th, BoxartCache& boxart) {
+    if (!retcomm::hub::overlay::enabled()) {
+        draw_library(hub, boxart, th);
+        return;
+    }
+    const retcomm::hub::overlay::Metrics m =
+        retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size);
+    switch (g_shell_tab) {
+    case 0: draw_shell_home(hub, boxart, th, m); break;
+    case 3: draw_shell_updates(hub, th, m); break;
+    case 4: draw_shell_settings(hub, th, m); break;
+    default: draw_library(hub, boxart, th); break;
+    }
+}
+
+// The page in front: whichever settings page or title page is open, else the
+// root of the tab (or, with the overlay off, Home's platform cards).
+void draw_hub_pages(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Window* window) {
+    if (hub.show_mods_page) {
+        ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_mods_page(hub, th);
+        ImGui::EndChild();
+    } else if (hub.show_netplay) {
+        ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        retcomm::hub::draw_netplay_page(hub, th, window);
+        ImGui::EndChild();
+    } else if (hub.show_library_panel) {
+        ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_library_panel(hub, th, window);
+        ImGui::EndChild();
+    } else if (hub.show_settings) {
+        ImGui::BeginChild("settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_settings_panel(hub, th, window);
+        ImGui::EndChild();
+    } else if (hub.show_romm_settings) {
+        ImGui::BeginChild("romm_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_romm_settings_panel(hub, th);
+        ImGui::EndChild();
+    } else if (hub.show_psx_settings) {
+        ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_psx_settings_panel(hub, th, boxart);
+        ImGui::EndChild();
+    } else if (hub.show_snes_settings) {
+        ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_snes_settings_panel(hub, th, boxart);
+        ImGui::EndChild();
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    } else if (hub.show_core_settings) {
+        ImGui::BeginChild("core_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_core_settings_panel(hub, th, boxart);
+        ImGui::EndChild();
+#endif
+    } else if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
+        // One title, full window: the page splits itself into info + actions.
+        ImGui::BeginChild("title_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_detail(hub, boxart, th, window);
+        ImGui::EndChild();
+    } else {
+        // Home (platform cards) and the title grid each own the whole body.
+        // Nothing is parked beside them; picking a card opens the next page.
+        ImGui::BeginChild("home", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        draw_hub_root(hub, th, boxart);
+        ImGui::EndChild();
+    }
+}
+
+namespace {
+const TitleRow* find_row(const std::vector<TitleRow>& rows, const std::string& id, int* index) {
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (rows[i].id == id) {
+            if (index) *index = static_cast<int>(i);
+            return &rows[i];
+        }
+    return nullptr;
+}
+
+} // namespace
+
+void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
+                     const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    const std::vector<std::string> recent = hub.recent_titles();
+    std::string play_id;      // started after the rows' lock is released
+    int open_index = -1;      // a tile tapped
+    bool go_library = false, go_updates = false, go_netplay = false;
+
+    ImGui::BeginChild("##shome", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const float gap = 14.f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const bool two_cols = avail >= 640.f;
+    const float left_w = two_cols ? std::floor(avail * 0.56f) : avail;
+    const float right_w = two_cols ? avail - left_w - gap : avail;
+
+    std::string launcher_latest;
+    bool launcher_upd = false;
+    int game_updates = 0;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        launcher_latest = hub.launcher_latest_tag;
+        launcher_upd = hub.launcher_update_available;
+        game_updates = hub.game_updates_prompt_count;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        // Continue playing: the newest title still in the library.
+        int hero_index = -1;
+        const TitleRow* hero = nullptr;
+        for (const std::string& id : recent)
+            if ((hero = find_row(hub.rows, id, &hero_index))) break;
+
+        ov::begin_card("##shome_hero", "Continue playing", left_w);
+        if (hero) {
+            ImGui::SetWindowFontScale(1.45f);
+            ImGui::TextUnformatted(hero->name.c_str());
+            ImGui::SetWindowFontScale(1.f);
+            ov::muted((std::string(platform_display_name(hero->platform)) +
+                       (hero->installed ? "" : "  -  not installed")).c_str());
+            ImGui::Dummy(ImVec2(0.f, 8.f));
+            const bool can_play = hero->installed && !hub.launch_running.load();
+            ImGui::BeginDisabled(!can_play);
+            if (ov::action_button("Play", true)) play_id = hero->id;
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ov::action_button("Details", false)) {
+                hub.library_platform = hero->platform;
+                open_index = hero_index;
+            }
+        } else {
+            ov::muted("Nothing played yet. Pick a game from the Library.");
+            ImGui::Dummy(ImVec2(0.f, 8.f));
+            if (ov::action_button("Open library", true)) go_library = true;
+        }
+        ov::end_card();
+
+        // Recently played.
+        ImGui::Dummy(ImVec2(0.f, gap));
+        ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
+        ImGui::TextUnformatted("RECENTLY PLAYED");
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0.f, 4.f));
+        const float tile_w = m.compact ? 120.f : 150.f;
+        const float avail_w = left_w;
+        const int per_row = std::max(1, static_cast<int>((avail_w + gap) / (tile_w + gap)));
+        int shown = 0;
+        float row_h = 0.f;
+        const ImVec2 origin = ImGui::GetCursorPos();
+        float y = origin.y;
+        for (const std::string& id : recent) {
+            int idx = -1;
+            const TitleRow* r = find_row(hub.rows, id, &idx);
+            if (!r) continue;
+            if (shown >= 8) break;
+            const int col = shown % per_row;
+            if (col == 0 && shown > 0) {
+                y += row_h + gap;
+                row_h = 0.f;
+            }
+            ImGui::PushID(r->id.c_str());
+            ImGui::SetCursorPos(ImVec2(origin.x + static_cast<float>(col) * (tile_w + gap), y));
+            const ImVec2 tile_min = ImGui::GetCursorScreenPos();
+            const BoxartTexture* tex =
+                r->boxart_path.empty() ? nullptr : boxart.get(r->id, r->boxart_path);
+            ImVec4 badge = chip_color(*r, th);
+            const float tile_h = draw_grid_tile(
+                tile_min, tile_w, false, th, tex, platform_boxart_aspect(r->platform),
+                r->name.c_str(), nullptr, &badge, false, !r->installed, r->update_available,
+                tile_status_icon(*r), false, false, 1.f);
+            ImGui::SetCursorScreenPos(tile_min);
+            if (ImGui::InvisibleButton("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav)) {
+                hub.library_platform = r->platform;
+                open_index = idx;
+            }
+            if (ImGui::IsItemFocused())
+                ImGui::GetWindowDrawList()->AddRect(
+                    tile_min, ImVec2(tile_min.x + tile_w, tile_min.y + tile_h),
+                    ImGui::ColorConvertFloat4ToU32(th.focus), th.radius_sm, 0, 3.f);
+            row_h = std::max(row_h, tile_h);
+            ++shown;
+            ImGui::PopID();
+        }
+        if (shown > 0) {
+            ImGui::SetCursorPos(ImVec2(origin.x, y + row_h + gap));
+            ImGui::Dummy(ImVec2(0.f, 0.f));
+        }
+    }
+
+    // The summaries: beside the hero on a wide screen, below it on a narrow one.
+    if (two_cols) {
+        ImGui::SetCursorPos(ImVec2(left_w + gap, 0.f));
+    } else {
+        ImGui::Dummy(ImVec2(0.f, gap));
+    }
+    ImGui::BeginChild("##shome_right", ImVec2(right_w, 0.f),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ov::begin_card("##shome_updates", "Updates", right_w);
+    {
+        ov::kv("Retro Launcher", launcher_upd ? launcher_latest : "up to date", launcher_upd);
+        ov::kv("Game updates", game_updates > 0 ? std::to_string(game_updates) : "none",
+               game_updates > 0);
+        ImGui::Dummy(ImVec2(0.f, 6.f));
+        if (ov::action_button("Open updates", false)) go_updates = true;
+    }
+    ov::end_card();
+    ImGui::Dummy(ImVec2(0.f, 10.f));
+    ov::begin_card("##shome_net", "Netplay", right_w);
+    ov::muted("Rooms, seats and invite codes.");
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    if (ov::action_button("Open netplay", false)) go_netplay = true;
+    ov::end_card();
+    ImGui::EndChild(); // ##shome_right
+    ImGui::EndChild(); // ##shome
+
+    if (!play_id.empty()) hub.start_job(HubJob::Launch, play_id);
+    if (open_index >= 0) {
+        g_shell_tab = 1;
+        open_title_page(hub, open_index);
+    }
+    if (go_library) shell_select_tab(hub, 1);
+    if (go_updates) shell_select_tab(hub, 3);
+    if (go_netplay) shell_select_tab(hub, 2);
+}
+
+void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    (void)m;
+    std::string launcher_latest, status;
+    bool launcher_upd = false;
+    int game_updates = 0;
+    std::vector<std::pair<std::string, std::string>> pending; // name, latest tag
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        launcher_upd = hub.launcher_update_available;
+        launcher_latest = hub.launcher_latest_tag;
+        game_updates = hub.game_updates_prompt_count;
+        status = hub.status;
+        for (const TitleRow& r : hub.rows)
+            if (r.installed && r.update_available) pending.emplace_back(r.name, r.latest_tag);
+    }
+    const bool busy = hub.job_running.load();
+    const retcomm::RetcommInstallInfo install = retcomm::retcomm_install_info();
+    ImGui::BeginChild("##supdates", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const float w = ImGui::GetContentRegionAvail().x;
+
+    ov::begin_card("##su_launcher", "Retro Launcher", w);
+    ov::kv("Installed", retcomm::retcomm_app_version());
+    ov::kv("Latest release", launcher_latest.empty() ? "not checked" : launcher_latest, launcher_upd);
+    if (!launcher_latest.empty() && !launcher_upd)
+        ov::kv("Status", "up to date for this device");
+    ov::kv("Channel", install.channel_id.empty() ? "dev" : install.channel_id);
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    ImGui::BeginDisabled(busy);
+    if (ov::action_button("Check for updates", !launcher_upd)) hub.start_job(HubJob::CheckUpdates);
+    ImGui::EndDisabled();
+    if (launcher_upd && install.self_update_supported) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy);
+        if (ov::action_button("Update Retro", true)) hub.start_job(HubJob::SelfUpdate);
+        ImGui::EndDisabled();
+    } else if (launcher_upd) {
+        ov::muted(install.hint.empty() ? "This build is not updated in place." : install.hint.c_str());
+    }
+    ov::end_card();
+
+    ImGui::Dummy(ImVec2(0.f, 10.f));
+    ov::begin_card("##su_catalog", "Catalog", w);
+    ov::kv("Release", hub.catalog.release_tag.empty() ? "none" : hub.catalog.release_tag);
+    ov::kv("Games on this device", std::to_string(hub.catalog.titles.size()));
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    ImGui::BeginDisabled(busy);
+    if (ov::action_button("Refresh catalog", false)) hub.start_job(HubJob::RefreshCatalog);
+    ImGui::EndDisabled();
+    ov::end_card();
+
+    ImGui::Dummy(ImVec2(0.f, 10.f));
+    ov::begin_card("##su_games", "Games and cores", w);
+    if (pending.empty()) {
+        ov::muted(game_updates > 0 ? "Updates were found; open the library to apply them."
+                                   : "Everything installed is up to date.");
+    } else {
+        for (const auto& [name, tag] : pending) ov::kv(name.c_str(), tag, true);
+        ImGui::Dummy(ImVec2(0.f, 6.f));
+        ImGui::BeginDisabled(busy);
+        if (ov::action_button("Update all", true)) hub.queue_all_updates();
+        ImGui::EndDisabled();
+    }
+    ov::end_card();
+
+    if (!status.empty()) {
+        ImGui::Dummy(ImVec2(0.f, 10.f));
+        ov::muted(status.c_str());
+    }
+    ImGui::EndChild();
+}
+
+void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    std::set<std::string> platforms;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        for (const TitleRow& r : hub.rows)
+            if (!r.platform.empty()) platforms.insert(r.platform);
+    }
+    ImGui::BeginChild("##ssettings", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const std::string rom_root = hub.cfg.library_root.string();
+    if (ov::list_row(m, "lib", "Library settings", rom_root.empty() ? "not set" : rom_root))
+        hub.open_settings();
+    if (ov::list_row(m, "romm", "RomM sync")) hub.open_romm_settings();
+    if (ov::list_row(m, "scan", "Add / scan files")) hub.pending_open_library = true;
+    for (const std::string& plat : platforms) {
+        const std::string label = std::string(platform_display_name(plat)) + " settings";
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        if (core_settings_platform(plat)) {
+            if (ov::list_row(m, plat.c_str(), label.c_str()))
+                open_core_settings_for_library(hub, plat, nullptr);
+            continue;
+        }
+#endif
+        if (retcomm::is_snes_platform(plat)) {
+            if (ov::list_row(m, plat.c_str(), label.c_str())) hub.open_snes_settings();
+        } else if (plat == "psx") {
+            if (ov::list_row(m, plat.c_str(), label.c_str())) hub.open_psx_settings();
+        }
+    }
+    if (ov::list_row(m, "log", "Activity log", "also the ` key")) hub.log_overlay_open = true;
+    ImGui::EndChild();
+}
+
+// The shell: tabs on top, the page in the body, hints (or Save / Cancel while a
+// settings page holds edits) along the bottom.
+void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Window* window) {
+    namespace ov = retcomm::hub::overlay;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ov::Metrics m = ov::metrics(vp->Size);
+    if (hub.hub_refocus_pending) {
+        ImGui::SetNextWindowFocus();
+        hub.hub_refocus_pending = false;
+    }
+    ov::begin("##hub", 1.f, /*solid=*/true, /*keep_back=*/true);
+
+    const int tab_now = shell_tab_now(hub);
+    const bool settings_open = hub.show_settings || hub.show_romm_settings ||
+                               hub.show_psx_settings || hub.show_snes_settings;
+    const bool dirty = any_settings_page_open(hub) && active_settings_dirty(hub);
+    std::string job_line;
+    if (hub.job_running.load()) {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        job_line = hub.status;
+    }
+    const int clicked = ov::tab_bar(m, {"Home", "Library", "Netplay", "Updates", "Settings"},
+                                    tab_now, !dirty, job_line);
+    if (clicked >= 0 && clicked != tab_now) shell_select_tab(hub, clicked);
+    // A title page, a title grid or the Mods page: a Back a finger can reach
+    // (B does the same). The clock is to its right.
+    if (hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms) {
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float back_w = ImGui::CalcTextSize("Back").x + 44.f;
+        const float clock_w = ImGui::CalcTextSize(ov::clock_text().c_str()).x;
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + ImGui::GetWindowWidth() - m.pad - clock_w - 16.f - back_w,
+                                         wp.y + (m.top - ImGui::GetFrameHeight() - 8.f) * 0.5f));
+        if (ov::action_button("Back", false, back_w)) shell_back_fallback(hub);
+    }
+
+    const bool keys_free =
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        !ImGui::IsAnyItemActive() && !hub.log_overlay_open && !hub.show_setup;
+    // LB / RB step through the tabs.
+    if (keys_free && !dirty) {
+        static const int order[] = {0, 1, 2, 3, 4};
+        int at = 0;
+        for (int i = 0; i < 5; ++i)
+            if (order[i] == tab_now) at = i;
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) && at > 0)
+            shell_select_tab(hub, order[at - 1]);
+        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) && at < 4)
+            shell_select_tab(hub, order[at + 1]);
+    }
+
+    const bool had_b = keys_free && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                                     ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false));
+    const auto nav_before = hub.library_nav;
+    const bool open_before[] = {hub.show_mods_page,      hub.show_netplay,      hub.show_library_panel,
+                                hub.show_settings,       hub.show_romm_settings, hub.show_psx_settings,
+                                hub.show_snes_settings,  hub.show_core_settings};
+
+    ov::begin_body(m, "##shell_body");
+    draw_hub_pages(hub, th, boxart, window);
+    ov::end_body();
+
+    if (had_b) {
+        const bool open_after[] = {hub.show_mods_page,      hub.show_netplay,      hub.show_library_panel,
+                                   hub.show_settings,       hub.show_romm_settings, hub.show_psx_settings,
+                                   hub.show_snes_settings,  hub.show_core_settings};
+        bool same = nav_before == hub.library_nav;
+        for (size_t i = 0; i < sizeof(open_before) / sizeof(open_before[0]); ++i)
+            same = same && open_before[i] == open_after[i];
+        if (same) shell_back_fallback(hub);
+    }
+
+    // The legend; Save and Cancel take its right side while a settings page holds edits.
+    if (settings_open) {
+        ov::legend(m, {{"A", "Select"}, {"B", "Cancel"}}, {});
+        const float h = ImGui::GetWindowHeight();
+        const float w = ImGui::GetWindowWidth();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float bh = ImGui::GetFrameHeight() + 8.f;
+        const float y = wp.y + h - m.legend * 0.5f - bh * 0.5f;
+        const float save_w = ImGui::CalcTextSize("Save").x + 56.f;
+        const float cancel_w = ImGui::CalcTextSize("Cancel").x + 56.f;
+        float x = wp.x + w - m.pad - save_w;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        if (ov::action_button("Save", true, save_w) && save_active_settings(hub))
+            close_settings_pages(hub);
+        x -= 10.f + cancel_w;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        if (ov::action_button("Cancel", false, cancel_w)) close_settings_pages(hub);
+        if (dirty) {
+            const char* t = "unsaved changes";
+            const ImVec2 ts = ImGui::CalcTextSize(t);
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(x - 18.f - ts.x, wp.y + h - m.legend * 0.5f - ts.y * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(th.warn), t);
+        }
+    } else if (tab_now == 4 && hub.show_core_settings) {
+        ov::legend(m, {{"A", "Select"}, {"B", "Back"}}, {});
+    } else {
+        ov::legend(m, {{"A", "Select"}, {"B", "Back"}}, {{"LB / RB", "Switch tab"}});
+    }
+    // The window stays open: the wizard, prompts and toasts after it draw inside
+    // "##hub", and the main loop ends it (overlay::end) where it always did.
+}
+
 } // namespace
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
@@ -11860,8 +12258,23 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
     CoreSettingsPage& p = core_settings_page();
     tick_core_settings(hub);
 
-    ImGui::BeginChild("core_settings", ImVec2(0, 0), ImGuiChildFlags_Borders,
+    // In the overlay shell the body is already the panel, so no border of its own.
+    const bool in_shell = retcomm::hub::overlay::enabled() && !p.direct;
+    ImGui::BeginChild("core_settings", ImVec2(0, 0),
+                      in_shell ? ImGuiChildFlags_NavFlattened : ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (in_shell) {
+        // No header above the page here either: its name and the System /
+        // Gamepads switch are the one row, with no explanation under them.
+        ImGui::SetWindowFontScale(1.25f);
+        ImGui::TextUnformatted(core_settings_header_title().c_str());
+        ImGui::SetWindowFontScale(1.f);
+        if (const char* label = core_settings_switch_label()) {
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 150.f);
+            if (good_button(label, th, ImVec2(150.f, 0))) core_settings_switch();
+        }
+        ImGui::Separator();
+    }
     // Direct mode has no header above the page, so it keeps its own title and
     // description; in the library the header carries the title and the switch.
     if (p.direct) {
@@ -14620,6 +15033,9 @@ int main(int argc, char** argv) {
         const float drawer_t = tick_nav_drawer(hub);
         const bool page_inert = hub.drawer_t > 0.f;
 
+        if (retcomm::hub::overlay::enabled()) {
+            draw_overlay_shell(hub, th, boxart, window);
+        } else {
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
         ImGui::SetNextWindowSize(vp->WorkSize);
@@ -14655,59 +15071,13 @@ int main(int argc, char** argv) {
         // The body owns the whole area below the header now: activity moved into
         // the ` overlay, so nothing is permanently parked at the bottom.
         ImGui::BeginChild("body", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-
-        if (hub.show_mods_page) {
-            ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_mods_page(hub, th);
-            ImGui::EndChild();
-        } else if (hub.show_netplay) {
-            ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            retcomm::hub::draw_netplay_page(hub, th, window);
-            ImGui::EndChild();
-        } else if (hub.show_library_panel) {
-            ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_library_panel(hub, th, window);
-            ImGui::EndChild();
-        } else if (hub.show_settings) {
-            ImGui::BeginChild("settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_settings_panel(hub, th, window);
-            ImGui::EndChild();
-        } else if (hub.show_romm_settings) {
-            ImGui::BeginChild("romm_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_romm_settings_panel(hub, th);
-            ImGui::EndChild();
-        } else if (hub.show_psx_settings) {
-            ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_psx_settings_panel(hub, th, boxart);
-            ImGui::EndChild();
-        } else if (hub.show_snes_settings) {
-            ImGui::BeginChild("snes_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_snes_settings_panel(hub, th, boxart);
-            ImGui::EndChild();
-#if defined(RETCOMM_HUB_HAVE_PLAY)
-        } else if (hub.show_core_settings) {
-            ImGui::BeginChild("core_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_core_settings_panel(hub, th, boxart);
-            ImGui::EndChild();
-#endif
-        } else if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
-            // One title, full window: the page splits itself into info + actions.
-            ImGui::BeginChild("title_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_detail(hub, boxart, th, window);
-            ImGui::EndChild();
-        } else {
-            // Home (platform cards) and the title grid each own the whole body.
-            // Nothing is parked beside them; picking a card opens the next page.
-            ImGui::BeginChild("home", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-            draw_library(hub, boxart, th);
-            ImGui::EndChild();
-        }
-
+        draw_hub_pages(hub, th, boxart, window);
         ImGui::EndChild(); // body
         if (page_inert) {
             ImGui::EndDisabled();
             ImGui::GetStyle().DisabledAlpha = disabled_alpha_backup;
         }
+        } // the header and drawer, with the overlay off
 
         draw_setup_wizard(hub, boxart, th, window);
         draw_setup_scan_prompt(hub, th);
@@ -15273,7 +15643,8 @@ int main(int argc, char** argv) {
             ImGui::EndPopup();
         }
 
-        ImGui::End();
+        if (retcomm::hub::overlay::enabled()) retcomm::hub::overlay::end();
+        else ImGui::End();
         } // !playing
 
         // Keep any spawned keyboard in step with ImGui's text-input state. The

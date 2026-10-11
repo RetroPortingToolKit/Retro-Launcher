@@ -49,14 +49,34 @@ struct Hint {
 
 // A borderless window over the whole viewport, filled with the flat scrim
 // (alpha follows `t`, 0..1, for the open/close fade). Always pair with end().
-// `solid` makes the scrim opaque enough to hide a busy page behind it.
-void begin(const char* id, float t, bool solid = false);
+// `solid` makes the scrim opaque enough to hide a busy page behind it;
+// `keep_back` stops focusing it from raising it over the hub's other windows.
+void begin(const char* id, float t, bool solid = false, bool keep_back = false);
 void end();
 
 // The top bar: the mark, "CRUMB  sub" on the left, battery and clock on the
 // right. `status` is an extra pill ("Paused", "Live 24 ms"), empty for none.
 void top_bar(const Metrics& m, const std::string& crumb, const std::string& sub,
              const std::string& status = {});
+
+// The shell's top bar: the mark, then one pill per tab, then `status` (a job
+// line, may be empty) and the clock on the right. Returns the tab tapped or
+// chosen, or -1. `enabled` false greys the tabs (a settings page holds edits).
+int tab_bar(const Metrics& m, const std::vector<std::string>& tabs, int selected, bool enabled,
+            const std::string& status = {});
+
+// The shell's body: a borderless region between the top bar and the legend, for
+// a page to draw into. Always pair with end_body().
+void begin_body(const Metrics& m, const char* id);
+void end_body();
+
+// A full-width row the size of a finger: label left, value muted on the right,
+// a chevron. Returns true when activated.
+bool list_row(const Metrics& m, const char* id, const char* label, const std::string& value = {},
+              bool enabled = true);
+
+// A button in the overlay's style. `primary` fills it with the accent.
+bool action_button(const char* label, bool primary, float width = 0.f);
 
 // The rail. Returns the index activated this frame (A, Enter, or a tap), or -1.
 // `focus_first` asks the nav ring to land on the first enabled item (set it on
