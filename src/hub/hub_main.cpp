@@ -595,6 +595,8 @@ bool core_settings_dirty();
 // (draw_marquee) rather than inside the page. The label is null where the page
 // has no switch.
 bool pad_capture_active();
+bool core_settings_step_back(HubModel& hub);
+void open_global_settings(HubModel& hub, const char* section);
 std::string core_settings_header_title();
 const char* core_settings_switch_label();
 void core_settings_switch();
@@ -8990,16 +8992,18 @@ void draw_log_overlay(HubModel& hub, const Theme& th, SDL_Window* window) {
 //
 // With the overlay UI on (hub_overlay.hpp, docs/OVERLAY_UI.md) the header and
 // the drawer give way to one shell: a top bar of tabs, a body, and a legend of
-// button hints along the bottom. Home, Library, Netplay, Updates and Settings
-// are the five tabs; the pages under them are the ones the hub already had.
+// button hints along the bottom. Home, Library, Netplay, Updates, Cores and
+// Settings are the six tabs; the pages under them are the ones the hub already had.
 
-// 0 Home, 1 Library, 3 Updates, 4 Settings. Netplay (2) is hub.show_netplay.
+// 0 Home, 1 Library, 3 Updates, 4 Cores, 5 Settings. Netplay (2) is hub.show_netplay.
 int g_shell_tab = 0;
 
 // The tab on screen: a page the hub opened decides it, else the last one chosen.
 int shell_tab_now(const HubModel& hub) {
     if (hub.show_netplay) return 2;
-    if (any_settings_page_open(hub) || hub.show_library_panel) return 4;
+    // A platform's settings are its core's: the Cores tab. The rest are the launcher's.
+    if (hub.show_core_settings || hub.show_psx_settings || hub.show_snes_settings) return 4;
+    if (any_settings_page_open(hub) || hub.show_library_panel) return 5;
     if (hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms) return 1;
     return g_shell_tab;
 }
@@ -9011,6 +9015,7 @@ void shell_select_tab(HubModel& hub, int tab) {
     case 1:
     case 3:
     case 4:
+    case 5:
         g_shell_tab = tab;
         go_home(hub);
         break;
@@ -9029,6 +9034,9 @@ void shell_home(HubModel& hub) {
 
 // B (or Back) when no page handled it: step out of what is open, then to Home.
 void shell_back_fallback(HubModel& hub) {
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+    if (core_settings_step_back(hub)) return; // out of a scene, or a section, first
+#endif
     if (any_settings_page_open(hub) || hub.show_library_panel) {
         close_settings_pages(hub);
         return;
@@ -9056,6 +9064,7 @@ void shell_back_fallback(HubModel& hub) {
 void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
                      const retcomm::hub::overlay::Metrics& m);
 void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+void draw_shell_cores(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 
 void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
@@ -9078,7 +9087,8 @@ void draw_hub_root(HubModel& hub, const Theme& th, BoxartCache& boxart) {
     switch (g_shell_tab) {
     case 0: draw_shell_home(hub, boxart, th, m); break;
     case 3: draw_shell_updates(hub, th, m); break;
-    case 4: draw_shell_settings(hub, th, m); break;
+    case 4: draw_shell_cores(hub, th, m); break;
+    case 5: draw_shell_settings(hub, th, m); break;
     default: draw_shell_library(hub, boxart, th, m); break;
     }
 }
@@ -9372,33 +9382,16 @@ void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::over
 void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
     namespace ov = retcomm::hub::overlay;
     (void)th;
-    std::set<std::string> platforms;
-    {
-        std::lock_guard<std::mutex> lock(hub.mu);
-        for (const TitleRow& r : hub.rows)
-            if (!r.platform.empty()) platforms.insert(r.platform);
-    }
     ImGui::BeginChild("##ssettings", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     const std::string rom_root = hub.cfg.library_root.string();
     if (ov::list_row(m, "lib", "Library settings", rom_root.empty() ? "not set" : rom_root))
         hub.open_settings();
     if (ov::list_row(m, "romm", "RomM sync")) hub.open_romm_settings();
     if (ov::list_row(m, "scan", "Add / scan files")) hub.pending_open_library = true;
-    for (const std::string& plat : platforms) {
-        const std::string label = std::string(platform_display_name(plat)) + " settings";
 #if defined(RETCOMM_HUB_HAVE_PLAY)
-        if (core_settings_platform(plat)) {
-            if (ov::list_row(m, plat.c_str(), label.c_str()))
-                open_core_settings_for_library(hub, plat, nullptr);
-            continue;
-        }
+    if (ov::list_row(m, "hotkeys", "Hotkeys", "same for every core")) open_global_settings(hub, "Hotkeys");
+    if (ov::list_row(m, "overlay", "In-game overlay", "FPS, volume")) open_global_settings(hub, "In-game overlay");
 #endif
-        if (retcomm::is_snes_platform(plat)) {
-            if (ov::list_row(m, plat.c_str(), label.c_str())) hub.open_snes_settings();
-        } else if (plat == "psx") {
-            if (ov::list_row(m, plat.c_str(), label.c_str())) hub.open_psx_settings();
-        }
-    }
     if (ov::list_row(m, "log", "Activity log", "also the ` key")) hub.log_overlay_open = true;
     ImGui::EndChild();
 }
@@ -9419,6 +9412,80 @@ void shell_platform_settings(HubModel& hub, const std::string& platform, const T
 #endif
     if (retcomm::is_snes_platform(platform)) hub.open_snes_settings();
     else hub.open_psx_settings();
+}
+
+// The Cores tab: one card per core. A core's settings (its options, its
+// controls) are reached from here, not from a page named after the platform.
+void draw_shell_cores(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    std::map<std::string, int> games;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        for (const TitleRow& r : hub.rows)
+            if (!r.platform.empty()) ++games[r.platform];
+    }
+    std::string open_platform;
+    ImGui::BeginChild("##scores", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    ImGui::SetWindowFontScale(1.25f);
+    ImGui::TextUnformatted("Cores");
+    ImGui::SetWindowFontScale(1.f);
+    ov::muted("Each core has its own settings and controls.");
+    ImGui::Dummy(ImVec2(0, 8));
+    if (games.empty()) ov::muted("No games yet: add games in the Library and their cores appear here.");
+    const float gap = 14.f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int cols = std::max(1, static_cast<int>((avail + gap) / (m.compact ? 250.f : 300.f + gap)));
+    const float cw = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+    const float ch = m.compact ? 116.f : 168.f;
+    static const ImU32 kArt[][2] = {{IM_COL32(109, 63, 224, 255), IM_COL32(34, 166, 201, 255)},
+                                    {IM_COL32(138, 63, 154, 255), IM_COL32(233, 116, 138, 255)},
+                                    {IM_COL32(13, 110, 134, 255), IM_COL32(127, 214, 194, 255)}};
+    int idx = 0;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (const auto& [plat, count] : games) {
+        if (idx % cols) ImGui::SameLine(0, gap);
+        ImGui::PushID(plat.c_str());
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton("##core", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        const ImVec2 p1(p0.x + cw, p0.y + ch);
+        ov::card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, 14.f);
+        // The art: the platform's short name on a gradient.
+        const float art_h = ch * 0.46f;
+        const ImU32* c = kArt[idx % 3];
+        dl->AddRectFilledMultiColor(ImVec2(p0.x + 12.f, p0.y + 12.f), ImVec2(p1.x - 12.f, p0.y + 12.f + art_h),
+                                    c[0], c[1], c[1], c[0]);
+        std::string tag = plat;
+        for (char& ch2 : tag) ch2 = static_cast<char>(std::toupper(static_cast<unsigned char>(ch2)));
+        ImGui::SetWindowFontScale(1.6f);
+        const ImVec2 ts = ImGui::CalcTextSize(tag.c_str());
+        dl->AddText(ImVec2(p0.x + (cw - ts.x) * 0.5f, p0.y + 12.f + (art_h - ts.y) * 0.5f),
+                    IM_COL32(255, 255, 255, 255), tag.c_str());
+        ImGui::SetWindowFontScale(1.f);
+        std::string name = platform_display_name(plat);
+        std::string sub = std::to_string(count) + (count == 1 ? " game" : " games");
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        if (core_settings_platform(plat)) {
+            const retcomm::hub::CoreDescription d =
+                retcomm::hub::load_description_cache(hub.paths.data_dir, plat);
+            if (d.ok) {
+                name = d.core_id;
+                sub = std::string(platform_display_name(plat)) + "  \xC2\xB7  " + d.core_version +
+                      "  \xC2\xB7  " + sub;
+            }
+        }
+#endif
+        dl->AddText(ImVec2(p0.x + 16.f, p0.y + 12.f + art_h + 8.f), IM_COL32(233, 237, 248, 255), name.c_str());
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f,
+                    ImVec2(p0.x + 16.f, p0.y + 12.f + art_h + 10.f + ImGui::GetTextLineHeight()),
+                    IM_COL32(153, 163, 188, 255), sub.c_str());
+        if (pressed) open_platform = plat;
+        ImGui::PopID();
+        ++idx;
+    }
+    ImGui::EndChild();
+    if (!open_platform.empty()) shell_platform_settings(hub, open_platform, nullptr);
 }
 
 // The platform cards, then one platform's covers.
@@ -9759,7 +9826,7 @@ void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL
         std::lock_guard<std::mutex> lock(hub.mu);
         job_line = hub.status;
     }
-    const int clicked = ov::tab_bar(m, {"Home", "Library", "Netplay", "Updates", "Settings"},
+    const int clicked = ov::tab_bar(m, {"Home", "Library", "Netplay", "Updates", "Cores", "Settings"},
                                     tab_now, !dirty, job_line);
     if (clicked >= 0 && clicked != tab_now) shell_select_tab(hub, clicked);
     // A title page, a title grid or the Mods page: a Back a finger can reach
@@ -9778,13 +9845,13 @@ void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL
         !ImGui::IsAnyItemActive() && !hub.log_overlay_open && !hub.show_setup;
     // LB / RB step through the tabs.
     if (keys_free && !dirty) {
-        static const int order[] = {0, 1, 2, 3, 4};
+        static const int order[] = {0, 1, 2, 3, 4, 5};
         int at = 0;
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 6; ++i)
             if (order[i] == tab_now) at = i;
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) && at > 0)
             shell_select_tab(hub, order[at - 1]);
-        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) && at < 4)
+        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) && at < 5)
             shell_select_tab(hub, order[at + 1]);
     }
 
@@ -10730,8 +10797,15 @@ struct CoreSettingsPage {
     // options, and edited in the same scope (title_scope).
     std::map<std::string, std::string> disp_plat, disp_plat_saved, disp_title, disp_title_saved;
 
-    // The overlay System page: the section open (a group name, "Display", ...), empty = the list.
-    std::string sys_section;
+    // The overlay's core page: the section open ("Video", "Controls", ...); empty is
+    // the list of sections.
+    std::string section;
+    // Opened from the Settings tab for the launcher's own play settings (Hotkeys,
+    // In-game overlay): no core, only play.ini.
+    bool global_only = false;
+    // Bind all: the controller's buttons one after another on a screen of their own.
+    bool bind_all = false;
+    int bind_index = 0;
     bool gamepads_tab = false;
     int seat_tab = 0;         // the Gamepads tab's selected player
     // Direct mode, local builds: the core's developer options on a page of
@@ -10862,6 +10936,10 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
                           : retcomm::hub::load_display_settings(data, platform, title_key);
     p.gamepads_tab = false;
     p.developer_page = false;
+    p.section.clear();
+    p.global_only = false;
+    p.bind_all = false;
+    p.cfg_backup_seat = -1;
     p.gb_scanned = false;
     p.pak_note.clear();
     p.show_developer = hub.cfg.show_developer_options;
@@ -10930,6 +11008,12 @@ void tick_core_settings(HubModel& hub) {
 bool save_core_settings(HubModel& hub, std::string* err) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
+    if (p.global_only) {
+        // Opened from Settings for the play preferences: nothing of a core's.
+        if (p.prefs != p.prefs_saved && !retcomm::hub::save_play_prefs(data, p.prefs, err)) return false;
+        p.prefs_saved = p.prefs;
+        return true;
+    }
     if (!retcomm::hub::save_platform_input(data, p.platform, p.input, err)) return false;
     if (!retcomm::hub::save_core_options(data, p.platform, "", p.plat_opts, err)) return false;
     if (!p.title_key.empty() &&
@@ -10985,6 +11069,21 @@ void begin_core_capture(CoreSettingsPage& p, int target, bool pad) {
     p.cap_target = target;
     p.cap_pad = pad;
     p.cap_armed_ns = SDL_GetTicksNS();
+}
+
+struct CorePadHit;
+const CorePadHit* n64_pad_hits(int* count);
+int pad_hit_target(const CorePadHit* hits, int i);
+// Bind all: the next button in the list is armed as soon as one is bound.
+void bind_all_advance(CoreSettingsPage& p) {
+    if (!p.bind_all) return;
+    int n = 0;
+    const CorePadHit* hits = n64_pad_hits(&n);
+    if (++p.bind_index >= n) {
+        p.bind_all = false;
+        return;
+    }
+    begin_core_capture(p, pad_hit_target(hits, p.bind_index), p.cap_pad);
 }
 
 // Every SDL event while a capture is armed, before ImGui. True = consumed.
@@ -11060,17 +11159,20 @@ bool core_settings_capture_event(HubModel& hub, const SDL_Event& e) {
         if (got.kind != PadSource::None) {
             map.pad[static_cast<size_t>(p.cap_target)] = got;
             cancel_core_capture(p);
+            bind_all_advance(p);
         }
         return true;
     }
     if (e.type != SDL_EVENT_KEY_DOWN || e.key.repeat) return false;
     if (e.key.key == SDLK_ESCAPE) {
         cancel_core_capture(p);
+        p.bind_all = false;
         return true;
     }
     if (!settled) return true;
     map.key[static_cast<size_t>(p.cap_target)] = e.key.scancode;
     cancel_core_capture(p);
+    bind_all_advance(p);
     return true;
 }
 
@@ -11472,6 +11574,7 @@ const CorePadHit* n64_pad_hits(int* count) {
     *count = static_cast<int>(sizeof(kHits) / sizeof(kHits[0]));
     return kHits;
 }
+int pad_hit_target(const CorePadHit* hits, int i) { return static_cast<int>(hits[i].target); }
 
 // The controller's bounds in the picture (its outline spans x 77-723, y 61-687).
 constexpr float kN64CropU0 = 60.f / 800.f;
@@ -12762,7 +12865,8 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
         const std::string shown =
             !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
                            : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
-        if (ov::setting_row(m, "row", label.c_str(), shown, desc)) ov::open_picker("##pick");
+        if (ov::setting_row(m, "row", label.c_str(), shown, desc, true, p.title_scope && set))
+            ov::open_picker("##pick");
         std::vector<ov::PickerChoice> choices;
         std::vector<std::string> vals; // "" = inherit
         int current = -1;
@@ -12784,7 +12888,8 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
         }
     } else if (o.type == "bool" && bool_spelling(o, t, f)) {
         bool on = cur == t;
-        if (ov::toggle_row(m, "row", label.c_str(), &on, desc)) layer[o.key] = on ? t : f;
+        if (ov::toggle_row(m, "row", label.c_str(), &on, desc, p.title_scope && set))
+            layer[o.key] = on ? t : f;
     } else if (o.type == "int") {
         long long v0 = 0;
         try { v0 = std::stoll(cur); } catch (...) { v0 = o.int_min; }
@@ -12794,11 +12899,12 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
         const int step = span > 5000 ? 100 : span > 500 ? 10 : 1;
         int v = static_cast<int>(std::clamp(v0, lo, hi));
         if (ov::stepper_row(m, "row", label.c_str(), &v, static_cast<int>(lo), static_cast<int>(hi),
-                            step, "", desc))
+                            step, "", desc, p.title_scope && set))
             layer[o.key] = std::to_string(v);
     } else {
         const std::string hint = inherited.empty() ? std::string("unset") : inherited;
-        if (ov::setting_row(m, "row", label.c_str(), set ? cur : hint, desc)) ImGui::OpenPopup("##edit");
+        if (ov::setting_row(m, "row", label.c_str(), set ? cur : hint, desc, true, p.title_scope && set))
+            ImGui::OpenPopup("##edit");
         std::string v = set ? cur : std::string();
         const int r = overlay_text_editor("##edit", label.c_str(), v, hint.c_str());
         if (r == 1 && !v.empty()) layer[o.key] = v;
@@ -12807,210 +12913,398 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
     ImGui::PopID();
 }
 
-void draw_core_system_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
-                              const retcomm::hub::overlay::Metrics& m, float panel_h) {
-    namespace ov = retcomm::hub::overlay;
-    // The sections, in the order the core declares them.
-    std::vector<std::string> sections;
+// ---- The overlay's core page ---------------------------------------------------------
+//
+// Cores tab > one core > a short list of sections (docs/OVERLAY_UI.md). A section
+// is a page of finger-sized rows with a rail of its siblings beside it; the row
+// in focus explains itself in a strip underneath, and Reset / Cancel / Save
+// appear at the bottom once something is edited. Controls is the one section that
+// is not rows: a column of players and the selected player's controller.
+
+std::string title_case(std::string g) {
+    for (size_t i = 0; i < g.size(); ++i)
+        g[i] = static_cast<char>(i == 0 ? std::toupper(static_cast<unsigned char>(g[i]))
+                                        : std::tolower(static_cast<unsigned char>(g[i])));
+    return g;
+}
+
+bool option_in_section(const retcomm::hub::CoreOptionDecl& o, const std::string& section) {
+    if (o.developer) return section == "Developer";
+    return title_case(option_group(o.key)) == section;
+}
+
+// What an option holds now, for a section's summary line.
+std::string option_summary_text(const CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o) {
+    const std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
+    const auto own = layer.find(o.key);
+    std::string cur = o.has_default ? o.default_value : std::string();
+    if (p.title_scope)
+        if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) cur = it->second;
+    if (own != layer.end()) cur = own->second;
+    std::string t, f;
+    if (o.type == "bool" && bool_spelling(o, t, f))
+        return (o.label.empty() ? o.key : o.label) + (cur == t ? " on" : " off");
+    return cur.empty() ? std::string("default") : cur;
+}
+
+struct CoreSection {
+    std::string name;
+    std::string summary;
+    int overrides = 0;
+};
+
+std::vector<CoreSection> core_sections(const CoreSettingsPage& p, bool show_developer) {
+    using retcomm::hub::SeatAssign;
+    std::vector<CoreSection> out;
+    out.push_back({"Video", "", 0});
     if (p.desc_ready && p.desc.ok)
         for (const auto& o : p.desc.options) {
             if (o.developer) continue;
-            const std::string g = option_group(o.key);
-            if (std::find(sections.begin(), sections.end(), g) == sections.end()) sections.push_back(g);
+            const std::string g = title_case(option_group(o.key));
+            if (std::none_of(out.begin(), out.end(), [&](const CoreSection& c) { return c.name == g; }))
+                out.push_back({g, "", 0});
         }
-    sections.push_back("Display");
-    sections.push_back("Sound & overlay");
-    sections.push_back("Hotkeys");
-    {
-        std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
-        if (p.desc.ok)
-            for (const auto& [k, v] : layer)
-                if (std::none_of(p.desc.options.begin(), p.desc.options.end(),
-                                 [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == k; })) {
-                    sections.push_back("Not declared");
-                    break;
-                }
-    }
-    if (std::find(sections.begin(), sections.end(), p.sys_section) == sections.end())
-        p.sys_section.clear();
+    out.push_back({"Controls", "", 0});
+    if (show_developer) out.push_back({"Developer", "", 0});
+    out.push_back({"About", "", 0});
 
-    const bool hotkeys = p.sys_section == "Hotkeys";
-    ImGui::BeginChild("core_sys_overlay", ImVec2(0, panel_h), ImGuiChildFlags_NavFlattened,
-                      hotkeys ? (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)
-                              : ImGuiWindowFlags_None);
-    if (!p.desc_ready) {
-        ov::muted("Asking the core what it declares...");
-    } else if (!p.desc.ok) {
-        ov::banner("The core's settings are unavailable.");
-        ov::muted(p.desc.error.c_str());
-        ov::muted("Open a title of this system once, and this page remembers what its core declared.");
-    }
-    if (p.sys_section.empty()) {
-        for (const std::string& sec : sections) {
-            std::string value;
-            if (sec == "Hotkeys") value = "";
-            std::string label = sec;
-            // Title-case the group names the keys give in capitals.
-            if (sec != "Display" && sec != "Sound & overlay" && sec != "Hotkeys" && sec != "Not declared")
-                for (size_t i = 1; i < label.size(); ++i)
-                    label[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(label[i])));
-            if (ov::list_row(m, sec.c_str(), label.c_str(), value)) p.sys_section = sec;
-        }
-    } else {
-        const std::string& sec = p.sys_section;
-        if (ov::action_button("< Back", false, 130.f)) {
-            p.sys_section.clear();
-            ImGui::EndChild();
-            return;
-        }
-        ImGui::Dummy(ImVec2(0, 8));
-        if (sec == "Display") {
+    for (CoreSection& c : out) {
+        std::vector<std::string> parts;
+        if (c.name == "Video") {
             using retcomm::hub::OutputFilter;
-            std::map<std::string, std::string>& layer = p.title_scope ? p.disp_title : p.disp_plat;
-            const auto inherited = retcomm::hub::resolve_picture_style(
-                p.title_scope ? p.disp_plat : std::map<std::string, std::string>{}, {});
             const auto cur = retcomm::hub::resolve_picture_style(
                 p.disp_plat, p.title_scope ? p.disp_title : std::map<std::string, std::string>{});
-            const char* inherit_word = p.title_scope ? "All titles" : "Default";
-            const bool set = layer.count(retcomm::hub::kDisplayOutputFilter) != 0;
-            const std::string shown =
-                !p.title_scope && !set
-                    ? std::string(inherit_word) + ": " + retcomm::hub::output_filter_label(inherited.filter)
-                    : std::string(retcomm::hub::output_filter_label(cur.filter));
-            if (ov::setting_row(m, "filter", "Output filter", shown,
-                                "How the picture is scaled to the window. Applies the next time a game starts."))
-                ov::open_picker("##filter");
-            std::vector<ov::PickerChoice> choices;
-            int current = -1, base = 0;
-            if (!p.title_scope) {
-                choices.push_back({std::string(inherit_word) + " (" +
-                                       retcomm::hub::output_filter_label(inherited.filter) + ")", ""});
-                base = 1;
-                if (!set) current = 0;
-            }
-            for (int i = 0; i < retcomm::hub::kOutputFilterCount; ++i) {
-                choices.push_back({retcomm::hub::output_filter_label(static_cast<OutputFilter>(i)), ""});
-                if ((set || p.title_scope) && static_cast<OutputFilter>(i) == cur.filter)
-                    current = base + i;
-            }
-            const int pick = ov::picker(m, "##filter", "Output filter", choices, current);
-            if (pick >= 0) {
-                if (!p.title_scope && pick == 0) layer.erase(retcomm::hub::kDisplayOutputFilter);
-                else
-                    layer[retcomm::hub::kDisplayOutputFilter] =
-                        retcomm::hub::output_filter_key(static_cast<OutputFilter>(pick - base));
-            }
-            bool integer = cur.integer_scale;
-            if (ov::toggle_row(m, "integer", "Integer scale", &integer,
-                               "Only whole multiples of the picture's height, with black borders."))
-                layer[retcomm::hub::kDisplayIntegerScale] = integer ? "1" : "0";
-        } else if (sec == "Sound & overlay") {
-            ov::toggle_row(m, "fps", "Show FPS", &p.prefs.show_fps,
-                           "Frames per second in the top left while playing.");
-            ov::toggle_row(m, "turbo", "Sound during turbo", &p.prefs.turbo_sound,
-                           "Keep the game's sound while turbo runs, at its own pitch.");
-            ov::stepper_row(m, "vol", "Volume", &p.prefs.volume, 0, 100, 5, "%");
-        } else if (sec == "Hotkeys") {
-            draw_core_hotkeys_panel(hub, p, th, 0.f, true);
-        } else if (sec == "Not declared") {
-            std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
-            ov::banner("Values stored for keys this core no longer declares.");
-            std::vector<std::string> stale;
-            for (const auto& [k, v] : layer)
-                if (std::none_of(p.desc.options.begin(), p.desc.options.end(),
-                                 [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == k; }))
-                    stale.push_back(k);
-            for (const std::string& k : stale)
-                if (ov::setting_row(m, k.c_str(), k.c_str(), layer[k], "Tap to remove")) layer.erase(k);
-        } else {
-            for (const retcomm::hub::CoreOptionDecl& o : p.desc.options)
-                if (!o.developer && option_group(o.key) == sec) overlay_option_row(p, o, m);
+            parts.push_back(retcomm::hub::output_filter_label(cur.filter));
+            if (p.title_scope) c.overrides += static_cast<int>(p.disp_title.size());
         }
+        if (c.name == "Controls") {
+            int players = 0;
+            for (const auto& s : p.input.seats) players += s.source == SeatAssign::None ? 0 : 1;
+            parts.push_back(std::to_string(players) + (players == 1 ? " player" : " players"));
+            const SeatAssign& s0 = p.input.seats[0];
+            parts.push_back(s0.source == SeatAssign::Keyboard ? "Keyboard"
+                            : s0.source == SeatAssign::Gamepad ? (s0.name.empty() ? "Gamepad" : s0.name)
+                                                               : "Auto");
+        } else if (c.name == "About") {
+            parts.push_back(p.desc.ok ? p.desc.core_id + " " + p.desc.core_version : std::string("not described yet"));
+        } else if (p.desc.ok) {
+            size_t shown = 0, count = 0;
+            for (const auto& o : p.desc.options) {
+                if (!option_in_section(o, c.name == "Video" ? std::string("Video") : c.name)) continue;
+                ++count;
+                if (p.title_scope && p.title_opts.count(o.key)) ++c.overrides;
+                if (shown < 3) {
+                    parts.push_back(option_summary_text(p, o));
+                    ++shown;
+                }
+            }
+            if (c.name == "Developer") {
+                parts.clear();
+                parts.push_back(std::to_string(count) + " developer options");
+            }
+        }
+        for (size_t i = 0; i < parts.size(); ++i) c.summary += (i ? "  \xC2\xB7  " : "") + parts[i];
+        if (c.overrides) c.summary += "  \xC2\xB7  " + std::to_string(c.overrides) + " override" + (c.overrides == 1 ? "" : "s");
     }
-    ImGui::EndChild();
+    return out;
 }
 
-void draw_core_gamepads_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
-                                const retcomm::hub::overlay::Metrics& m, float panel_h,
-                                BoxartCache& boxart) {
+// One game's layer, or every game's. Only while nothing is edited: switching
+// would lose the edits.
+void core_set_scope(HubModel& hub, CoreSettingsPage& p, const std::string& key, const std::string& name) {
+    const fs::path& data = hub.paths.data_dir;
+    p.title_key = key;
+    p.title_name = name;
+    p.title_scope = !key.empty();
+    p.title_opts = p.title_saved =
+        key.empty() ? std::map<std::string, std::string>{} : retcomm::hub::load_core_options(data, p.platform, key);
+    p.disp_title = p.disp_title_saved =
+        key.empty() ? std::map<std::string, std::string>{} : retcomm::hub::load_display_settings(data, p.platform, key);
+}
+
+void revert_core_edits(CoreSettingsPage& p) {
+    p.input = p.input_saved;
+    p.plat_opts = p.plat_saved;
+    p.title_opts = p.title_saved;
+    p.prefs = p.prefs_saved;
+    p.disp_plat = p.disp_plat_saved;
+    p.disp_title = p.disp_title_saved;
+}
+
+void reset_core_section(CoreSettingsPage& p) {
+    if (p.global_only) {
+        if (p.section == "Hotkeys") p.prefs.hotkeys = retcomm::hub::default_host_hotkeys();
+        else {
+            p.prefs.show_fps = false;
+            p.prefs.volume = 100;
+            p.prefs.turbo_sound = true;
+        }
+        return;
+    }
+    if (p.section == "Controls") {
+        const auto seats = p.input.seats;
+        p.input = retcomm::hub::PlatformInput{};
+        p.input.seats = seats;
+        return;
+    }
+    std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
+    if (p.section == "Video") (p.title_scope ? p.disp_title : p.disp_plat).clear();
+    for (auto it = layer.begin(); it != layer.end();) {
+        const auto decl = std::find_if(p.desc.options.begin(), p.desc.options.end(),
+                                       [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == it->first; });
+        if (decl != p.desc.options.end() && option_in_section(*decl, p.section)) it = layer.erase(it);
+        else ++it;
+    }
+}
+
+// A small heading over a group of rows.
+void overlay_group_label(const char* text) {
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.64f, 0.74f, 1.f));
+    ImGui::SetWindowFontScale(0.82f);
+    std::string up = text;
+    for (char& c : up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    ImGui::TextUnformatted(up.c_str());
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 2));
+}
+
+// The hub's picture rows (display.ini): how the picture is scaled to the window.
+void overlay_picture_rows(CoreSettingsPage& p, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    using retcomm::hub::OutputFilter;
+    std::map<std::string, std::string>& layer = p.title_scope ? p.disp_title : p.disp_plat;
+    const auto inherited = retcomm::hub::resolve_picture_style(
+        p.title_scope ? p.disp_plat : std::map<std::string, std::string>{}, {});
+    const auto cur = retcomm::hub::resolve_picture_style(
+        p.disp_plat, p.title_scope ? p.disp_title : std::map<std::string, std::string>{});
+    const char* inherit_word = p.title_scope ? "All games" : "Default";
+    const bool set = layer.count(retcomm::hub::kDisplayOutputFilter) != 0;
+    const std::string shown =
+        !p.title_scope && !set
+            ? std::string(inherit_word) + ": " + retcomm::hub::output_filter_label(inherited.filter)
+            : std::string(retcomm::hub::output_filter_label(cur.filter));
+    if (ov::setting_row(m, "filter", "Output filter", shown,
+                        "How the picture is scaled to the window. The launcher's, not the core's: it changes "
+                        "nothing the game computes, and applies the next time a game starts.",
+                        true, p.title_scope && set))
+        ov::open_picker("##filter");
+    std::vector<ov::PickerChoice> choices;
+    int current = -1, base = 0;
+    if (!p.title_scope) {
+        choices.push_back({std::string(inherit_word) + " (" + retcomm::hub::output_filter_label(inherited.filter) + ")", ""});
+        base = 1;
+        if (!set) current = 0;
+    }
+    for (int i = 0; i < retcomm::hub::kOutputFilterCount; ++i) {
+        choices.push_back({retcomm::hub::output_filter_label(static_cast<OutputFilter>(i)), ""});
+        if ((set || p.title_scope) && static_cast<OutputFilter>(i) == cur.filter) current = base + i;
+    }
+    const int pick = ov::picker(m, "##filter", "Output filter", choices, current);
+    if (pick >= 0) {
+        if (!p.title_scope && pick == 0) layer.erase(retcomm::hub::kDisplayOutputFilter);
+        else
+            layer[retcomm::hub::kDisplayOutputFilter] =
+                retcomm::hub::output_filter_key(static_cast<OutputFilter>(pick - base));
+    }
+    bool integer = cur.integer_scale;
+    const bool int_set = layer.count(retcomm::hub::kDisplayIntegerScale) != 0;
+    if (ov::toggle_row(m, "integer", "Integer scale", &integer,
+                       "Only whole multiples of the picture's height, with black borders around it. A "
+                       "picture taller than the window is fitted as usual.",
+                       p.title_scope && int_set))
+        layer[retcomm::hub::kDisplayIntegerScale] = integer ? "1" : "0";
+}
+
+// Not declared by this core: values stored for keys it no longer has. The runner
+// refuses an --opt it does not know, so they are shown to be removed.
+void overlay_stale_rows(CoreSettingsPage& p, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
+    std::vector<std::string> stale;
+    if (p.desc.ok)
+        for (const auto& [k, v] : layer)
+            if (std::none_of(p.desc.options.begin(), p.desc.options.end(),
+                             [&](const retcomm::hub::CoreOptionDecl& o) { return o.key == k; }))
+                stale.push_back(k);
+    if (stale.empty()) return;
+    overlay_group_label("Not declared by this core");
+    for (const std::string& k : stale)
+        if (ov::setting_row(m, k.c_str(), k.c_str(), layer[k], "Tap to remove this stored value.")) layer.erase(k);
+}
+
+// The hotkeys: the same for every core, so they live under the launcher's own
+// Settings. Action, the keyboard's key, and the pad's Function + button.
+void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    using retcomm::hub::HostAction;
+    using retcomm::hub::kHostActionCount;
+    retcomm::hub::HostHotkeys& hk = p.prefs.hotkeys;
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float chip_k = std::min(180.f, w * 0.2f), chip_p = std::min(260.f, w * 0.3f);
+    if (ImGui::BeginTable("##hk", 3, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("a", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, chip_k + 8.f);
+        ImGui::TableSetupColumn("p", ImGuiTableColumnFlags_WidthFixed, chip_p + 8.f);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ov::muted("Action");
+        ImGui::TableNextColumn();
+        ov::muted("Keyboard");
+        ImGui::TableNextColumn();
+        ov::muted("Controller");
+        for (int a = 0; a < kHostActionCount; ++a) {
+            ImGui::PushID(a);
+            ImGui::TableNextRow(0, m.item_h + 8.f);
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.f);
+            ImGui::TextUnformatted(retcomm::hub::host_action_label(static_cast<HostAction>(a)));
+            ImGui::TableNextColumn();
+            const SDL_Scancode k = hk.key[static_cast<size_t>(a)];
+            const bool cap_k = p.hk_cap == a && !p.hk_cap_pad;
+            const std::string kl = cap_k ? "press a key..." : (k == SDL_SCANCODE_UNKNOWN ? "Not set" : SDL_GetScancodeName(k));
+            if (ov::action_button((kl + "##k").c_str(), cap_k, chip_k)) {
+                p.hk_cap = a;
+                p.hk_cap_pad = false;
+                p.hk_armed_ns = SDL_GetTicksNS();
+            }
+            ImGui::TableNextColumn();
+            const bool cap_p = p.hk_cap == a && p.hk_cap_pad;
+            const std::string b = retcomm::hub::pad_source_label(hk.combo[static_cast<size_t>(a)]);
+            const std::string pl = cap_p ? "press a button..." : (b.empty() ? "Not set" : "Function + " + b);
+            if (ov::action_button((pl + "##p").c_str(), cap_p, chip_p)) {
+                p.hk_cap = a;
+                p.hk_cap_pad = true;
+                p.hk_armed_ns = SDL_GetTicksNS();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ov::muted("The pause menu also opens with F1, or both sticks pressed in (L3 + R3) on any controller. "
+              "Function is set per controller under Controls > Edit buttons.");
+    // The capture prompt (any key is bindable, Escape included).
+    if (p.hk_cap >= 0 && !ImGui::IsPopupOpen("Hotkey###hk_bind")) ImGui::OpenPopup("Hotkey###hk_bind");
+    center_modal_next();
+    if (ImGui::BeginPopupModal("Hotkey###hk_bind", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        if (p.hk_cap < 0) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            const char* what = retcomm::hub::host_action_label(static_cast<HostAction>(p.hk_cap));
+            const std::uint64_t left = kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.hk_armed_ns);
+            if (p.hk_cap_pad) ImGui::Text("Press the button to hold with Function for %s.", what);
+            else ImGui::Text("Press the key for %s.", what);
+            ImGui::TextColored(th.text_muted, "Cancels by itself in %d s.", static_cast<int>(left / 1'000'000'000ull) + 1);
+            if (left == 0) p.hk_cap = -1;
+            ImGui::Dummy(ImVec2(0, 6));
+            if (ov::action_button("Not set", false, 120.f) && p.hk_cap >= 0) {
+                const auto a = static_cast<size_t>(p.hk_cap);
+                if (p.hk_cap_pad) hk.combo[a] = {};
+                else hk.key[a] = SDL_SCANCODE_UNKNOWN;
+                p.hk_cap = -1;
+            }
+            ImGui::SameLine();
+            if (ov::action_button("Cancel", false, 120.f)) p.hk_cap = -1;
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// Controls: the players in a column, the selected one's controller beside it.
+void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                                const retcomm::hub::overlay::Metrics& m, BoxartCache& boxart) {
     using namespace retcomm::hub;
     namespace ov = retcomm::hub::overlay;
-    ImGui::BeginChild("core_gamepads", ImVec2(0, panel_h), ImGuiChildFlags_NavFlattened,
-                      page_wheel_flags(hub));
-    // Player tabs: a row that scrolls sideways when there are more than fit.
-    {
-        const int n = kInputSeats;
-        p.seat_tab = std::clamp(p.seat_tab, 0, n - 1);
-        constexpr float kTabW = 130.f;
-        const float gap = 8.f;
-        const float need = n * kTabW + (n - 1) * gap;
-        const bool overflows = need > ImGui::GetContentRegionAvail().x;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
-        ImGui::BeginChild("seat_tabs", ImVec2(0, m.item_h + (overflows ? 12.f : 4.f)),
-                          ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::PopStyleVar();
-        for (int s = 0; s < n; ++s) {
-            if (s) ImGui::SameLine(0, gap);
-            char label[24];
-            std::snprintf(label, sizeof label, "Player %d##seat%d", s + 1, s);
-            if (ov::action_button(label, s == p.seat_tab, kTabW) && s != p.seat_tab) {
-                p.seat_tab = s;
-                p.configuring = -1;
-                cancel_core_capture(p);
-            }
-        }
-        ImGui::EndChild();
-    }
-    ImGui::Dummy(ImVec2(0, 6));
-
     const std::vector<ConnectedPad> pads = connected_pads();
     std::vector<std::string> guids;
     for (const auto& c : pads) guids.push_back(c.guid);
     const auto plan = plan_seats(p.input, guids);
-    const int s = p.seat_tab;
-    const SeatPak::Kind seat_pak = p.input.paks[static_cast<size_t>(s)].kind;
-    const bool has_accessory = seat_pak == SeatPak::TransferPak || seat_pak == SeatPak::Vru;
-    const float page_w = ImGui::GetContentRegionAvail().x;
-    const float gap = 14.f;
-    const bool beside = has_accessory && page_w >= kSeatPanelMinW * 2.f + gap;
-    const float cardw = beside ? (page_w - gap) * 0.5f : page_w;
+    p.seat_tab = std::clamp(p.seat_tab, 0, kInputSeats - 1);
 
+    auto source_text = [&](int s) {
+        const SeatAssign& a = p.input.seats[static_cast<size_t>(s)];
+        const SeatPlan& sp = plan[static_cast<size_t>(s)];
+        if (p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru) return std::string("VRU Microphone");
+        if (sp.pad >= 0) return pads[static_cast<size_t>(sp.pad)].name;
+        if (sp.keyboard) return std::string("Keyboard");
+        if (a.source == SeatAssign::None) return std::string("None");
+        if (a.source == SeatAssign::Gamepad) return (a.name.empty() ? a.guid : a.name) + " (not connected)";
+        return std::string("Auto: waiting for a pad");
+    };
+
+    // The players. Scrolls on its own past four.
+    const float col_w = m.compact ? 220.f : 272.f;
+    ImGui::BeginChild("##ports", ImVec2(col_w, 0), ImGuiChildFlags_NavFlattened);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int s = 0; s < kInputSeats; ++s) {
+        ImGui::PushID(s);
+        const float cw = ImGui::GetContentRegionAvail().x;
+        const float ch = m.compact ? 72.f : 84.f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton("##port", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+        const bool sel = s == p.seat_tab;
+        ov::card_frame(p0, ImVec2(p0.x + cw, p0.y + ch), sel || ImGui::IsItemHovered() || ImGui::IsItemFocused(),
+                       ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+        char title[24];
+        std::snprintf(title, sizeof title, "Player %d", s + 1);
+        dl->AddText(ImVec2(p0.x + 16.f, p0.y + 10.f), IM_COL32(233, 237, 248, 255), title);
+        const SeatPlan& sp = plan[static_cast<size_t>(s)];
+        const bool on = sp.connected() || sp.vru;
+        dl->AddCircleFilled(ImVec2(p0.x + 22.f, p0.y + ch - 24.f), 4.f,
+                            on ? IM_COL32(52, 211, 153, 255) : IM_COL32(153, 163, 188, 255));
+        dl->PushClipRect(ImVec2(p0.x + 34.f, p0.y), ImVec2(p0.x + cw - 8.f, p0.y + ch), true);
+        dl->AddText(ImVec2(p0.x + 34.f, p0.y + ch - 24.f - ImGui::GetTextLineHeight() * 0.5f),
+                    IM_COL32(153, 163, 188, 255), source_text(s).c_str());
+        dl->PopClipRect();
+        if (pressed && s != p.seat_tab) {
+            p.seat_tab = s;
+            p.configuring = -1;
+            cancel_core_capture(p);
+            ov::row_info_reset();
+        }
+        ImGui::PopID();
+        ImGui::Dummy(ImVec2(0, 6));
+    }
+    ImGui::EndChild();
+    ImGui::SameLine(0, 16.f);
+
+    // The selected player.
+    const int s = p.seat_tab;
+    ImGui::BeginChild("##pane", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
     ImGui::PushID(s);
-    ov::begin_card("seatcard", "Controller", cardw);
-    // The picture beside the rows when the card is wide; above them (smaller) when
-    // it is not, and left out on a short screen where the rows matter more.
-    const bool pic_side = cardw >= 620.f;
+    SeatAssign& a = p.input.seats[static_cast<size_t>(s)];
+    SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+    const bool vru_seat = pak.kind == SeatPak::Vru;
+    const float pane_w = ImGui::GetContentRegionAvail().x;
+    const bool pic_side = pane_w >= 640.f && p.platform == "n64";
     if (p.platform == "n64" && (pic_side || !m.compact)) {
         static const fs::path art = find_hub_asset_file("controllers", "n64_controller.png");
         if (const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("pad:n64:card", art);
             tex && tex->width > 0) {
-            const float w = pic_side ? 230.f : std::min(ImGui::GetContentRegionAvail().x, 180.f);
+            const float w = pic_side ? 230.f : std::min(pane_w, 180.f);
             const float h = w * static_cast<float>(tex->height) / static_cast<float>(tex->width);
-            if (!pic_side)
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - w) * 0.5f);
+            if (!pic_side) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (pane_w - w) * 0.5f);
             ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(w, h));
             if (pic_side) ImGui::SameLine(0, 18.f);
-            else ImGui::Dummy(ImVec2(0, 4));
         }
     }
     if (pic_side) ImGui::BeginGroup();
-    const bool vru_seat = seat_pak == SeatPak::Vru;
+
+    std::string src;
+    switch (a.source) {
+        case SeatAssign::Auto: src = "Auto"; break;
+        case SeatAssign::Keyboard: src = "Keyboard"; break;
+        case SeatAssign::None: src = "None"; break;
+        case SeatAssign::Gamepad: src = a.name.empty() ? a.guid : a.name; break;
+    }
+    if (vru_seat) src = "VRU Microphone";
+    if (ov::setting_row(m, "source", "Controller", src,
+                        "What drives this player: the next free gamepad, the keyboard, one gamepad by name, or nothing.",
+                        !vru_seat))
+        ov::open_picker("##src");
     {
-        const SeatPlan& sp = plan[static_cast<size_t>(s)];
-        SeatAssign& a = p.input.seats[static_cast<size_t>(s)];
-        std::string src;
-        switch (a.source) {
-            case SeatAssign::Auto: src = "Auto"; break;
-            case SeatAssign::Keyboard: src = "Keyboard"; break;
-            case SeatAssign::None: src = "None"; break;
-            case SeatAssign::Gamepad: src = a.name.empty() ? a.guid : a.name; break;
-        }
-        if (vru_seat) src = "VRU Microphone";
-        std::string st = "no device";
-        if (sp.vru) st = "voice unit";
-        else if (sp.pad >= 0) st = pads[static_cast<size_t>(sp.pad)].name;
-        else if (sp.keyboard) st = "keyboard";
-        if (ov::setting_row(m, "source", "Controller", src, st.c_str(), !vru_seat)) ov::open_picker("##src");
         std::vector<ov::PickerChoice> choices{{"Auto", "The next free gamepad"}, {"Keyboard", ""}};
         std::vector<SeatAssign> assigns{{SeatAssign::Auto, "", ""}, {SeatAssign::Keyboard, "", ""}};
         int current = a.source == SeatAssign::Auto ? 0 : a.source == SeatAssign::Keyboard ? 1 : -1;
@@ -13029,50 +13323,425 @@ void draw_core_gamepads_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
         assigns.push_back({SeatAssign::None, "", ""});
         const int pick = ov::picker(m, "##src", "Controller", choices, current);
         if (pick >= 0) a = assigns[static_cast<size_t>(pick)];
-
-        if (ov::setting_row(m, "configure", "Configure buttons", "", nullptr, !vru_seat)) {
-            cancel_core_capture(p);
-            p.status.clear();
-            p.configuring = s;
-            p.map_keyboard = a.source == SeatAssign::Keyboard || sp.keyboard;
-        }
     }
+    const SeatPlan& sp = plan[static_cast<size_t>(s)];
+    auto open_map = [&](bool all) {
+        cancel_core_capture(p);
+        p.status.clear();
+        p.configuring = s;
+        p.map_keyboard = a.source == SeatAssign::Keyboard || sp.keyboard;
+        p.cfg_backup = p.input; // Cancel puts these back
+        p.cfg_backup_seat = s;
+        p.bind_all = all;
+        p.bind_index = 0;
+        if (all) {
+            int nh = 0;
+            const CorePadHit* h = n64_pad_hits(&nh);
+            if (nh > 0) begin_core_capture(p, pad_hit_target(h, 0), !p.map_keyboard);
+        }
+        ov::row_info_reset();
+    };
+    if (ov::setting_row(m, "bindall", "Bind all buttons", "",
+                        "Walk through every button in turn and press the one that should drive it.", !vru_seat))
+        open_map(true);
+    if (ov::setting_row(m, "edit", "Edit buttons", "",
+                        "Pick one button and rebind just that, or set the Function button that holds hotkeys.",
+                        !vru_seat))
+        open_map(false);
     if (p.platform == "n64") {
-        SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
-        const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak"
-                          : pak.kind == SeatPak::Vru       ? "VRU Microphone"
-                                                           : "None";
-        const CoreAccessoryDecl* vru_decl =
-            p.desc.ok ? p.desc.accessory(kVruAccessoryId) : nullptr;
+        const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak" : pak.kind == SeatPak::Vru ? "VRU Microphone" : "None";
+        const CoreAccessoryDecl* vru_decl = p.desc.ok ? p.desc.accessory(kVruAccessoryId) : nullptr;
         const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
-        if (ov::setting_row(m, "pak", "Pak", now)) ov::open_picker("##pak");
+        if (ov::setting_row(m, "pak", "Accessory", now,
+                            "What is plugged into this controller: a Transfer Pak, or the VRU Microphone (the "
+                            "port becomes the voice unit). The Controller Pak and Rumble Pak are not "
+                            "implemented yet."))
+            ov::open_picker("##pak");
         std::vector<ov::PickerChoice> choices{
             {"None", ""},
             {"Transfer Pak", "Game Boy cartridge in the controller"},
             {"VRU Microphone", vru_here ? "Voice unit on this port" : "The core does not offer it here"}};
         const int cur = pak.kind == SeatPak::TransferPak ? 1 : pak.kind == SeatPak::Vru ? 2 : 0;
-        const int pick = ov::picker(m, "##pak", "Pak", choices, cur);
+        const int pick = ov::picker(m, "##pak", "Accessory", choices, cur);
         if (pick == 0) pak.kind = SeatPak::None;
         else if (pick == 1) pak.kind = SeatPak::TransferPak;
         else if (pick == 2 && (vru_here || pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
     }
+    int dz = p.input.deadzone_pct;
+    if (ov::stepper_row(m, "deadzone", "Stick deadzone", &dz, 0, 50, 1, "%",
+                        "Stick travel ignored around the centre, then rescaled so a full push is still full. "
+                        "Applies to every player."))
+        p.input.deadzone_pct = dz;
     if (pic_side) ImGui::EndGroup();
-    ov::end_card();
-    ImGui::PopID();
 
-    if (has_accessory) {
-        if (beside) {
-            ImGui::SameLine(0, gap);
-            ImGui::BeginChild("seat_accessory", ImVec2(page_w - cardw - gap, 0),
-                              ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+    if (pak.kind == SeatPak::TransferPak || pak.kind == SeatPak::Vru) {
+        ImGui::Dummy(ImVec2(0, 8));
+        draw_transfer_pak_section(hub, p, th, boxart, false);
+        draw_vru_section(hub, p, th, false);
+    }
+    ImGui::PopID();
+    ImGui::EndChild();
+}
+
+// The core page. `body_h` is what is left under the header.
+void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                            const retcomm::hub::overlay::Metrics& m, BoxartCache& boxart) {
+    namespace ov = retcomm::hub::overlay;
+    const ImVec4 muted(0.60f, 0.64f, 0.74f, 1.f);
+    const bool dirty = p.dirty();
+    const std::string core_name = p.desc.ok ? p.desc.core_id : std::string(platform_display_name(p.platform));
+
+    // Header: where this is, and which games it edits.
+    ImGui::SetWindowFontScale(1.1f);
+    if (p.global_only) {
+        ImGui::TextColored(muted, "Settings  > ");
+        ImGui::SameLine(0, 0);
+        ImGui::TextUnformatted(p.section.c_str());
+    } else {
+        ImGui::TextColored(muted, "Cores  >  ");
+        ImGui::SameLine(0, 0);
+        if (p.section.empty()) {
+            ImGui::TextUnformatted(core_name.c_str());
+        } else {
+            ImGui::TextColored(muted, "%s  >  ", core_name.c_str());
+            ImGui::SameLine(0, 0);
+            ImGui::TextUnformatted(p.section.c_str());
         }
-        draw_transfer_pak_section(hub, p, th, boxart, beside);
-        draw_vru_section(hub, p, th, beside);
-        if (beside) ImGui::EndChild();
+    }
+    ImGui::SetWindowFontScale(1.f);
+    const bool scoped = !p.global_only && p.section != "Controls" && p.section != "About";
+    if (!p.global_only) {
+        const std::string chip = (p.title_scope ? (p.title_name.empty() ? p.title_key : p.title_name) + " only"
+                                                : std::string("All ") + platform_display_name(p.platform) + " games");
+        const float cw = ImGui::CalcTextSize(chip.c_str()).x + 64.f;
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 20.f, ImGui::GetWindowContentRegionMax().x - cw));
+        if (scoped) {
+            ImGui::BeginDisabled(dirty);
+            if (ov::action_button((chip + "  v").c_str(), p.title_scope, cw)) ov::open_picker("##scope");
+            ImGui::EndDisabled();
+        } else {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(muted, "Every %s game", platform_display_name(p.platform));
+        }
+    }
+    {
+        std::vector<ov::PickerChoice> choices{{std::string("All ") + platform_display_name(p.platform) + " games",
+                                               "The values every game starts from"}};
+        std::vector<std::pair<std::string, std::string>> games{{"", ""}};
+        {
+            std::lock_guard<std::mutex> lock(hub.mu);
+            for (const TitleRow& r : hub.rows)
+                if (r.platform == p.platform) games.emplace_back(r.id, r.name.empty() ? r.id : r.name);
+        }
+        int current = 0;
+        for (size_t i = 1; i < games.size(); ++i) {
+            choices.push_back({games[i].second, "Only this game's own values"});
+            if (p.title_scope && p.title_key == games[i].first) current = static_cast<int>(i);
+        }
+        const int pick = ov::picker(m, "##scope", "Edit settings for", choices, current);
+        if (pick >= 0 && !dirty) core_set_scope(hub, p, games[static_cast<size_t>(pick)].first, games[static_cast<size_t>(pick)].second);
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+
+    const bool rows_page = p.global_only || (!p.section.empty() && p.section != "Controls" && p.section != "About");
+    const float info_h = rows_page ? 64.f : 0.f;
+    const float bar_h = dirty ? 70.f : 0.f;
+    const float body_h = std::max(100.f, ImGui::GetContentRegionAvail().y - info_h - bar_h);
+    const std::vector<CoreSection> sections = p.global_only ? std::vector<CoreSection>{}
+                                                            : core_sections(p, kLocalBuild || p.show_developer);
+    if (!p.global_only && !p.section.empty() &&
+        std::none_of(sections.begin(), sections.end(), [&](const CoreSection& c) { return c.name == p.section; }))
+        p.section.clear();
+
+    ImGui::BeginChild("##corebody", ImVec2(0, body_h), ImGuiChildFlags_NavFlattened);
+    if (!p.desc_ready) {
+        ov::muted("Asking the core what it declares...");
+    } else if (!p.desc.ok && !p.global_only) {
+        ov::banner("The core's settings are unavailable.");
+        ov::muted(p.desc.error.c_str());
+    }
+    if (!p.global_only && p.section.empty()) {
+        // The list of sections.
+        for (const CoreSection& c : sections)
+            if (ov::list_row(m, c.name.c_str(), c.name.c_str(), c.summary)) {
+                p.section = c.name;
+                ov::row_info_reset();
+            }
+    } else {
+        // A rail of the sections, then the one open.
+        float rail_w = 0.f;
+        if (!p.global_only) {
+            rail_w = m.compact ? 190.f : 236.f;
+            ImGui::BeginChild("##secrail", ImVec2(rail_w, 0), ImGuiChildFlags_NavFlattened);
+            for (const CoreSection& c : sections) {
+                if (ov::action_button(c.name.c_str(), c.name == p.section, rail_w - 4.f) && c.name != p.section) {
+                    p.section = c.name;
+                    p.configuring = -1;
+                    ov::row_info_reset();
+                }
+                ImGui::Dummy(ImVec2(0, 2));
+            }
+            ImGui::EndChild();
+            ImGui::SameLine(0, 16.f);
+        }
+        if (p.section == "Controls") {
+            draw_core_controls_overlay(hub, p, th, m, boxart);
+        } else if (p.section == "About") {
+            ImGui::BeginChild("##about", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+            ov::value_row(m, "core", "Core", p.desc.ok ? p.desc.core_id : std::string("unknown"));
+            ov::value_row(m, "ver", "Version", p.desc.ok ? p.desc.core_version : std::string("unknown"));
+            ov::value_row(m, "plat", "System", platform_display_name(p.platform));
+            ov::value_row(m, "from", "Described by",
+                          p.desc.cached ? std::string("remembered from an earlier run")
+                          : p.described_from.empty() ? std::string("the last cached description")
+                                                     : p.described_from);
+            ov::value_row(m, "dir", "Settings folder",
+                          retcomm::hub::platform_settings_dir(hub.paths.data_dir, p.platform).string());
+            ov::muted("Updating or removing the core is on the Updates tab.");
+            ImGui::EndChild();
+        } else {
+            ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+            if (p.global_only && p.section == "Hotkeys") {
+                draw_hotkeys_overlay(p, th, m);
+            } else if (p.global_only) {
+                ov::toggle_row(m, "fps", "Show FPS", &p.prefs.show_fps, "Frames per second in the top left while playing.");
+                ov::toggle_row(m, "turbo", "Sound during turbo", &p.prefs.turbo_sound,
+                               "Keep the game's sound while turbo runs, at its own pitch: stretches of it play and "
+                               "the rest is skipped. Off mutes it during turbo.");
+                ov::stepper_row(m, "vol", "Volume", &p.prefs.volume, 0, 100, 5, "%",
+                                "In game, the volume hotkeys change it (a meter shows on the right).");
+            } else if (p.section == "Developer") {
+                bool show = p.show_developer;
+                if (ov::toggle_row(m, "showdev", "Show developer options", &show,
+                                   "Options the core marks developer-only: diagnostics and the engine's policy "
+                                   "knobs. Leave them alone to play; an unset knob is the engine's own default.")) {
+                    p.show_developer = show;
+                    hub.cfg.show_developer_options = show;
+                    std::string err;
+                    if (!retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err))
+                        hub.append_log("config not saved: " + err);
+                }
+                if (p.show_developer && p.desc.ok) {
+                    overlay_group_label("Developer options");
+                    for (const auto& o : p.desc.options)
+                        if (o.developer) overlay_option_row(p, o, m);
+                }
+                overlay_stale_rows(p, m);
+            } else {
+                if (p.section == "Video") overlay_group_label("Picture");
+                if (p.section == "Video") overlay_picture_rows(p, m);
+                bool any = false;
+                for (const auto& o : p.desc.options)
+                    if (!o.developer && option_in_section(o, p.section)) {
+                        if (!any) {
+                            overlay_group_label(p.section == "Video" ? "Core" : p.section.c_str());
+                            any = true;
+                        }
+                        overlay_option_row(p, o, m);
+                    }
+            }
+            ImGui::EndChild();
+        }
     }
     ImGui::EndChild();
-    draw_core_configure_modal(p, th, boxart);
+
+    if (rows_page) {
+        // What the row in focus does.
+        const std::string& info = ov::row_info();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + info_h - 6.f), IM_COL32(0, 0, 0, 100), 12.f);
+        dl->PushClipRect(p0, ImVec2(p0.x + w, p0.y + info_h - 6.f), true);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.92f, ImVec2(p0.x + 18.f, p0.y + 8.f),
+                    info.empty() ? IM_COL32(153, 163, 188, 255) : IM_COL32(201, 209, 228, 255),
+                    info.empty() ? "Select a setting to see what it does." : info.c_str(), nullptr, w - 36.f);
+        dl->PopClipRect();
+        ImGui::Dummy(ImVec2(w, info_h));
+    }
+    if (dirty) {
+        ImGui::Dummy(ImVec2(0, 4));
+        const float y = ImGui::GetCursorPosY();
+        const bool can_reset = p.global_only || !p.section.empty();
+        if (can_reset && ov::action_button("Reset section", false, 190.f)) reset_core_section(p);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.warn, "unsaved changes");
+        constexpr float kCancelW = 140.f, kSaveW = 180.f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowContentRegionMax().x - kCancelW - kSaveW - 10.f, y));
+        if (ov::action_button("Cancel", false, kCancelW)) revert_core_edits(p);
+        ImGui::SameLine(0, 10.f);
+        if (ov::action_button("Save", true, kSaveW)) {
+            std::string err;
+            if (!save_core_settings(hub, &err)) {
+                hub.append_log(p.platform + " settings save failed: " + err);
+                p.status = "Save failed: " + err;
+            } else {
+                hub.show_toast("Saved!");
+            }
+        }
+    }
 }
+
+// Bind all: one screen, the controller, and the button being asked for lit on it.
+// The pad is captured the whole time (nothing here is pressable from it); a
+// button left unanswered for a few seconds is skipped, and Cancel, Undo and Skip
+// are there for touch and mouse. Escape cancels from a keyboard.
+void draw_bind_all_scene(CoreSettingsPage& p, const Theme& th, const retcomm::hub::overlay::Metrics& m,
+                         BoxartCache& boxart) {
+    using namespace retcomm::hub;
+    namespace ov = retcomm::hub::overlay;
+    int n = 0;
+    const CorePadHit* hits = n64_pad_hits(&n);
+    const int seat = p.configuring;
+    const bool keyboard = p.map_keyboard;
+    p.bind_index = std::clamp(p.bind_index, 0, n - 1);
+    if (p.cap_target < 0) begin_core_capture(p, pad_hit_target(hits, p.bind_index), !keyboard);
+    // Left unanswered: on to the next.
+    const std::uint64_t waited = SDL_GetTicksNS() - p.cap_armed_ns;
+    if (waited > kCaptureTimeoutNs) {
+        cancel_core_capture(p);
+        bind_all_advance(p);
+    }
+    const InputBindings& map = p.input.maps[static_cast<size_t>(seat)];
+    const PadTarget now_t = static_cast<PadTarget>(hits[p.bind_index].target);
+
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::Text("Player %d  \xC2\xB7  bind all", seat + 1);
+    ImGui::SetWindowFontScale(1.f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    // Progress.
+    {
+        const float d = 12.f, gap = 7.f;
+        const float tw = static_cast<float>(n) * d + static_cast<float>(n - 1) * gap;
+        ImVec2 c = ImGui::GetCursorScreenPos();
+        c.x += (avail_w - tw) * 0.5f;
+        for (int i = 0; i < n; ++i) {
+            const ImU32 col = i < p.bind_index ? IM_COL32(52, 211, 153, 255)
+                              : i == p.bind_index ? IM_COL32(139, 92, 246, 255)
+                                                  : IM_COL32(255, 255, 255, 46);
+            const ImVec2 mid(c.x + d * 0.5f + static_cast<float>(i) * (d + gap), c.y + d * 0.5f + 6.f);
+            dl->AddCircleFilled(mid, d * 0.5f, col);
+            if (i == p.bind_index) dl->AddCircle(mid, d * 0.5f + 3.f, IM_COL32(34, 229, 240, 255), 0, 2.f);
+        }
+        ImGui::Dummy(ImVec2(avail_w, d + 14.f));
+    }
+    const float side_w = m.compact ? 0.f : 250.f;
+    const float centre_w = avail_w - 2.f * (side_w ? side_w + 16.f : 0.f);
+    const float btn_h = ImGui::GetFrameHeight() + 24.f;
+    const float body_h = std::max(120.f, ImGui::GetContentRegionAvail().y - btn_h);
+    auto row_text = [&](int i) {
+        const PadTarget t = static_cast<PadTarget>(hits[i].target);
+        std::string bound;
+        if (keyboard) {
+            const SDL_Scancode sc = map.key[static_cast<size_t>(hits[i].target)];
+            bound = sc == SDL_SCANCODE_UNKNOWN ? "-" : SDL_GetScancodeName(sc);
+        } else {
+            bound = pad_source_short(map.pad[static_cast<size_t>(hits[i].target)]);
+        }
+        return std::make_pair(pad_target_label(t, p.desc), bound);
+    };
+    if (side_w > 0.f) {
+        ImGui::BeginChild("##bound", ImVec2(side_w, body_h), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+        ov::muted("Bound");
+        for (int i = std::max(0, p.bind_index - 3); i < p.bind_index; ++i) {
+            const auto [l, b] = row_text(i);
+            ov::value_row(m, std::to_string(i).c_str(), l.c_str(), b);
+        }
+        ImGui::EndChild();
+        ImGui::SameLine(0, 16.f);
+    }
+    ImGui::BeginChild("##bindmid", ImVec2(centre_w, body_h), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+    {
+        fs::path art = find_hub_asset_file("controllers", "n64_controller.png");
+        const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("pad:n64:card", art);
+        const float crop_w = kN64CropU1 - kN64CropU0, crop_h = kN64CropV1 - kN64CropV0;
+        const float art_aspect = tex && tex->height > 0 ? static_cast<float>(tex->width) / static_cast<float>(tex->height) : 800.f / 760.f;
+        const float aspect = art_aspect * (crop_w / crop_h);
+        const float text_h = 110.f;
+        const float cw = ImGui::GetContentRegionAvail().x;
+        float img_h = std::max(60.f, ImGui::GetContentRegionAvail().y - text_h);
+        float img_w = img_h * aspect;
+        if (img_w > cw) { img_w = cw; img_h = img_w / aspect; }
+        const ImVec2 o = ImGui::GetCursorScreenPos();
+        const float ix = o.x + (cw - img_w) * 0.5f;
+        if (tex && tex->gl_id)
+            dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(ix, o.y),
+                         ImVec2(ix + img_w, o.y + img_h), ImVec2(kN64CropU0, kN64CropV0), ImVec2(kN64CropU1, kN64CropV1));
+        const float cx = ix + ((hits[p.bind_index].nx - kN64CropU0) / crop_w) * img_w;
+        const float cy = o.y + ((hits[p.bind_index].ny - kN64CropV0) / crop_h) * img_h;
+        const float pulse = 0.55f + 0.45f * std::sin(static_cast<float>(SDL_GetTicks()) * 0.008f);
+        dl->AddCircle(ImVec2(cx, cy), 16.f + 4.f * pulse, IM_COL32(34, 229, 240, static_cast<int>(120 + 135 * pulse)), 0, 3.f);
+        dl->AddCircleFilled(ImVec2(cx, cy), 5.f, IM_COL32(34, 229, 240, 255));
+        ImGui::Dummy(ImVec2(cw, img_h + 8.f));
+        const std::string what = pad_target_label(now_t, p.desc);
+        const std::string line = std::string(keyboard ? "Press the key for " : "Press the button for ") + what;
+        ImGui::SetWindowFontScale(1.5f);
+        const float lw = ImGui::CalcTextSize(line.c_str()).x;
+        ImGui::SetCursorPosX(std::max(0.f, (cw - lw) * 0.5f));
+        ImGui::TextUnformatted(line.c_str());
+        ImGui::SetWindowFontScale(1.f);
+        const int left = static_cast<int>((kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, waited)) / 1'000'000'000ull) + 1;
+        char sub[96];
+        std::snprintf(sub, sizeof sub, "%d of %d  \xC2\xB7  skips by itself in %d s", p.bind_index + 1, n, left);
+        const float sw = ImGui::CalcTextSize(sub).x;
+        ImGui::SetCursorPosX(std::max(0.f, (cw - sw) * 0.5f));
+        ImGui::TextColored(th.text_muted, "%s", sub);
+    }
+    ImGui::EndChild();
+    if (side_w > 0.f) {
+        ImGui::SameLine(0, 16.f);
+        ImGui::BeginChild("##next", ImVec2(side_w, body_h), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+        ov::muted("Next");
+        for (int i = p.bind_index + 1; i < std::min(n, p.bind_index + 5); ++i) {
+            const auto [l, b] = row_text(i);
+            ov::value_row(m, std::to_string(i).c_str(), l.c_str(), "-");
+        }
+        ImGui::EndChild();
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    if (ov::action_button("Undo", false, 130.f) && p.bind_index > 0) {
+        --p.bind_index;
+        begin_core_capture(p, pad_hit_target(hits, p.bind_index), !keyboard);
+    }
+    ImGui::SameLine();
+    if (ov::action_button("Skip", false, 130.f)) {
+        cancel_core_capture(p);
+        bind_all_advance(p);
+    }
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 150.f);
+    if (ov::action_button("Cancel", false, 150.f)) {
+        cancel_core_capture(p);
+        p.input = p.cfg_backup;
+        p.cfg_backup_seat = -1;
+        p.configuring = -1;
+        p.bind_all = false;
+    }
+}
+
+// B (or Back) on the core page: out of the open scene, then out of the section,
+// then the page itself closes (the caller). True when this stepped back.
+bool core_settings_step_back(HubModel& hub) {
+    CoreSettingsPage& p = core_settings_page();
+    if (!hub.show_core_settings || !retcomm::hub::overlay::enabled()) return false;
+    if (p.configuring >= 0) {
+        cancel_core_capture(p);
+        p.input = p.cfg_backup;
+        p.cfg_backup_seat = -1;
+        p.configuring = -1;
+        p.bind_all = false;
+        return true;
+    }
+    if (!p.global_only && !p.section.empty()) {
+        p.section.clear();
+        retcomm::hub::overlay::row_info_reset();
+        return true;
+    }
+    return false;
+}
+
 
 // The page. `standalone` is Direct mode, where nothing else carries the
 // header's Save / Cancel, so the footer is the only place they live.
@@ -13086,21 +13755,12 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
                       in_shell ? ImGuiChildFlags_NavFlattened : ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (in_shell) {
-        // No header above the page here either: its name and the System /
-        // Gamepads switch are the one row, with no explanation under them.
-        ImGui::SetWindowFontScale(1.25f);
-        ImGui::TextUnformatted(core_settings_header_title().c_str());
-        ImGui::SetWindowFontScale(1.f);
-        if (const char* label = core_settings_switch_label()) {
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 150.f);
-            if (retcomm::hub::overlay::action_button(label, false, 150.f)) core_settings_switch();
-        }
-        ImGui::Separator();
-    }
-    // Configuring a controller is a scene of its own: it takes the whole body, and
-    // its Save / Cancel return to the Gamepads page.
-    if (in_shell && p.gamepads_tab && p.configuring >= 0) {
-        draw_core_configure_modal(p, th, boxart);
+        // The Controls scene (one controller's buttons) takes the whole page; else
+        // the core page with its sections.
+        if (p.configuring >= 0 && p.bind_all)
+            draw_bind_all_scene(p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size), boxart);
+        else if (p.configuring >= 0) draw_core_configure_modal(p, th, boxart);
+        else draw_core_page_overlay(hub, p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size), boxart);
         ImGui::EndChild();
         return;
     }
@@ -13198,18 +13858,8 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
     const float footer_h = ImGui::GetFrameHeight() + (in_shell ? 48.f : 24.f);
     const float panel_h = std::max(120.f, ImGui::GetContentRegionAvail().y - footer_h);
     if (p.developer_page) draw_core_developer_page(hub, p, th, panel_h);
-    else if (p.gamepads_tab) {
-        if (in_shell)
-            draw_core_gamepads_overlay(hub, p, th,
-                                       retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size),
-                                       panel_h, boxart);
-        else draw_core_gamepads_tab(hub, p, th, panel_h, boxart);
-    } else if (in_shell) {
-        draw_core_system_overlay(hub, p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size),
-                                 panel_h);
-    } else {
-        draw_core_system_tab(hub, p, th, panel_h);
-    }
+    else if (p.gamepads_tab) draw_core_gamepads_tab(hub, p, th, panel_h, boxart);
+    else draw_core_system_tab(hub, p, th, panel_h);
 
     // Footer: Reset to Default on the left, Cancel then Save on the right.
     ImGui::Dummy(ImVec2(0, 12));
@@ -13310,6 +13960,17 @@ void open_core_settings_for_library(HubModel& hub, const std::string& platform,
                                     const TitleRow* row) {
     open_core_settings(hub, platform, row ? row->id : std::string(),
                        row ? row->name : std::string(), {}, {});
+}
+
+// The launcher's own play settings (hotkeys, FPS, volume) on the core page's
+// machinery: no core is asked for anything, and only play.ini is written.
+void open_global_settings(HubModel& hub, const char* section) {
+    open_core_settings(hub, "n64", {}, {}, {}, {});
+    CoreSettingsPage& p = core_settings_page();
+    p.global_only = true;
+    p.section = section;
+    p.desc_ready = true;
+    p.describing = {};
 }
 
 } // namespace

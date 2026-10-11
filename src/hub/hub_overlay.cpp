@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -326,40 +327,45 @@ void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding) {
 
 namespace {
 
-// The row's frame and its left text: returns the row's top-left and fills `h`.
-// `value_w` is the room kept on the right for the value or control.
-struct RowGeom { ImVec2 p0, p1; float h; };
+std::string g_row_info;
 
-float row_height(const Metrics& m, const char* description, float text_w) {
-    float h = m.item_h + 8.f;
-    if (description && *description) {
-        const ImVec2 ds = ImGui::CalcTextSize(description, nullptr, false, text_w);
-        h = std::max(h, 14.f + ImGui::GetTextLineHeight() + 2.f + ds.y * 0.88f + 12.f);
-    }
-    return h;
+// Rows are one line: the description of the row in focus is read from
+// row_info() and shown by the page in a strip, rather than under every row.
+float row_height(const Metrics& m) { return m.item_h + 8.f; }
+
+void draw_row_label(ImDrawList* dl, ImVec2 p0, float h, const char* label, bool enabled) {
+    const ImVec2 ls = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p0.x + 18.f, p0.y + (h - ls.y) * 0.5f), enabled ? kText : IM_COL32(153, 163, 188, 110),
+                label);
 }
 
-void draw_row_text(ImDrawList* dl, ImVec2 p0, float h, const char* label, const char* description,
-                   float text_w, bool enabled) {
-    const bool has_desc = description && *description;
-    const ImVec2 ls = ImGui::CalcTextSize(label);
-    const float ly = has_desc ? p0.y + 12.f : p0.y + (h - ls.y) * 0.5f;
-    dl->AddText(ImVec2(p0.x + 18.f, ly), enabled ? kText : IM_COL32(153, 163, 188, 110), label);
-    if (has_desc) {
-        ImFont* font = ImGui::GetFont();
-        dl->AddText(font, ImGui::GetFontSize() * 0.88f, ImVec2(p0.x + 18.f, ly + ls.y + 2.f), kMuted,
-                    description, nullptr, text_w);
-    }
+// "override", right-aligned to `right`, for a value that differs from the layer
+// beneath it (one game's own value over every game's).
+void draw_override_tag(ImDrawList* dl, float right, ImVec2 p0, float h) {
+    ImFont* font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize() * 0.74f;
+    const char* t = "OVERRIDE";
+    const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.f, t);
+    const ImVec2 a(right - ts.x - 20.f, p0.y + (h - ts.y) * 0.5f - 4.f);
+    const ImVec2 b(right, a.y + ts.y + 8.f);
+    dl->AddRectFilled(a, b, IM_COL32(245, 165, 36, 36), 12.f);
+    dl->AddRect(a, b, IM_COL32(245, 165, 36, 115), 12.f);
+    dl->AddText(font, fs, ImVec2(a.x + 10.f, a.y + 4.f), IM_COL32(255, 212, 138, 255), t);
+}
+
+void note_info(bool hot, const char* description) {
+    if (hot && description && *description) g_row_info = description;
 }
 
 } // namespace
 
+const std::string& row_info() { return g_row_info; }
+void row_info_reset() { g_row_info.clear(); }
+
 bool setting_row(const Metrics& m, const char* id, const char* label, const std::string& value,
-                 const char* description, bool enabled) {
+                 const char* description, bool enabled, bool overridden) {
     const float w = ImGui::GetContentRegionAvail().x;
-    const float value_w = value.empty() ? 40.f : std::min(w * 0.4f, ImGui::CalcTextSize(value.c_str()).x + 60.f);
-    const float text_w = std::max(120.f, w - value_w - 40.f);
-    const float h = row_height(m, description, text_w);
+    const float h = row_height(m);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
@@ -367,37 +373,61 @@ bool setting_row(const Metrics& m, const char* id, const char* label, const std:
     const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
     const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+    note_info(hot, description);
     const ImVec2 p1(p0.x + w, p0.y + h);
     card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    draw_row_text(dl, p0, h, label, description, text_w, enabled);
+    draw_row_label(dl, p0, h, label, enabled);
     const ImVec2 cs = ImGui::CalcTextSize(">");
     dl->AddText(ImVec2(p1.x - 18.f - cs.x, p0.y + (h - cs.y) * 0.5f), kMuted, ">");
+    float left = p1.x - 36.f - cs.x;
     if (!value.empty()) {
         // Clipped to the value's room, so a long value never runs into the label.
-        dl->PushClipRect(ImVec2(p1.x - 36.f - cs.x - value_w + 20.f, p0.y), p1, true);
+        const float value_w = std::min(w * 0.45f, ImGui::CalcTextSize(value.c_str()).x + 8.f);
+        dl->PushClipRect(ImVec2(left - value_w, p0.y), p1, true);
         const ImVec2 vs = ImGui::CalcTextSize(value.c_str());
-        const float vx = std::max(p1.x - 36.f - cs.x - vs.x, p1.x - 36.f - cs.x - value_w + 20.f);
+        const float vx = std::max(left - vs.x, left - value_w);
         dl->AddText(ImVec2(vx, p0.y + (h - vs.y) * 0.5f), hot ? kText : kMuted, value.c_str());
         dl->PopClipRect();
+        left -= std::min(vs.x, value_w);
     }
+    if (overridden) draw_override_tag(dl, left - 14.f, p0, h);
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0.f, 6.f));
     return pressed && enabled;
 }
 
-bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
-                const char* description) {
+void value_row(const Metrics& m, const char* id, const char* label, const std::string& value) {
     const float w = ImGui::GetContentRegionAvail().x;
-    const float text_w = std::max(120.f, w - 120.f);
-    const float h = row_height(m, description, text_w);
+    const float h = row_height(m);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::Dummy(ImVec2(w, h));
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, false, false);
+    draw_row_label(dl, p0, h, label, true);
+    const ImVec2 vs = ImGui::CalcTextSize(value.c_str());
+    dl->PushClipRect(ImVec2(p0.x + w * 0.35f, p0.y), p1, true);
+    dl->AddText(ImVec2(std::max(p0.x + w * 0.35f, p1.x - 18.f - vs.x), p0.y + (h - vs.y) * 0.5f), kMuted,
+                value.c_str());
+    dl->PopClipRect();
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+}
+
+bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
+                const char* description, bool overridden) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = row_height(m);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    note_info(hot, description);
     const ImVec2 p1(p0.x + w, p0.y + h);
     card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    draw_row_text(dl, p0, h, label, description, text_w, true);
+    draw_row_label(dl, p0, h, label, true);
     // The switch.
     constexpr float kTrackW = 52.f, kTrackH = 28.f;
     const ImVec2 t0(p1.x - 18.f - kTrackW, p0.y + (h - kTrackH) * 0.5f);
@@ -406,6 +436,7 @@ bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
     const float knob_x = *on ? t1.x - kTrackH * 0.5f : t0.x + kTrackH * 0.5f;
     dl->AddCircleFilled(ImVec2(knob_x, t0.y + kTrackH * 0.5f), kTrackH * 0.5f - 3.f,
                         IM_COL32(255, 255, 255, 255));
+    if (overridden) draw_override_tag(dl, t0.x - 16.f, p0, h);
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0.f, 6.f));
     if (pressed) *on = !*on;
@@ -413,18 +444,17 @@ bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
 }
 
 bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, int lo, int hi,
-                 int step, const char* unit, const char* description) {
+                 int step, const char* unit, const char* description, bool overridden) {
     const float w = ImGui::GetContentRegionAvail().x;
-    const float ctrl_w = 3 * 56.f + 2 * 8.f + 100.f;
-    const float text_w = std::max(120.f, w - ctrl_w - 30.f);
-    const float h = std::max(row_height(m, description, text_w), m.item_h + 8.f);
+    const float h = row_height(m);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     ImGui::Dummy(ImVec2(w, h));
     const ImVec2 p1(p0.x + w, p0.y + h);
-    card_frame(p0, p1, false, false);
-    draw_row_text(dl, p0, h, label, description, text_w, true);
+    card_frame(p0, p1, ImGui::IsMouseHoveringRect(p0, p1), false);
+    draw_row_label(dl, p0, h, label, true);
+    note_info(ImGui::IsMouseHoveringRect(p0, p1), description);
     bool changed = false;
     char val[48];
     std::snprintf(val, sizeof val, "%d%s", *v, unit ? unit : "");
@@ -437,6 +467,7 @@ bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, in
         *v = std::min(hi, *v + step);
         changed = true;
     }
+    note_info(ImGui::IsItemFocused(), description);
     const ImVec2 vs = ImGui::CalcTextSize(val);
     x -= 8.f + 100.f;
     dl->AddText(ImVec2(x + (100.f - vs.x) * 0.5f, p0.y + (h - vs.y) * 0.5f), kText, val);
@@ -446,7 +477,9 @@ bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, in
         *v = std::max(lo, *v - step);
         changed = true;
     }
+    note_info(ImGui::IsItemFocused(), description);
     ImGui::PopItemFlag();
+    if (overridden) draw_override_tag(dl, x - 14.f, p0, h);
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y));
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0.f, 6.f));

@@ -85,13 +85,23 @@ void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding = 12.f);
 // setting_row: a value and a chevron; true when tapped (open a picker, or an
 // editor, from it).
 bool setting_row(const Metrics& m, const char* id, const char* label, const std::string& value,
-                 const char* description = nullptr, bool enabled = true);
+                 const char* description = nullptr, bool enabled = true, bool overridden = false);
 // toggle_row: a switch; flips *on and returns true when it changed.
 bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
-                const char* description = nullptr);
+                const char* description = nullptr, bool overridden = false);
 // stepper_row: - value + (the buttons repeat while held); true when *v changed.
 bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, int lo, int hi,
-                 int step, const char* unit = "", const char* description = nullptr);
+                 int step, const char* unit = "", const char* description = nullptr,
+                 bool overridden = false);
+
+// A row that only shows a value (no chevron, nothing to press).
+void value_row(const Metrics& m, const char* id, const char* label, const std::string& value);
+
+// A row never draws its description: the one in focus (or under the pointer) is
+// kept here for the page to show in a strip under the rows. Reset it when the
+// page changes. `overridden` draws an OVERRIDE tag (one game's value over the rest).
+const std::string& row_info();
+void row_info_reset();
 
 // A list of choices in a modal over the page. open_picker() opens it; call
 // picker() every frame after. Returns the index chosen, -2 when it was
