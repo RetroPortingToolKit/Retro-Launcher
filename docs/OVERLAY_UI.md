@@ -50,3 +50,29 @@ the catalog has no Android entries yet), and "All options". In game, on a bundle
 fake test core: Play, the quick menu from the corner button, and the Save states
 page (the slot grid, the focused slot, save, load, overwrite confirmation, delete). Not checked: gamepad input,
 L3 + R3, a real game's thumbnails.
+
+## Cores, sections and accessories
+
+Settings that belong to a core live under the **Cores** tab, not under a page
+named for a platform. A core card opens a list of sections (Video, one per option
+group the core declares, Controls, Accessories, Developer, About); a section is a
+rail of its siblings beside finger-sized rows (picker / switch / stepper), the
+focused row's description in a strip below, and Reset section / Cancel / Save once
+something is edited. A scope chip chooses every game or one game (rows that differ
+carry an OVERRIDE tag). Hotkeys and the in-game overlay are the launcher's own
+(same for every core): Settings tab. Code: `draw_core_page_overlay` and friends in
+`hub_main.cpp`, the row widgets in `hub_overlay.cpp`.
+
+**Accessories** lists the players; one opens to its accessory's page. A Transfer
+Pak page chooses the Game Boy ROM and save on a screen of their own: the library's
+`gb` / `gbc` folders (and files added before), filtered as typed, or "Browse
+files..." for the OS file picker. A file the picker returns as a `content://` URI
+(Android) is copied into `<data>/transfer_pak/` so the runner can open it; a blank
+save can be made beside the ROM. The VRU page has the microphone choice, a live
+level, Test, the speech model download and the vocabulary status.
+
+Controls: the players in a column, the selected player's rows beside it, and
+**Bind all** as a screen of its own. While a binding is captured the launcher
+polls the pads itself (`overlay::pad_nav_frame`): nothing reaches the UI, and
+whatever was down stays ignored until it returns to neutral. The left stick
+navigates like the d-pad and never scrolls a window.

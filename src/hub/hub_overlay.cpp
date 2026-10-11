@@ -415,6 +415,33 @@ void value_row(const Metrics& m, const char* id, const char* label, const std::s
     ImGui::Dummy(ImVec2(0.f, 6.f));
 }
 
+void meter_row(const Metrics& m, const char* id, const char* label, float fraction, bool good,
+               const std::string& text) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = row_height(m);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::Dummy(ImVec2(w, h));
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, false, false);
+    draw_row_label(dl, p0, h, label, true);
+    const float bar_w = std::min(w * 0.4f, 380.f);
+    float right = p1.x - 18.f;
+    if (!text.empty()) {
+        const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+        dl->AddText(ImVec2(right - ts.x, p0.y + (h - ts.y) * 0.5f), kMuted, text.c_str());
+        right -= ts.x + 14.f;
+    }
+    const ImVec2 b0(right - bar_w, p0.y + h * 0.5f - 5.f), b1(right, p0.y + h * 0.5f + 5.f);
+    dl->AddRectFilled(b0, b1, IM_COL32(255, 255, 255, 36), 5.f);
+    const float f = std::clamp(fraction, 0.f, 1.f);
+    if (f > 0.f)
+        dl->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * f, b1.y), good ? kGood : kAccent, 5.f);
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+}
+
 bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
                 const char* description, bool overridden) {
     const float w = ImGui::GetContentRegionAvail().x;

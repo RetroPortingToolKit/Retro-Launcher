@@ -1,6 +1,7 @@
 #include "hub/hub_boxart.hpp"
 #include "hub/hub_model.hpp"
 #include "hub/hub_osk.hpp"
+#include "hub/hub_import.hpp"
 #include "hub/hub_overlay.hpp"
 #include "hub/hub_touch.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
@@ -10806,6 +10807,10 @@ struct CoreSettingsPage {
     // Bind all: the controller's buttons one after another on a screen of their own.
     bool bind_all = false;
     int bind_index = 0;
+    // The Accessories section: the player whose accessory is open (-1 = the list of
+    // players), and the file chooser over it (1 = Game Boy ROM, 2 = save).
+    int acc_seat = -1;
+    int file_pick = 0;
     bool gamepads_tab = false;
     int seat_tab = 0;         // the Gamepads tab's selected player
     // Direct mode, local builds: the core's developer options on a page of
@@ -10939,6 +10944,8 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
     p.section.clear();
     p.global_only = false;
     p.bind_all = false;
+    p.acc_seat = -1;
+    p.file_pick = 0;
     p.cfg_backup_seat = -1;
     p.gb_scanned = false;
     p.pak_note.clear();
@@ -12061,14 +12068,14 @@ void begin_gb_file_pick(CoreSettingsPage& p, int seat, bool save) {
 
 // Applies an answered pick to its seat, checking a ROM's header as the list
 // picker does.
-void take_gb_file_pick(CoreSettingsPage& p) {
-    if (!p.gb_pick) return;
+bool take_gb_file_pick(CoreSettingsPage& p, const fs::path* import_dir = nullptr) {
+    if (!p.gb_pick) return false;
     std::string path, error;
     int seat = 0;
     bool save = false;
     {
         std::lock_guard<std::mutex> lock(p.gb_pick->mu);
-        if (!p.gb_pick->answered) return;
+        if (!p.gb_pick->answered) return false;
         p.gb_pick->answered = false;
         path = p.gb_pick->path;
         error = p.gb_pick->error;
@@ -12079,14 +12086,32 @@ void take_gb_file_pick(CoreSettingsPage& p) {
     if (!error.empty()) {
         p.pak_note = "The file dialog failed: " + error;
         p.pak_note_bad = true;
-        return;
+        return false;
     }
-    if (path.empty()) return; // cancelled
+    if (path.empty()) return false; // cancelled
+    // Android hands back a content:// URI the runner cannot open: copy the file
+    // into the launcher's own folder and use that.
+    if (import_dir && path.rfind("content://", 0) == 0) {
+        std::string name = retcomm::hub::picked_name(path);
+        for (char& c : name)
+            if (c == '/' || c == '\\' || c == ':') c = '_';
+        if (name.empty()) name = save ? "save.srm" : "rom.gb";
+        std::error_code ec;
+        fs::create_directories(*import_dir, ec);
+        const fs::path dest = *import_dir / retro::corelink::utf8_path(name);
+        std::string cerr;
+        if (!retcomm::hub::copy_picked(path, dest, &cerr)) {
+            p.pak_note = "Could not copy the file: " + cerr;
+            p.pak_note_bad = true;
+            return false;
+        }
+        path = retro::corelink::path_utf8(dest);
+    }
     retcomm::hub::SeatPak& pak = p.input.paks[static_cast<size_t>(seat)];
     if (save) {
         pak.gb_save = path;
         p.pak_note.clear();
-        return;
+        return true;
     }
     pak.gb_rom = path;
     std::string err;
@@ -12096,6 +12121,7 @@ void take_gb_file_pick(CoreSettingsPage& p) {
     } else {
         p.pak_note.clear();
     }
+    return true;
 }
 
 bool gb_file_pick_busy(const CoreSettingsPage& p) {
@@ -12104,11 +12130,20 @@ bool gb_file_pick_busy(const CoreSettingsPage& p) {
     return p.gb_pick->busy;
 }
 
-CoreSettingsPage::GbFiles scan_gb_library(const retcomm::AppConfig& cfg) {
+CoreSettingsPage::GbFiles scan_gb_library(const retcomm::AppConfig& cfg, const fs::path& imported) {
     CoreSettingsPage::GbFiles out;
-    if (cfg.library_root.empty()) return out;
     std::set<std::string> seen;
+    // Files picked with the OS file picker on Android are copied here.
+    {
+        std::error_code ec;
+        if (!imported.empty() && fs::is_directory(imported, ec)) {
+            out.folders.push_back(imported);
+            seen.insert(imported.lexically_normal().string());
+        }
+    }
+    if (cfg.library_root.empty() && out.folders.empty()) return out;
     for (const char* plat : {"gb", "gbc"}) {
+        if (cfg.library_root.empty()) break;
         const auto it = cfg.platform_folders.find(plat);
         const std::vector<std::string> names =
             it == cfg.platform_folders.end() ? std::vector<std::string>{plat} : it->second;
@@ -12144,7 +12179,9 @@ void start_gb_scan(HubModel& hub, CoreSettingsPage& p) {
     p.gb_scanned = true;
     // Replacing a running std::async future would wait for it: let it land.
     if (p.gb_scan.valid()) return;
-    p.gb_scan = std::async(std::launch::async, [cfg = hub.cfg] { return scan_gb_library(cfg); });
+    p.gb_scan = std::async(std::launch::async, [cfg = hub.cfg, imported = hub.paths.data_dir / "transfer_pak"] {
+        return scan_gb_library(cfg, imported);
+    });
 }
 
 // A list of files to pick one from, filtered as typed. True when one was picked.
@@ -12420,15 +12457,26 @@ void draw_transfer_pak_section(HubModel& hub, CoreSettingsPage& p, const Theme& 
 // the recording device, its level, a Test of the recognizer, the recognizer
 // and model, and the title's vocabulary. The microphone runs while a panel is
 // on screen (meter only); Test puts the recognizer on it for a few seconds.
-void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool beside) {
+// What the VRU Microphone needs kept running while a page shows it: the device
+// list, the recognizer's files, the microphone, a Test in progress.
+struct VruState {
+    bool active = false;
+    int first = -1, last = -1;
+    bool lib_ok = false, model_ok = false;
+    std::uint64_t now = 0;
+};
+
+VruState vru_update(HubModel& hub, CoreSettingsPage& p, int seat) {
+    VruState st;
     using retcomm::hub::SeatPak;
     namespace vru = retcomm::hub::vru;
     CoreSettingsPage::VruPanel& v = p.vru;
-    // The selected seat's microphone only; the tabs above pick the seat.
-    if (p.input.paks[static_cast<size_t>(p.seat_tab)].kind != SeatPak::Vru) {
+    // The selected seat's microphone only.
+    if (p.input.paks[static_cast<size_t>(seat)].kind != SeatPak::Vru) {
         stop_vru_panel(p);
-        return;
+        return st;
     }
+    st.active = true;
     const std::uint64_t now = SDL_GetTicksNS();
     const fs::path& data = hub.paths.data_dir;
     // The devices, once a second: a USB microphone plugged in shows up.
@@ -12504,6 +12552,25 @@ void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool 
         if (!partial.empty() && v.test_text.rfind("heard: ", 0) != 0) v.test_text = partial + "\xE2\x80\xA6";
     }
 
+    st.first = first;
+    st.last = last;
+    st.lib_ok = lib_ok;
+    st.model_ok = model_ok;
+    st.now = now;
+    return st;
+}
+
+void draw_vru_section(HubModel& hub, CoreSettingsPage& p, const Theme& th, bool beside) {
+    using retcomm::hub::SeatPak;
+    namespace vru = retcomm::hub::vru;
+    const VruState vst = vru_update(hub, p, p.seat_tab);
+    if (!vst.active) return;
+    CoreSettingsPage::VruPanel& v = p.vru;
+    const std::uint64_t now = vst.now;
+    const fs::path& data = hub.paths.data_dir;
+    vru::VoskLibrary& lib = vru::VoskLibrary::get();
+    const bool lib_ok = vst.lib_ok, model_ok = vst.model_ok;
+    const int first = vst.first;
     if (!beside) {
         ImGui::Dummy(ImVec2(0, th.spacing_md));
         ImGui::Separator();
@@ -12921,6 +12988,9 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
 // appear at the bottom once something is edited. Controls is the one section that
 // is not rows: a column of players and the selected player's controller.
 
+std::string accessory_name(const retcomm::hub::SeatPak& pak);
+void accessory_kind_row(CoreSettingsPage& p, int s, const retcomm::hub::overlay::Metrics& m);
+
 std::string title_case(std::string g) {
     for (size_t i = 0; i < g.size(); ++i)
         g[i] = static_cast<char>(i == 0 ? std::toupper(static_cast<unsigned char>(g[i]))
@@ -12965,6 +13035,7 @@ std::vector<CoreSection> core_sections(const CoreSettingsPage& p, bool show_deve
                 out.push_back({g, "", 0});
         }
     out.push_back({"Controls", "", 0});
+    if (p.platform == "n64") out.push_back({"Accessories", "", 0});
     if (show_developer) out.push_back({"Developer", "", 0});
     out.push_back({"About", "", 0});
 
@@ -12985,6 +13056,13 @@ std::vector<CoreSection> core_sections(const CoreSettingsPage& p, bool show_deve
             parts.push_back(s0.source == SeatAssign::Keyboard ? "Keyboard"
                             : s0.source == SeatAssign::Gamepad ? (s0.name.empty() ? "Gamepad" : s0.name)
                                                                : "Auto");
+        } else if (c.name == "Accessories") {
+            for (int i = 0; i < retcomm::hub::kInputSeats; ++i) {
+                const auto& pak = p.input.paks[static_cast<size_t>(i)];
+                if (pak.kind == retcomm::hub::SeatPak::None) continue;
+                parts.push_back("Player " + std::to_string(i + 1) + ": " + accessory_name(pak));
+            }
+            if (parts.empty()) parts.push_back("none attached");
         } else if (c.name == "About") {
             parts.push_back(p.desc.ok ? p.desc.core_id + " " + p.desc.core_version : std::string("not described yet"));
         } else if (p.desc.ok) {
@@ -13039,6 +13117,10 @@ void reset_core_section(CoreSettingsPage& p) {
             p.prefs.volume = 100;
             p.prefs.turbo_sound = true;
         }
+        return;
+    }
+    if (p.section == "Accessories") {
+        p.input.paks = {};
         return;
     }
     if (p.section == "Controls") {
@@ -13349,23 +13431,15 @@ void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
                         !vru_seat))
         open_map(false);
     if (p.platform == "n64") {
-        const char* now = pak.kind == SeatPak::TransferPak ? "Transfer Pak" : pak.kind == SeatPak::Vru ? "VRU Microphone" : "None";
-        const CoreAccessoryDecl* vru_decl = p.desc.ok ? p.desc.accessory(kVruAccessoryId) : nullptr;
-        const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
-        if (ov::setting_row(m, "pak", "Accessory", now,
-                            "What is plugged into this controller: a Transfer Pak, or the VRU Microphone (the "
-                            "port becomes the voice unit). The Controller Pak and Rumble Pak are not "
-                            "implemented yet."))
-            ov::open_picker("##pak");
-        std::vector<ov::PickerChoice> choices{
-            {"None", ""},
-            {"Transfer Pak", "Game Boy cartridge in the controller"},
-            {"VRU Microphone", vru_here ? "Voice unit on this port" : "The core does not offer it here"}};
-        const int cur = pak.kind == SeatPak::TransferPak ? 1 : pak.kind == SeatPak::Vru ? 2 : 0;
-        const int pick = ov::picker(m, "##pak", "Accessory", choices, cur);
-        if (pick == 0) pak.kind = SeatPak::None;
-        else if (pick == 1) pak.kind = SeatPak::TransferPak;
-        else if (pick == 2 && (vru_here || pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
+        accessory_kind_row(p, s, m);
+        if (pak.kind != SeatPak::None &&
+            ov::setting_row(m, "accset", "Accessory settings", accessory_name(pak),
+                            "Files for a Transfer Pak, or the microphone for the VRU.")) {
+            p.section = "Accessories";
+            p.acc_seat = s;
+            p.file_pick = 0;
+            ov::row_info_reset();
+        }
     }
     int dz = p.input.deadzone_pct;
     if (ov::stepper_row(m, "deadzone", "Stick deadzone", &dz, 0, 50, 1, "%",
@@ -13374,13 +13448,347 @@ void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
         p.input.deadzone_pct = dz;
     if (pic_side) ImGui::EndGroup();
 
-    if (pak.kind == SeatPak::TransferPak || pak.kind == SeatPak::Vru) {
-        ImGui::Dummy(ImVec2(0, 8));
-        draw_transfer_pak_section(hub, p, th, boxart, false);
-        draw_vru_section(hub, p, th, false);
-    }
     ImGui::PopID();
     ImGui::EndChild();
+}
+
+// ---- Accessories -------------------------------------------------------------------
+//
+// A player's controller can hold an accessory: a Transfer Pak (a Game Boy cartridge
+// and its save) or the VRU Microphone. This section lists the players; one opens to
+// its accessory's own page. Choosing a Game Boy file is a screen of its own: the
+// library's files, filtered as typed, or the OS file picker for one anywhere.
+
+std::string accessory_name(const retcomm::hub::SeatPak& pak) {
+    using retcomm::hub::SeatPak;
+    return pak.kind == SeatPak::TransferPak ? "Transfer Pak" : pak.kind == SeatPak::Vru ? "VRU Microphone" : "None";
+}
+
+std::string file_leaf(const std::string& path) {
+    return retro::corelink::utf8_path(path).filename().string();
+}
+
+// The accessory in a player's controller: a row and its picker.
+void accessory_kind_row(CoreSettingsPage& p, int s, const retcomm::hub::overlay::Metrics& m) {
+    using namespace retcomm::hub;
+    namespace ov = retcomm::hub::overlay;
+    SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+    const CoreAccessoryDecl* vru_decl = p.desc.ok ? p.desc.accessory(kVruAccessoryId) : nullptr;
+    const bool vru_here = vru_decl && (vru_decl->seat_mask & (1u << s));
+    if (ov::setting_row(m, "pak", "Accessory", accessory_name(pak),
+                        "What is plugged into this controller: a Transfer Pak, or the VRU Microphone (the "
+                        "port becomes the voice unit). The Controller Pak and Rumble Pak are not "
+                        "implemented yet."))
+        ov::open_picker("##pak");
+    std::vector<ov::PickerChoice> choices{
+        {"None", ""},
+        {"Transfer Pak", "A Game Boy cartridge and its save in the controller"},
+        {"VRU Microphone", vru_here ? "The voice unit on this port" : "This core does not offer it on this port"}};
+    const int cur = pak.kind == SeatPak::TransferPak ? 1 : pak.kind == SeatPak::Vru ? 2 : 0;
+    const int pick = ov::picker(m, "##pak", "Accessory", choices, cur);
+    if (pick == 0) pak.kind = SeatPak::None;
+    else if (pick == 1) pak.kind = SeatPak::TransferPak;
+    else if (pick == 2 && (vru_here || pak.kind == SeatPak::Vru)) pak.kind = SeatPak::Vru;
+}
+
+// Choose the Game Boy ROM or save for a Transfer Pak.
+void draw_gb_chooser_scene(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                           const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    using retcomm::hub::SeatPak;
+    const int s = p.acc_seat;
+    SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+    const bool save = p.file_pick == 2;
+    const fs::path import_dir = hub.paths.data_dir / "transfer_pak";
+    if (take_gb_file_pick(p, &import_dir)) p.file_pick = 0; // the OS picker answered
+    if (p.file_pick == 0) return;
+    if (!p.gb_scanned) start_gb_scan(hub, p);
+    if (p.gb_scan.valid() && p.gb_scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        p.gb = p.gb_scan.get();
+    const bool scanning = p.gb_scan.valid();
+    const bool picking = gb_file_pick_busy(p);
+    const std::vector<fs::path>& files = save ? p.gb.saves : p.gb.roms;
+    const std::string& current = save ? pak.gb_save : pak.gb_rom;
+
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::Text("Player %d  \xC2\xB7  %s", s + 1, save ? "Game Boy save" : "Game Boy ROM");
+    ImGui::SetWindowFontScale(1.f);
+    // What to do instead of picking from the list.
+    if (ov::action_button(picking ? "Waiting for the file picker..." : "Browse files...", true, 0.f) && !picking)
+        begin_gb_file_pick(p, s, save);
+    ImGui::SameLine();
+    if (save) {
+        ImGui::BeginDisabled(pak.gb_rom.empty());
+        if (ov::action_button("New blank save", false, 0.f)) {
+            copy_buf(p.new_save_name, sizeof p.new_save_name, retro::corelink::utf8_path(pak.gb_rom).stem().string());
+            p.pak_note.clear();
+            ImGui::OpenPopup("##newsave");
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+    }
+    if (ov::action_button(save ? "No save" : "Empty pak", false, 0.f)) {
+        (save ? pak.gb_save : pak.gb_rom).clear();
+        p.file_pick = 0;
+    }
+    ImGui::SameLine();
+    if (ov::action_button("Cancel", false, 0.f)) p.file_pick = 0;
+    {
+        std::string name = p.new_save_name;
+        const int r = overlay_text_editor("##newsave", "Name the new save (saved as <name>.srm beside the ROM)", name,
+                                          "name");
+        if (r == 1) {
+            const bool bad = name.empty() || name.find_first_of("/\\:*?\"<>|") != std::string::npos;
+            if (bad) {
+                p.pak_note = "That name cannot be used for a file.";
+                p.pak_note_bad = true;
+            } else {
+                if (name.size() < 4 || name.compare(name.size() - 4, 4, ".srm") != 0) name += ".srm";
+                const fs::path rom = retro::corelink::utf8_path(pak.gb_rom);
+                const fs::path dest = rom.parent_path() / retro::corelink::utf8_path(name);
+                std::string err;
+                if (retcomm::hub::create_gb_save(rom, dest, &err)) {
+                    pak.gb_save = retro::corelink::path_utf8(dest);
+                    p.gb.saves.push_back(dest);
+                    p.pak_note = "Created " + dest.string() + ".";
+                    p.pak_note_bad = false;
+                    hub.append_log("Transfer Pak: created " + dest.string());
+                    p.file_pick = 0;
+                } else {
+                    p.pak_note = err;
+                    p.pak_note_bad = true;
+                }
+            }
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    hub_input_text_hint("##gbfilter", "Filter the library's files", p.gb_filter, sizeof p.gb_filter);
+    std::string want = p.gb_filter;
+    for (char& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // What the list holds, and where it came from.
+    if (scanning) {
+        ov::muted("Looking for Game Boy files in the library...");
+    } else if (p.gb.folders.empty()) {
+        ov::muted("No gb or gbc folder under the library root. Map one in Library settings, or use Browse files.");
+    } else {
+        const std::string line = std::to_string(files.size()) + (save ? " save" : " ROM") + (files.size() == 1 ? "" : "s") +
+                                 " in the library's gb and gbc folders and the files you added";
+        ov::muted(line.c_str());
+    }
+    if (!p.pak_note.empty()) ov::muted(p.pak_note.c_str());
+
+    std::vector<size_t> shown;
+    for (size_t i = 0; i < files.size(); ++i) {
+        if (want.empty()) {
+            shown.push_back(i);
+            continue;
+        }
+        const fs::path rel = files[i].lexically_relative(hub.cfg.library_root);
+        std::string low = (rel.empty() ? files[i].string() : rel.generic_string());
+        for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (low.find(want) != std::string::npos) shown.push_back(i);
+    }
+    ImGui::BeginChild("##gbfiles", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+    if (shown.empty() && !scanning) ov::muted("Nothing matches.");
+    ImGuiListClipper clip;
+    clip.Begin(static_cast<int>(shown.size()), static_cast<float>(m.item_h + 14.f));
+    int chosen = -1;
+    while (clip.Step())
+        for (int k = clip.DisplayStart; k < clip.DisplayEnd; ++k) {
+            const fs::path& f = files[shown[static_cast<size_t>(k)]];
+            const std::string leaf = f.filename().string();
+            std::string where = f.parent_path().lexically_relative(hub.cfg.library_root).generic_string();
+            if (where.empty() || where.rfind("..", 0) == 0) where = f.parent_path().string();
+            const bool in_use = retro::corelink::path_utf8(f) == current;
+            if (ov::setting_row(m, std::to_string(k).c_str(), leaf.c_str(), in_use ? "in use  \xC2\xB7  " + where : where))
+                chosen = k;
+        }
+    ImGui::EndChild();
+    (void)th;
+    if (chosen >= 0) {
+        const fs::path& f = files[shown[static_cast<size_t>(chosen)]];
+        if (save) {
+            pak.gb_save = retro::corelink::path_utf8(f);
+            p.pak_note.clear();
+        } else {
+            pak.gb_rom = retro::corelink::path_utf8(f);
+            std::string err;
+            if (retcomm::hub::gb_cart_ram_bytes(f, &err) == 0 && !err.empty()) {
+                p.pak_note = err;
+                p.pak_note_bad = true;
+            } else {
+                p.pak_note.clear();
+            }
+        }
+        p.file_pick = 0;
+    }
+}
+
+void draw_acc_tpak_page(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                        const retcomm::hub::overlay::Metrics& m, BoxartCache& boxart) {
+    namespace ov = retcomm::hub::overlay;
+    (void)hub;
+    (void)th;
+    const int s = p.acc_seat;
+    retcomm::hub::SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+    const float w = ImGui::GetContentRegionAvail().x;
+    const bool pic_side = w >= 560.f && !m.compact;
+    if (pic_side) {
+        static const fs::path art = find_hub_asset_file("controllers", "n64_transfer_pak.png");
+        if (const BoxartTexture* tex = art.empty() ? nullptr : boxart.get("pad:n64:tpak", art); tex && tex->width > 0) {
+            const float iw = 130.f;
+            const float ih = iw * static_cast<float>(tex->height) / static_cast<float>(tex->width);
+            ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(iw, ih));
+            ImGui::SameLine(0, 18.f);
+        }
+        ImGui::BeginGroup();
+    }
+    accessory_kind_row(p, s, m);
+    if (pak.kind == retcomm::hub::SeatPak::TransferPak) {
+        if (ov::setting_row(m, "rom", "Game Boy ROM", pak.gb_rom.empty() ? std::string("none: the pak is empty") : file_leaf(pak.gb_rom),
+                            "The Game Boy cartridge in the pak (.gb, .gbc): pick one from the library's gb and gbc "
+                            "folders, or browse for a file anywhere."))
+            p.file_pick = 1, p.gb_filter[0] = '\0', p.gb_scanned = false, ov::row_info_reset();
+        if (ov::setting_row(m, "save", "Save file", pak.gb_save.empty() ? std::string("none: the cartridge starts blank") : file_leaf(pak.gb_save),
+                            "The cartridge's battery save (.srm). Pick an existing one, browse for one, or make a "
+                            "new blank save beside the ROM."))
+            p.file_pick = 2, p.gb_filter[0] = '\0', p.gb_scanned = false, ov::row_info_reset();
+        if (!p.pak_note.empty()) ov::muted(p.pak_note.c_str());
+    } else {
+        ov::muted("Nothing is plugged in. Choose Transfer Pak or VRU Microphone above.");
+    }
+    if (pic_side) ImGui::EndGroup();
+}
+
+void draw_acc_vru_page(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                       const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    namespace vru = retcomm::hub::vru;
+    (void)th;
+    const int s = p.acc_seat;
+    retcomm::hub::SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+    accessory_kind_row(p, s, m);
+    const VruState st = vru_update(hub, p, s);
+    if (!st.active) return;
+    CoreSettingsPage::VruPanel& v = p.vru;
+    vru::VoskLibrary& lib = vru::VoskLibrary::get();
+    const fs::path& data = hub.paths.data_dir;
+    if (s != st.first)
+        ov::muted(("One microphone serves every VRU player; Player " + std::to_string(st.first + 1) + "'s is the one that runs.").c_str());
+
+    // The microphone.
+    {
+        std::string preview = pak.vru_device.empty() ? "System default" : pak.vru_device;
+        bool listed = pak.vru_device.empty();
+        for (const vru::RecordingDevice& d : v.devices) listed = listed || d.name == pak.vru_device;
+        if (!listed) preview += " (not connected)";
+        if (ov::setting_row(m, "mic", "Microphone", preview, "The recording device the voice unit listens to.")) ov::open_picker("##mic");
+        std::vector<ov::PickerChoice> choices{{"System default", ""}};
+        int cur = pak.vru_device.empty() ? 0 : -1;
+        for (const vru::RecordingDevice& d : v.devices) {
+            if (d.name == pak.vru_device) cur = static_cast<int>(choices.size());
+            choices.push_back({d.name, ""});
+        }
+        const int pick = ov::picker(m, "##mic", "Microphone", choices, cur);
+        if (pick == 0) pak.vru_device.clear();
+        else if (pick > 0) pak.vru_device = v.devices[static_cast<size_t>(pick - 1)].name;
+    }
+    const int level = v.mic_started ? v.mic.level() : 0;
+    ov::meter_row(m, "level", "Input level", static_cast<float>(level) / 100.f, level >= 12,
+                  !v.mic_started && !v.mic_error.empty() ? v.mic_error
+                  : v.mic_started && v.mic.device_fell_back() ? std::string("not connected: using the default")
+                                                              : std::string());
+
+    // Test: the recognizer on the microphone for a few seconds.
+    const bool can_test = v.mic_started && st.lib_ok && st.model_ok && s == st.first;
+    const std::string test_value = v.test_until_ns ? (v.mic.recognizer_status() == "ready" ? std::string("speak now") : v.mic.recognizer_status())
+                                                   : (can_test ? std::string("Start") : std::string(""));
+    if (ov::setting_row(m, "test", "Test", test_value.empty() ? std::string("unavailable") : test_value,
+                        !v.mic_started ? "The microphone is not open."
+                        : !st.lib_ok   ? "libvosk is not loaded."
+                        : !st.model_ok ? "Download the speech model first."
+                        : v.vocabulary.loaded() ? "Say one of the title's phrases; the recognizer shows what it heard."
+                                                : "No vocabulary: say anything in English; the recognizer shows what it heard.",
+                        can_test && v.test_until_ns == 0)) {
+        v.test_until_ns = st.now + 6ull * 1000000000ull;
+        v.test_text.clear();
+        if (v.vocabulary.loaded()) v.mic.set_grammar(v.vocabulary.all_names(), false);
+        else v.mic.set_grammar({}, true);
+    }
+    if (!v.test_text.empty()) ov::value_row(m, "heard", "Heard", v.test_text);
+
+    // The recognizer and its model.
+    if (!st.lib_ok) {
+        ov::value_row(m, "lib", "Recognizer", "libvosk is not loaded");
+        ov::muted(lib.error().c_str());
+    } else if (!st.model_ok) {
+        if (v.download.running()) {
+            const std::uint64_t got = v.download.downloaded(), total = v.download.total();
+            char buf[64];
+            if (v.download.unpacking()) std::snprintf(buf, sizeof buf, "unpacking...");
+            else if (total) std::snprintf(buf, sizeof buf, "%.1f / %.1f MB", got / 1048576.0, total / 1048576.0);
+            else std::snprintf(buf, sizeof buf, "%.1f MB", got / 1048576.0);
+            ov::meter_row(m, "dl", "Speech model", total ? static_cast<float>(got) / static_cast<float>(total) : 0.f, false, buf);
+        } else if (s == st.first &&
+                   ov::setting_row(m, "dlstart", "Speech model", "Download (about 40 MB)",
+                                   "The English model for Vosk, Apache-2.0, downloaded once into the launcher's folder.")) {
+            std::string err;
+            if (v.download.start(data, &err)) {
+                v.download_was_running = true;
+                v.download_note.clear();
+                hub.append_log(std::string("VRU: downloading ") + vru::kVoskModelUrl);
+            } else {
+                v.download_note = err;
+            }
+        }
+    } else {
+        ov::value_row(m, "model", "Speech model", std::string("ready  \xC2\xB7  ") + vru::kVoskModelName);
+    }
+    if (!v.download_note.empty() && s == st.first) ov::muted(v.download_note.c_str());
+    ov::value_row(m, "vocab", "Vocabulary", v.vocabulary.loaded() ? v.vocabulary_note : "not found: " + v.vocabulary_note);
+}
+
+void draw_accessories_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
+                              const retcomm::hub::overlay::Metrics& m, BoxartCache& boxart) {
+    namespace ov = retcomm::hub::overlay;
+    using retcomm::hub::SeatPak;
+    // The Game Boy file chooser takes the whole section.
+    if (p.acc_seat >= 0 && p.file_pick != 0) {
+        draw_gb_chooser_scene(hub, p, th, m);
+        return;
+    }
+    if (p.acc_seat < 0) {
+        stop_vru_panel(p);
+        for (int s = 0; s < retcomm::hub::kInputSeats; ++s) {
+            const SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
+            std::string value = accessory_name(pak);
+            if (pak.kind == SeatPak::TransferPak && !pak.gb_rom.empty()) value += "  \xC2\xB7  " + file_leaf(pak.gb_rom);
+            const std::string label = "Player " + std::to_string(s + 1);
+            if (ov::setting_row(m, label.c_str(), label.c_str(), value,
+                                "The accessory in this player's controller, and its files or microphone.")) {
+                p.acc_seat = s;
+                ov::row_info_reset();
+            }
+        }
+        return;
+    }
+    // One player's accessory.
+    const int s = p.acc_seat;
+    if (ov::action_button("< Players", false, 150.f)) {
+        p.acc_seat = -1;
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::Text("Player %d  \xC2\xB7  %s", s + 1, accessory_name(p.input.paks[static_cast<size_t>(s)]).c_str());
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 4));
+    if (p.input.paks[static_cast<size_t>(s)].kind == SeatPak::Vru) draw_acc_vru_page(hub, p, th, m);
+    else {
+        stop_vru_panel(p);
+        draw_acc_tpak_page(hub, p, th, m, boxart);
+    }
 }
 
 // The core page. `body_h` is what is left under the header.
@@ -13409,7 +13817,7 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
         }
     }
     ImGui::SetWindowFontScale(1.f);
-    const bool scoped = !p.global_only && p.section != "Controls" && p.section != "About";
+    const bool scoped = !p.global_only && p.section != "Controls" && p.section != "About" && p.section != "Accessories";
     if (!p.global_only) {
         const std::string chip = (p.title_scope ? (p.title_name.empty() ? p.title_key : p.title_name) + " only"
                                                 : std::string("All ") + platform_display_name(p.platform) + " games");
@@ -13477,6 +13885,8 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
                 if (ov::action_button(c.name.c_str(), c.name == p.section, rail_w - 4.f) && c.name != p.section) {
                     p.section = c.name;
                     p.configuring = -1;
+                    p.acc_seat = -1;
+                    p.file_pick = 0;
                     ov::row_info_reset();
                 }
                 ImGui::Dummy(ImVec2(0, 2));
@@ -13486,6 +13896,12 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
         }
         if (p.section == "Controls") {
             draw_core_controls_overlay(hub, p, th, m, boxart);
+        } else if (p.section == "Accessories") {
+            ImGui::BeginChild("##acc", ImVec2(0, 0), ImGuiChildFlags_NavFlattened,
+                              p.file_pick ? (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)
+                                          : page_wheel_flags(hub));
+            draw_accessories_overlay(hub, p, th, m, boxart);
+            ImGui::EndChild();
         } else if (p.section == "About") {
             ImGui::BeginChild("##about", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
             ov::value_row(m, "core", "Core", p.desc.ok ? p.desc.core_id : std::string("unknown"));
@@ -13732,6 +14148,15 @@ bool core_settings_step_back(HubModel& hub) {
         p.cfg_backup_seat = -1;
         p.configuring = -1;
         p.bind_all = false;
+        return true;
+    }
+    if (p.file_pick != 0) {
+        p.file_pick = 0;
+        return true;
+    }
+    if (p.section == "Accessories" && p.acc_seat >= 0) {
+        p.acc_seat = -1;
+        retcomm::hub::overlay::row_info_reset();
         return true;
     }
     if (!p.global_only && !p.section.empty()) {

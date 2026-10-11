@@ -97,6 +97,11 @@ bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, in
 // A row that only shows a value (no chevron, nothing to press).
 void value_row(const Metrics& m, const char* id, const char* label, const std::string& value);
 
+// A row with a bar (a microphone's level, a download): `fraction` 0..1, `good` greens
+// it, `text` sits beside it.
+void meter_row(const Metrics& m, const char* id, const char* label, float fraction, bool good,
+               const std::string& text = {});
+
 // A row never draws its description: the one in focus (or under the pointer) is
 // kept here for the page to show in a strip under the rows. Reset it when the
 // page changes. `overridden` draws an OVERRIDE tag (one game's value over the rest).
