@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -674,6 +675,142 @@ bool ChordHold::poll() {
     if (SDL_GetTicksNS() - since_ns_ < hold_ns_) return false;
     fired_ = true;
     return true;
+}
+
+}  // namespace retcomm::hub::overlay
+
+namespace retcomm::hub::overlay {
+
+namespace {
+
+struct PadKey {
+    ImGuiKey key;
+    int button;        // SDL_GamepadButton, or -1
+    int axis;          // SDL_GamepadAxis, or -1
+    int sign;          // -1 / +1 half of the axis; 0 = a trigger (0..max)
+};
+
+// What the SDL backend polls, less the left stick (turned into the d-pad below).
+constexpr PadKey kPadKeys[] = {
+    {ImGuiKey_GamepadStart, SDL_GAMEPAD_BUTTON_START, -1, 0},
+    {ImGuiKey_GamepadBack, SDL_GAMEPAD_BUTTON_BACK, -1, 0},
+    {ImGuiKey_GamepadFaceLeft, SDL_GAMEPAD_BUTTON_WEST, -1, 0},
+    {ImGuiKey_GamepadFaceRight, SDL_GAMEPAD_BUTTON_EAST, -1, 0},
+    {ImGuiKey_GamepadFaceUp, SDL_GAMEPAD_BUTTON_NORTH, -1, 0},
+    {ImGuiKey_GamepadFaceDown, SDL_GAMEPAD_BUTTON_SOUTH, -1, 0},
+    {ImGuiKey_GamepadDpadLeft, SDL_GAMEPAD_BUTTON_DPAD_LEFT, -1, 0},
+    {ImGuiKey_GamepadDpadRight, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, -1, 0},
+    {ImGuiKey_GamepadDpadUp, SDL_GAMEPAD_BUTTON_DPAD_UP, -1, 0},
+    {ImGuiKey_GamepadDpadDown, SDL_GAMEPAD_BUTTON_DPAD_DOWN, -1, 0},
+    {ImGuiKey_GamepadL1, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, -1, 0},
+    {ImGuiKey_GamepadR1, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, -1, 0},
+    {ImGuiKey_GamepadL3, SDL_GAMEPAD_BUTTON_LEFT_STICK, -1, 0},
+    {ImGuiKey_GamepadR3, SDL_GAMEPAD_BUTTON_RIGHT_STICK, -1, 0},
+    {ImGuiKey_GamepadL2, -1, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 0},
+    {ImGuiKey_GamepadR2, -1, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 0},
+    {ImGuiKey_GamepadRStickLeft, -1, SDL_GAMEPAD_AXIS_RIGHTX, -1},
+    {ImGuiKey_GamepadRStickRight, -1, SDL_GAMEPAD_AXIS_RIGHTX, +1},
+    {ImGuiKey_GamepadRStickUp, -1, SDL_GAMEPAD_AXIS_RIGHTY, -1},
+    {ImGuiKey_GamepadRStickDown, -1, SDL_GAMEPAD_AXIS_RIGHTY, +1},
+};
+constexpr int kPadKeyCount = static_cast<int>(sizeof kPadKeys / sizeof kPadKeys[0]);
+// The left stick's four directions follow the d-pad's four (kPadKeys[6..9]).
+constexpr int kStickDirs = 4;
+
+}  // namespace
+
+void pad_nav_frame(bool block) {
+    static std::vector<std::pair<SDL_JoystickID, SDL_Gamepad*>> open_pads;
+    static bool stick_on[kStickDirs] = {};
+    static bool held[kPadKeyCount + kStickDirs] = {};   // down while the capture ended
+    ImGuiIO& io = ImGui::GetIO();
+
+    // The pads currently attached, opened once and kept.
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (auto it = open_pads.begin(); it != open_pads.end();) {
+        bool still = false;
+        for (int i = 0; i < count; ++i) still |= ids && ids[i] == it->first;
+        if (still) {
+            ++it;
+        } else {
+            SDL_CloseGamepad(it->second);
+            it = open_pads.erase(it);
+        }
+    }
+    for (int i = 0; ids && i < count; ++i) {
+        bool have = false;
+        for (const auto& [id, pad] : open_pads) have |= id == ids[i];
+        if (!have)
+            if (SDL_Gamepad* g = SDL_OpenGamepad(ids[i])) open_pads.emplace_back(ids[i], g);
+    }
+    SDL_free(ids);
+    if (open_pads.empty()) {
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+        return;
+    }
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    if (!(io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad)) return;
+
+    // The raw values, merged over every pad.
+    float raw[kPadKeyCount] = {};
+    float lx = 0.f, ly = 0.f; // the stick, -1..1, whichever pad pushes furthest
+    for (const auto& [id, pad] : open_pads) {
+        for (int k = 0; k < kPadKeyCount; ++k) {
+            const PadKey& pk = kPadKeys[k];
+            float v = 0.f;
+            if (pk.button >= 0) {
+                v = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(pk.button)) ? 1.f : 0.f;
+            } else {
+                const float a = static_cast<float>(SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(pk.axis)));
+                if (pk.sign == 0) v = std::clamp(a / 32767.f, 0.f, 1.f);
+                else {
+                    const float d = pk.sign < 0 ? -a : a;
+                    v = std::clamp((d - 8000.f) / (32767.f - 8000.f), 0.f, 1.f);
+                }
+            }
+            raw[k] = std::max(raw[k], v);
+        }
+        const float x = static_cast<float>(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX)) / 32768.f;
+        const float y = static_cast<float>(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY)) / 32768.f;
+        if (std::fabs(x) > std::fabs(lx)) lx = x;
+        if (std::fabs(y) > std::fabs(ly)) ly = y;
+    }
+    // The stick as four directions, with a gap between engaging and releasing so
+    // a stick resting near the edge does not flutter. The stronger axis wins, so a
+    // diagonal moves one way, not both.
+    const bool horizontal = std::fabs(lx) >= std::fabs(ly);
+    const float level[kStickDirs] = {
+        horizontal && lx < 0 ? -lx : 0.f, horizontal && lx > 0 ? lx : 0.f,
+        !horizontal && ly < 0 ? -ly : 0.f, !horizontal && ly > 0 ? ly : 0.f};
+    for (int d = 0; d < kStickDirs; ++d)
+        stick_on[d] = stick_on[d] ? level[d] > 0.35f : level[d] > 0.55f;
+
+    // What is down, for the capture latch.
+    bool active[kPadKeyCount + kStickDirs];
+    for (int k = 0; k < kPadKeyCount; ++k) active[k] = raw[k] > 0.3f;
+    for (int d = 0; d < kStickDirs; ++d) active[kPadKeyCount + d] = std::fabs(d < 2 ? lx : ly) > 0.3f;
+    bool any_held = false;
+    for (int i = 0; i < kPadKeyCount + kStickDirs; ++i) {
+        if (block) held[i] = held[i] || active[i];
+        else held[i] = held[i] && active[i];
+        any_held |= held[i];
+    }
+    const bool silent = block || any_held;
+
+    for (int k = 0; k < kPadKeyCount; ++k) {
+        float v = raw[k];
+        // Dpad keys (6..9) also take the stick's four directions, in the order
+        // left, right, up, down.
+        if (k >= 6 && k < 6 + kStickDirs && stick_on[k - 6]) v = 1.f;
+        if (silent) v = 0.f;
+        io.AddKeyAnalogEvent(kPadKeys[k].key, v > 0.1f, v);
+    }
+    // The stick itself is never handed on: it would scroll the window under it.
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, false, 0.f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, false, 0.f);
 }
 
 }  // namespace retcomm::hub::overlay

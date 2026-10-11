@@ -129,6 +129,17 @@ void banner(const char* text);             // amber notice across a panel
 // The legend along the bottom edge.
 void legend(const Metrics& m, const std::vector<Hint>& left, const std::vector<Hint>& right);
 
+// Gamepad input for ImGui, in place of the SDL backend's own poll (the hub sets
+// the backend to manual mode with no pads). Call it every frame right after
+// ImGui_ImplSDL3_NewFrame().
+//  - The left stick navigates exactly as the d-pad does (and, like it, repeats
+//    while held); it never scrolls a window.
+//  - `block` is true while a binding is being captured. Everything is held back
+//    from the UI then, and whatever was down when it ended stays held back until
+//    it returns to neutral, so the button or stick just mapped does not also
+//    press or scroll something.
+void pad_nav_frame(bool block);
+
 // "82%  9:41", or "9:41" when there is no battery.
 std::string clock_text();
 

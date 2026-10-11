@@ -594,6 +594,7 @@ bool core_settings_dirty();
 // The page's title and its System / Gamepads switch, drawn by the header
 // (draw_marquee) rather than inside the page. The label is null where the page
 // has no switch.
+bool pad_capture_active();
 std::string core_settings_header_title();
 const char* core_settings_switch_label();
 void core_settings_switch();
@@ -10464,6 +10465,7 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
         }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
@@ -13272,6 +13274,12 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
 
 bool core_settings_dirty() { return core_settings_page().dirty(); }
 
+// A binding is waiting for a press: the pad is the capture's, not the UI's.
+bool pad_capture_active() {
+    const CoreSettingsPage& p = core_settings_page();
+    return p.cap_target >= 0 || p.hk_cap >= 0;
+}
+
 std::string core_settings_header_title() {
     const CoreSettingsPage& p = core_settings_page();
     const std::string name = p.desc.ok ? p.desc.core_id : std::string(platform_display_name(p.platform));
@@ -14973,6 +14981,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
@@ -15186,6 +15195,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
         play.tick();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
@@ -15451,7 +15461,9 @@ int main(int argc, char** argv) {
 
     ImGui_ImplSDL3_InitForOpenGL(window, gl);
     // Any connected pad drives the hub, not only the first one SDL enumerated.
-    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);
+    // The hub polls the pads itself (overlay::pad_nav_frame): the left stick navigates
+    // like the d-pad and a bound button is held back from the UI until released.
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
     ImGui_ImplOpenGL3_Init(glsl);
 
     HubModel hub;
@@ -15839,6 +15851,7 @@ int main(int argc, char** argv) {
         }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
