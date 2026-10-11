@@ -1,4 +1,5 @@
 #include "hub/hub_play.hpp"
+#include "hub/hub_overlay.hpp"
 
 #include "imgui.h"
 
@@ -291,6 +292,7 @@ bool PlaySession::handle_states_event(const SDL_Event& e) {
 }
 
 void PlaySession::set_paused(bool paused) {
+    if (paused && !menu_open_) menu_focus_ = true;
     menu_open_ = paused;
     sync_pause();
 }
@@ -639,7 +641,9 @@ void PlaySession::draw() {
     bg->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(0, 0, 0, 255));
     // Letterboxed to the core's stated aspect, scaled as the player chose
     // (hub_picture.hpp).
-    picture_.draw(bg, paused() ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE);
+    // The overlay's own flat layer dims the picture; the older menu greys it.
+    const bool grey = paused() && !overlay::enabled();
+    picture_.draw(bg, grey ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE);
     switch (link_.state()) {
         case corelink::LinkState::Starting:
         case corelink::LinkState::Idle:
@@ -653,6 +657,9 @@ void PlaySession::draw() {
         case corelink::LinkState::Ready:
             draw_overlay();
             if (menu_open_) draw_menu();
+#if defined(__ANDROID__)
+            else draw_menu_handle();
+#endif
             break;
     }
 }
@@ -705,7 +712,117 @@ void PlaySession::draw_loading() {
     ImGui::End();
 }
 
+// The quick menu as the overlay (docs/OVERLAY_UI.md): a flat dark layer over
+// the picture, the choices on a rail, what the game is doing in cards beside it.
+void PlaySession::draw_menu_overlay() {
+    namespace hov = retcomm::hub::overlay;
+    const hov::Metrics m = hov::metrics(ImGui::GetMainViewport()->Size);
+    if (menu_focus_) ImGui::SetNextWindowFocus();
+    hov::begin("##quick_menu", 1.f);
+    const corelink::CoreIdentity& id = link_.identity();
+    const std::string core_label = id.core_id + (id.core_version.empty() ? "" : " " + id.core_version);
+    hov::top_bar(m, "Quick menu", args_.title_name.empty() ? core_label : args_.title_name,
+                 netplay_ ? "Live" : "Paused");
+
+    bool focus_first = menu_focus_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    std::vector<hov::RailItem> items;
+    items.push_back({"Resume", {}, false, true, false});
+    items.push_back({"Save states", {}, false, link_.states_supported() && !netplay_, false});
+    items.push_back({"Show FPS", prefs_.show_fps ? "On" : "Off", false, true, false});
+    items.push_back({"Close game", {}, true, true, true});
+    const int picked = hov::rail(m, "##qm_rail", items, &focus_first);
+    if (menu_focus_ && !focus_first) menu_focus_ = false;
+    switch (picked) {
+    case 0:
+        set_paused(false);
+        break;
+    case 1:
+        set_paused(false);
+        open_states();
+        break;
+    case 2:
+        set_show_fps(!prefs_.show_fps);
+        break;
+    case 3:
+        user_quit_ = true;
+        link_.stop();
+        break;
+    default:
+        break;
+    }
+
+    const float panel_x = m.pad + m.rail_w + 16.f;
+    if (hov::begin_panel(m, "##qm_panel", panel_x)) {
+        if (netplay_) {
+            hov::banner("The game is not paused. It keeps running behind this menu, and your "
+                        "controller sends nothing until you close it.");
+        } else {
+            hov::begin_card("##qm_state", "State");
+            hov::muted("Paused. The game is stopped while this menu is open.");
+            hov::end_card();
+            ImGui::Dummy(ImVec2(0.f, 10.f));
+        }
+        hov::begin_card("##qm_core", "Core");
+        hov::kv("Core", core_label);
+        hov::kv("Frames run", std::to_string(link_.frames_done()));
+        if (id.engine_dirty) hov::kv("Build", "dev build");
+        hov::end_card();
+        ImGui::Dummy(ImVec2(0.f, 10.f));
+        hov::begin_card("##qm_sound", "Sound");
+        int vol = prefs_.volume;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, m.compact ? 8.f : 12.f));
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::SliderInt("##volume", &vol, 0, 100, "Volume %d%%")) {
+            prefs_.volume = vol;
+            if (audio_) SDL_SetAudioStreamGain(audio_, float(vol) / 100.0f);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) save_prefs();
+        ImGui::PopStyleVar();
+        hov::end_card();
+        hov::end_panel();
+    }
+
+    hov::legend(m, {{"A", "Select"}, {"B", "Resume"}},
+                {{"L3 + R3", "Open / close"}});
+    hov::end();
+
+    // B resumes, from wherever the focus is.
+    if (menu_open_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) set_paused(false);
+}
+
+#if defined(__ANDROID__)
+// A phone has no L3 + R3 and no F1: a small, faint button in the corner opens the
+// menu (the left-edge swipe is the library's, and a game may use the screen).
+void PlaySession::draw_menu_handle() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    constexpr float kSize = 52.f;
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 12.f, vp->Pos.y + 12.f));
+    ImGui::SetNextWindowSize(ImVec2(kSize, kSize));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+    ImGui::Begin("##menu_handle", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::PopStyleVar();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const bool tapped = ImGui::InvisibleButton("##open", ImVec2(kSize, kSize));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = IM_COL32(255, 255, 255, ImGui::IsItemActive() ? 200 : 90);
+    const ImVec2 c(p0.x + kSize * 0.5f, p0.y + kSize * 0.5f);
+    dl->AddCircleFilled(c, kSize * 0.5f - 4.f, IM_COL32(0, 0, 0, 110));
+    for (int i = -1; i <= 1; ++i)
+        dl->AddLine(ImVec2(c.x - 10.f, c.y + 7.f * float(i)), ImVec2(c.x + 10.f, c.y + 7.f * float(i)),
+                    col, 2.f);
+    ImGui::End();
+    if (tapped) set_paused(true);
+}
+#endif
+
 void PlaySession::draw_menu() {
+    if (overlay::enabled()) {
+        draw_menu_overlay();
+        return;
+    }
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, disp.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));

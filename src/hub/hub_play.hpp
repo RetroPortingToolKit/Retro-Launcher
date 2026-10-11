@@ -50,6 +50,7 @@ struct PlayArgs {
     // other core.
     fs::path package;
     std::string rom;
+    std::string title_name; // for the quick menu's heading; empty = the core's name
     fs::path title_dir; // empty = the package's directory, else the core's
     // Seat N's Transfer Pak (index N-1): the Game Boy cartridge (runner
     // --tpakN-rom) and its battery save (region tpakN). Empty = no pak.
@@ -140,6 +141,10 @@ private:
     void service_states();
     void draw_overlay();
     void draw_menu();
+    void draw_menu_overlay(); // the overlay look (hub_overlay.hpp)
+#if defined(__ANDROID__)
+    void draw_menu_handle();  // the corner button that opens it on a phone
+#endif
     void draw_fault();
     void draw_match_ended();
     void draw_loading();
@@ -150,6 +155,7 @@ private:
     corelink::CoreLink link_;
     PlayArgs args_;
     bool menu_open_ = false;
+    bool menu_focus_ = false; // the menu just opened: put the nav ring on it
     bool netplay_ = false;
     bool finished_ = false;
     bool user_quit_ = false;

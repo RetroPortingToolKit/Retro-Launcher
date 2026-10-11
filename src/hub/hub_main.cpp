@@ -1,6 +1,7 @@
 #include "hub/hub_boxart.hpp"
 #include "hub/hub_model.hpp"
 #include "hub/hub_osk.hpp"
+#include "hub/hub_overlay.hpp"
 #include "hub/hub_touch.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
@@ -2936,9 +2937,127 @@ void draw_detail_manage_game_popup(HubModel& hub, const TitleRow& row, const The
     ImGui::EndPopup();
 }
 
+// The menu as the overlay (docs/OVERLAY_UI.md): the same entries as the drawer,
+// on a flat dark layer with a rail on the left and what the launcher knows in
+// cards beside it. Shares the drawer's open/closed state, so every place that
+// keys off it (the inert page, the Start button, focus hand-off) still works.
+void draw_overlay_menu(HubModel& hub, const Theme& th, float t) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    const ov::Metrics m = ov::metrics(ImGui::GetMainViewport()->Size);
+    if (hub.drawer_focus_pending) ImGui::SetNextWindowFocus();
+    ov::begin("##overlay_menu", t, /*solid=*/true);  // a page, not a game, is behind it
+
+    const std::string status = [&] {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        return hub.status;
+    }();
+    ov::top_bar(m, "Menu", "Retro Launcher", hub.job_running.load() ? status : std::string());
+
+    bool focus_first = hub.drawer_focus_pending && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    std::vector<ov::RailItem> items;
+    items.push_back({"Home", {}, false, true, false});
+    items.push_back({"Library settings", {}, false, true, false});
+    items.push_back({"RomM sync settings", {}, false, true, false});
+    items.push_back({"Add / scan files", {}, false, true, false});
+    items.push_back({"Netplay", {}, false, true, false});
+    items.push_back({"Check for updates", {}, false, !hub.job_running.load(), false});
+    items.push_back({"Close menu", {}, true, true, true});
+    const int picked = ov::rail(m, "##ov_rail", items, &focus_first);
+    if (hub.drawer_focus_pending && !focus_first) hub.drawer_focus_pending = false;
+    switch (picked) {
+    case 0:
+        close_settings_pages(hub);
+        go_home(hub);
+        close_nav_drawer(hub);
+        break;
+    case 1:
+        close_nav_drawer(hub);
+        hub.open_settings();
+        break;
+    case 2:
+        close_nav_drawer(hub);
+        hub.open_romm_settings();
+        break;
+    case 3:
+        close_nav_drawer(hub);
+        hub.pending_open_library = true;
+        break;
+    case 4:
+        close_nav_drawer(hub);
+        close_settings_pages(hub);
+        hub.show_netplay = true;
+        break;
+    case 5:
+        close_nav_drawer(hub);
+        hub.start_job(HubJob::CheckUpdates);
+        break;
+    case 6:
+        close_nav_drawer(hub);
+        break;
+    default:
+        break;
+    }
+
+    const float panel_x = m.pad + m.rail_w + 16.f;
+    if (ov::begin_panel(m, "##ov_panel", panel_x)) {
+        std::string launcher_now, launcher_latest, catalog_tag;
+        int game_updates = 0;
+        {
+            std::lock_guard<std::mutex> lock(hub.mu);
+            launcher_now = hub.launcher_current_version;
+            launcher_latest = hub.launcher_latest_tag;
+            game_updates = hub.game_updates_prompt_count;
+        }
+        const retcomm::RetcommInstallInfo install = retcomm::retcomm_install_info();
+        ov::begin_card("##ov_launcher", "Launcher");
+        ov::kv("Version", retcomm::retcomm_app_version());
+        ov::kv("Channel", install.channel_id.empty() ? "dev" : install.channel_id);
+        if (!launcher_latest.empty() && launcher_latest != launcher_now)
+            ov::kv("Latest release", launcher_latest, true);
+        ov::end_card();
+        ImGui::Dummy(ImVec2(0.f, 10.f));
+        ov::begin_card("##ov_catalog", "Catalog");
+        ov::kv("Release", hub.catalog.release_tag.empty() ? "none" : hub.catalog.release_tag);
+        ov::kv("Games on this device", std::to_string(hub.catalog.titles.size()));
+        ov::kv("Game updates", game_updates > 0 ? std::to_string(game_updates) : "none", game_updates > 0);
+        ov::end_card();
+        ImGui::Dummy(ImVec2(0.f, 10.f));
+        ov::begin_card("##ov_status", "Status");
+        ov::muted(status.empty() ? "Ready" : status.c_str());
+        ov::end_card();
+        ov::end_panel();
+    }
+
+    ov::legend(m, {{"A", "Select"}, {"B", "Close"}}, {{"L3 + R3", "Open / close"}});
+    ov::end();
+
+    // Escape or B backs out, from wherever the focus is.
+    if (hub.drawer_open && !hub.log_overlay_open &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+         ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+        close_nav_drawer(hub);
+
+    // A tap on the bare layer, outside the rail and the panel, closes it.
+    if (hub.drawer_open && !hub.log_overlay_open &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        const bool in_bar = mp.y < vp->Pos.y + m.top || mp.y > vp->Pos.y + vp->Size.y - m.legend;
+        const bool in_rail = mp.x >= vp->Pos.x + m.pad && mp.x <= vp->Pos.x + m.pad + m.rail_w;
+        const bool in_panel = mp.x >= vp->Pos.x + panel_x && mp.x <= vp->Pos.x + vp->Size.x - m.pad;
+        if (!in_bar && !in_rail && !in_panel) close_nav_drawer(hub);
+    }
+}
+
 // `t` is the eased slide from tick_nav_drawer(), already advanced this frame.
 void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
     if (hub.drawer_t <= 0.f) return;
+    if (retcomm::hub::overlay::enabled()) {
+        draw_overlay_menu(hub, th, t);
+        return;
+    }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float w = nav_drawer_width();
@@ -14220,6 +14339,7 @@ int main(int argc, char** argv) {
     // while set, it owns events and drawing, and the library waits behind it.
     std::unique_ptr<retcomm::hub::PlaySession> play;
 #endif
+    retcomm::hub::overlay::ChordHold overlay_chord;
     bool running = true;
     while (running) {
         // Keep gamepads open so SDL3 delivers GAMEPAD_BUTTON / AXIS events.
@@ -14273,6 +14393,11 @@ int main(int argc, char** argv) {
                 SDL_SetWindowFullscreen(window, hub.cfg.fullscreen);
                 retcomm::save_app_config(hub.paths.config_path, hub.cfg);
             }
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+            if (!play) overlay_chord.on_event(e);
+#else
+            overlay_chord.on_event(e);
+#endif
             // Start / Menu / Options opens the drawer, the way a console shell's
             // system button does. Not during first-run setup or while a settings
             // page holds unsaved edits.
@@ -14284,6 +14409,20 @@ int main(int argc, char** argv) {
         }
         tick_psx_bind_capture_poll(hub);
         if (hub.request_exit.load()) running = false;
+
+        // L3 + R3 held opens and closes the menu from anywhere in the library
+        // (a running game takes the chord itself, PlaySession).
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+        const bool chord_ok = !play;
+#else
+        const bool chord_ok = true;
+#endif
+        if (chord_ok && overlay_chord.poll() && !hub.show_setup && !any_settings_page_open(hub))
+            toggle_nav_drawer(hub);
+        // A swipe in from the left edge opens it too (a phone has no L3 + R3).
+        if (retcomm::hub::touch_take_edge_swipe() && chord_ok && !hub.drawer_open &&
+            !hub.show_setup && !any_settings_page_open(hub))
+            open_nav_drawer(hub);
 
         hub.apply_pending_folder_pick();
         hub.apply_pending_file_pick();
@@ -14370,6 +14509,7 @@ int main(int argc, char** argv) {
                 args.core = req->core_library;
                 args.package = req->package;
                 args.rom = req->rom;
+                args.title_name = req->name;
                 args.title_dir = req->title_dir;
                 // The platform's bindings and this title's option values: the
                 // files Direct mode's Controls and Core Settings pages write.

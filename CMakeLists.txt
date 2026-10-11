@@ -475,7 +475,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         )
     endif()
     # Picked files and title bundles into the hub's storage (content:// on Android).
-    target_sources(retro-hub PRIVATE src/hub/hub_import.cpp)
+    target_sources(retro-hub PRIVATE src/hub/hub_import.cpp src/hub/hub_overlay.cpp)
     target_include_directories(retro-hub PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
