@@ -79,6 +79,31 @@ bool list_row(const Metrics& m, const char* id, const char* label, const std::st
 // focused), with the focus ring when `ring`. Draws into the window's list.
 void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding = 12.f);
 
+// Settings rows, a finger tall. The label and a muted description sit on the
+// left; what the row holds is on the right.
+//
+// setting_row: a value and a chevron; true when tapped (open a picker, or an
+// editor, from it).
+bool setting_row(const Metrics& m, const char* id, const char* label, const std::string& value,
+                 const char* description = nullptr, bool enabled = true);
+// toggle_row: a switch; flips *on and returns true when it changed.
+bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
+                const char* description = nullptr);
+// stepper_row: - value + (the buttons repeat while held); true when *v changed.
+bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, int lo, int hi,
+                 int step, const char* unit = "", const char* description = nullptr);
+
+// A list of choices in a modal over the page. open_picker() opens it; call
+// picker() every frame after. Returns the index chosen, -2 when it was
+// dismissed without one, -1 while it is open or closed. `current` is ticked.
+struct PickerChoice {
+    std::string label;
+    std::string detail; // muted, under the label; may be empty
+};
+void open_picker(const char* id);
+int picker(const Metrics& m, const char* id, const char* title,
+           const std::vector<PickerChoice>& choices, int current);
+
 // A button in the overlay's style. `primary` fills it with the accent.
 bool action_button(const char* label, bool primary, float width = 0.f);
 

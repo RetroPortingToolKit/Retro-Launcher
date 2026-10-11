@@ -323,6 +323,209 @@ void card_frame(ImVec2 a, ImVec2 b, bool hot, bool ring, float rounding) {
     if (ring) dl->AddRect(a, b, kFocus, rounding, 0, 2.5f);
 }
 
+namespace {
+
+// The row's frame and its left text: returns the row's top-left and fills `h`.
+// `value_w` is the room kept on the right for the value or control.
+struct RowGeom { ImVec2 p0, p1; float h; };
+
+float row_height(const Metrics& m, const char* description, float text_w) {
+    float h = m.item_h + 8.f;
+    if (description && *description) {
+        const ImVec2 ds = ImGui::CalcTextSize(description, nullptr, false, text_w);
+        h = std::max(h, 14.f + ImGui::GetTextLineHeight() + 2.f + ds.y * 0.88f + 12.f);
+    }
+    return h;
+}
+
+void draw_row_text(ImDrawList* dl, ImVec2 p0, float h, const char* label, const char* description,
+                   float text_w, bool enabled) {
+    const bool has_desc = description && *description;
+    const ImVec2 ls = ImGui::CalcTextSize(label);
+    const float ly = has_desc ? p0.y + 12.f : p0.y + (h - ls.y) * 0.5f;
+    dl->AddText(ImVec2(p0.x + 18.f, ly), enabled ? kText : IM_COL32(153, 163, 188, 110), label);
+    if (has_desc) {
+        ImFont* font = ImGui::GetFont();
+        dl->AddText(font, ImGui::GetFontSize() * 0.88f, ImVec2(p0.x + 18.f, ly + ls.y + 2.f), kMuted,
+                    description, nullptr, text_w);
+    }
+}
+
+} // namespace
+
+bool setting_row(const Metrics& m, const char* id, const char* label, const std::string& value,
+                 const char* description, bool enabled) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float value_w = value.empty() ? 40.f : std::min(w * 0.4f, ImGui::CalcTextSize(value.c_str()).x + 60.f);
+    const float text_w = std::max(120.f, w - value_w - 40.f);
+    const float h = row_height(m, description, text_w);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    ImGui::EndDisabled();
+    const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+    draw_row_text(dl, p0, h, label, description, text_w, enabled);
+    const ImVec2 cs = ImGui::CalcTextSize(">");
+    dl->AddText(ImVec2(p1.x - 18.f - cs.x, p0.y + (h - cs.y) * 0.5f), kMuted, ">");
+    if (!value.empty()) {
+        // Clipped to the value's room, so a long value never runs into the label.
+        dl->PushClipRect(ImVec2(p1.x - 36.f - cs.x - value_w + 20.f, p0.y), p1, true);
+        const ImVec2 vs = ImGui::CalcTextSize(value.c_str());
+        const float vx = std::max(p1.x - 36.f - cs.x - vs.x, p1.x - 36.f - cs.x - value_w + 20.f);
+        dl->AddText(ImVec2(vx, p0.y + (h - vs.y) * 0.5f), hot ? kText : kMuted, value.c_str());
+        dl->PopClipRect();
+    }
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    return pressed && enabled;
+}
+
+bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
+                const char* description) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float text_w = std::max(120.f, w - 120.f);
+    const float h = row_height(m, description, text_w);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+    draw_row_text(dl, p0, h, label, description, text_w, true);
+    // The switch.
+    constexpr float kTrackW = 52.f, kTrackH = 28.f;
+    const ImVec2 t0(p1.x - 18.f - kTrackW, p0.y + (h - kTrackH) * 0.5f);
+    const ImVec2 t1(t0.x + kTrackW, t0.y + kTrackH);
+    dl->AddRectFilled(t0, t1, *on ? kAccent : IM_COL32(255, 255, 255, 40), kTrackH * 0.5f);
+    const float knob_x = *on ? t1.x - kTrackH * 0.5f : t0.x + kTrackH * 0.5f;
+    dl->AddCircleFilled(ImVec2(knob_x, t0.y + kTrackH * 0.5f), kTrackH * 0.5f - 3.f,
+                        IM_COL32(255, 255, 255, 255));
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    if (pressed) *on = !*on;
+    return pressed;
+}
+
+bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, int lo, int hi,
+                 int step, const char* unit, const char* description) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float ctrl_w = 3 * 56.f + 2 * 8.f + 100.f;
+    const float text_w = std::max(120.f, w - ctrl_w - 30.f);
+    const float h = std::max(row_height(m, description, text_w), m.item_h + 8.f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::Dummy(ImVec2(w, h));
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, false, false);
+    draw_row_text(dl, p0, h, label, description, text_w, true);
+    bool changed = false;
+    char val[48];
+    std::snprintf(val, sizeof val, "%d%s", *v, unit ? unit : "");
+    const float bh = 44.f;
+    float x = p1.x - 14.f - 56.f;
+    const float y = p0.y + (h - bh) * 0.5f;
+    ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    if (action_button("+", false, 56.f) && *v < hi) {
+        *v = std::min(hi, *v + step);
+        changed = true;
+    }
+    const ImVec2 vs = ImGui::CalcTextSize(val);
+    x -= 8.f + 100.f;
+    dl->AddText(ImVec2(x + (100.f - vs.x) * 0.5f, p0.y + (h - vs.y) * 0.5f), kText, val);
+    x -= 8.f + 56.f;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    if (action_button("-", false, 56.f) && *v > lo) {
+        *v = std::max(lo, *v - step);
+        changed = true;
+    }
+    ImGui::PopItemFlag();
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y));
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    return changed;
+}
+
+void open_picker(const char* id) { ImGui::OpenPopup(id); }
+
+int picker(const Metrics& m, const char* id, const char* title,
+           const std::vector<PickerChoice>& choices, int current) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float w = std::min(620.f, vp->Size.x * 0.92f);
+    const float max_h = vp->Size.y * 0.86f;
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(w, 0.f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.f), ImVec2(w, max_h));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+    ImGui::PushStyleColor(ImGuiCol_Border, v4(kLine));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 14.f));
+    int result = -1;
+    const bool open = ImGui::BeginPopupModal(id, nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+    if (!open) return -1;
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::TextUnformatted(title);
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    const bool first_frame = ImGui::IsWindowAppearing();
+    ImGui::BeginChild("##choices", ImVec2(0.f, std::min(max_h - 140.f, static_cast<float>(choices.size()) * (m.item_h + 8.f) + 4.f)),
+                      ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+    for (size_t i = 0; i < choices.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (first_frame && static_cast<int>(i) == std::max(0, current)) {
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNavCursorVisible(true);
+        }
+        const float rw = ImGui::GetContentRegionAvail().x;
+        const float rh = m.item_h + (choices[i].detail.empty() ? 0.f : 14.f);
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton("##c", ImVec2(rw, rh), ImGuiButtonFlags_EnableNav);
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        const ImVec2 p1(p0.x + rw, p0.y + rh);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, 10.f);
+        const ImVec2 ls = ImGui::CalcTextSize(choices[i].label.c_str());
+        const float ly = choices[i].detail.empty() ? p0.y + (rh - ls.y) * 0.5f : p0.y + 10.f;
+        dl->AddText(ImVec2(p0.x + 16.f, ly), kText, choices[i].label.c_str());
+        if (!choices[i].detail.empty())
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f, ImVec2(p0.x + 16.f, ly + ls.y + 1.f),
+                        kMuted, choices[i].detail.c_str());
+        if (static_cast<int>(i) == current) {
+            const ImVec2 cs = ImGui::CalcTextSize("selected");
+            dl->AddText(ImVec2(p1.x - 16.f - cs.x, p0.y + (rh - cs.y) * 0.5f), kGood, "selected");
+        }
+        if (pressed) {
+            result = static_cast<int>(i);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopID();
+        ImGui::Dummy(ImVec2(0.f, 4.f));
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    if (action_button("Cancel", false, 140.f) ||
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+        result = -2;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    return result;
+}
+
 bool action_button(const char* label, bool primary, float width) {
     ImGui::PushStyleColor(ImGuiCol_Button, primary ? v4(kAccent) : ImVec4(1.f, 1.f, 1.f, 0.09f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, primary ? v4(kAccent2) : ImVec4(1.f, 1.f, 1.f, 0.16f));
