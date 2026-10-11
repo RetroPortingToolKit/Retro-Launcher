@@ -1970,7 +1970,7 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
             ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
             ImGui::TextWrapped(
                 "No games for this device yet. Games run here through a core: install a "
-                "title bundle from the menu, Add/Scan Files, Install title (.zip).");
+                "title bundle from Settings, Add / scan files, Install title (.zip).");
             ImGui::PopStyleColor();
         }
 #endif
