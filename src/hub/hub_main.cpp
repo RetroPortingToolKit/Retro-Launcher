@@ -10737,6 +10737,8 @@ struct CoreSettingsPage {
     bool developer_page = false;
     bool show_developer = false;
     int configuring = -1;     // seat whose controller page is open
+    retcomm::hub::PlatformInput cfg_backup; // the inputs when that page opened (Cancel restores)
+    int cfg_backup_seat = -1;
     bool map_keyboard = false; // that page shows the keyboard map (Auto seats)
     int cap_target = -1;
     bool cap_pad = false;
@@ -11692,26 +11694,38 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
     const int seat = p.configuring;
     SeatAssign& sa = p.input.seats[static_cast<size_t>(seat)];
 
-    ImGui::OpenPopup("##core_pad_cfg");
+    // The overlay shows this as a page of its own (a scene change), not a window
+    // over the settings: the caller gives it the whole body.
+    const bool page = retcomm::hub::overlay::enabled() && !p.direct;
+    if (page && p.cfg_backup_seat != seat) {
+        p.cfg_backup = p.input; // Cancel puts this back
+        p.cfg_backup_seat = seat;
+    }
+    if (!page) ImGui::OpenPopup("##core_pad_cfg");
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vp->WorkSize.x * 0.96f),
                                     std::min(860.f, vp->WorkSize.y * 0.94f)),
                              ImGuiCond_Appearing);
     ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    const bool ov_on = retcomm::hub::overlay::enabled() && !p.direct;
-    if (ov_on) {
+    const bool ov_on = page;
+    if (ov_on && !page) {
         ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
         ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
     }
-    const bool cfg_open = ImGui::BeginPopupModal(
-        "##core_pad_cfg", nullptr, ov_on ? ImGuiWindowFlags_NoTitleBar : ImGuiWindowFlags_None);
-    if (ov_on) {
+    const bool cfg_open =
+        page ? ImGui::BeginChild("##core_pad_cfg_page", ImVec2(0, 0), ImGuiChildFlags_NavFlattened,
+                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)
+             : ImGui::BeginPopupModal("##core_pad_cfg", nullptr, ImGuiWindowFlags_None);
+    if (ov_on && !page) {
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
     }
-    if (!cfg_open) return;
+    if (!cfg_open) {
+        if (page) ImGui::EndChild();
+        return;
+    }
 
     if (ov_on) {
         ImGui::SetWindowFontScale(1.2f);
@@ -11720,8 +11734,8 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
     } else {
         ImGui::TextColored(th.accent, "CONTROLLER - PLAYER %d", seat + 1);
     }
-    ImGui::SameLine();
-    {
+    if (!page) {
+        ImGui::SameLine();
         constexpr float kCloseW = 80.f;
         ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - kCloseW - (ov_on ? 20.f : 0.f));
         if (ov_on) ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 8.f);
@@ -11778,8 +11792,9 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
         ImGui::EndTable();
     }
 
-    const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.f + 14.f;
-    const float body_h = std::max(220.f, ImGui::GetContentRegionAvail().y - footer_h);
+    const float footer_h = page ? ImGui::GetFrameHeightWithSpacing() + 24.f
+                                : ImGui::GetFrameHeightWithSpacing() * 2.f + 14.f;
+    const float body_h = std::max(page ? 90.f : 220.f, ImGui::GetContentRegionAvail().y - footer_h);
     ImGui::BeginChild("core_cfg_body", ImVec2(0, body_h), ImGuiChildFlags_None);
     draw_core_pad_map(p, th, p.map_keyboard, boxart);
     ImGui::EndChild();
@@ -11816,7 +11831,7 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
             p.input.maps[static_cast<size_t>(i)] = p.input.maps[static_cast<size_t>(seat)];
         p.status = "Copied player " + std::to_string(seat + 1) + "'s maps to every seat";
     }
-    if (!p.status.empty()) ImGui::TextColored(th.text_muted, "%s", p.status.c_str());
+    if (!page && !p.status.empty()) ImGui::TextColored(th.text_muted, "%s", p.status.c_str());
 
     // The capture prompt, over the pad.
     if (p.cap_target >= 0 && !ImGui::IsPopupOpen("Bind###core_bind"))
@@ -11855,8 +11870,30 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
         ImGui::EndPopup();
     }
 
+    if (page) {
+        // Pinned at the bottom: Cancel puts the seat back as it was on entering, Save
+        // keeps the edits (they are written with the settings' own Save).
+        namespace ov = retcomm::hub::overlay;
+        constexpr float kCancelW = 140.f, kSaveW = 180.f;
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - kCancelW - kSaveW - 10.f);
+        if (ov::action_button("Cancel", false, kCancelW)) {
+            cancel_core_capture(p);
+            p.input = p.cfg_backup;
+            p.cfg_backup_seat = -1;
+            p.configuring = -1;
+        }
+        ImGui::SameLine(0, 10.f);
+        if (ov::action_button("Save", true, kSaveW)) {
+            cancel_core_capture(p);
+            p.cfg_backup_seat = -1;
+            p.configuring = -1;
+        }
+        if (!p.status.empty()) ImGui::TextColored(th.text_muted, "%s", p.status.c_str());
+    }
     ImGui::PopID();
-    ImGui::EndPopup();
+    if (page) ImGui::EndChild();
+    else ImGui::EndPopup();
 }
 
 // ---- Transfer Pak ------------------------------------------------------------------
@@ -13058,6 +13095,13 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
         }
         ImGui::Separator();
     }
+    // Configuring a controller is a scene of its own: it takes the whole body, and
+    // its Save / Cancel return to the Gamepads page.
+    if (in_shell && p.gamepads_tab && p.configuring >= 0) {
+        draw_core_configure_modal(p, th, boxart);
+        ImGui::EndChild();
+        return;
+    }
     // Direct mode has no header above the page, so it keeps its own title and
     // description; in the library the header carries the title and the switch.
     if (p.direct) {
@@ -13237,6 +13281,7 @@ std::string core_settings_header_title() {
 const char* core_settings_switch_label() {
     const CoreSettingsPage& p = core_settings_page();
     if (p.direct || p.developer_page) return nullptr;
+    if (p.configuring >= 0 && retcomm::hub::overlay::enabled()) return nullptr;
     return p.gamepads_tab ? "System" : "Gamepads";
 }
 
