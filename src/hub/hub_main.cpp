@@ -12988,6 +12988,18 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
 // appear at the bottom once something is edited. Controls is the one section that
 // is not rows: a column of players and the selected player's controller.
 
+// ImGui's directional nav only reaches a candidate lying in the pressed direction,
+// so from a rail item low on the page it cannot reach rows near the top of the
+// column beside it (and back). The panels hand the ring to each other themselves,
+// the way the mods page does.
+struct CoreNavHandoff {
+    bool to_content = false; // rail -> the page beside it
+    bool to_rail = false;    // the page -> the rail (the open section's button)
+    bool to_pane = false;    // Controls: players -> the selected player's rows
+    bool to_ports = false;   // Controls: the rows -> the selected player
+};
+CoreNavHandoff g_core_nav;
+
 std::string accessory_name(const retcomm::hub::SeatPak& pak);
 void accessory_kind_row(CoreSettingsPage& p, int s, const retcomm::hub::overlay::Metrics& m);
 
@@ -13325,7 +13337,17 @@ void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
         const float cw = ImGui::GetContentRegionAvail().x;
         const float ch = m.compact ? 72.f : 84.f;
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        if (g_core_nav.to_content && s == p.seat_tab) {
+            ImGui::SetKeyboardFocusHere();
+            g_core_nav.to_content = false;
+        }
         const bool pressed = ImGui::InvisibleButton("##port", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+        if (g_core_nav.to_ports && s == p.seat_tab) {
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+            ImGui::SetNavCursorVisible(true);
+            g_core_nav.to_ports = false;
+        }
         const bool sel = s == p.seat_tab;
         ov::card_frame(p0, ImVec2(p0.x + cw, p0.y + ch), sel || ImGui::IsItemHovered() || ImGui::IsItemFocused(),
                        ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
@@ -13349,12 +13371,22 @@ void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
         ImGui::PopID();
         ImGui::Dummy(ImVec2(0, 6));
     }
+    g_core_nav.to_content = g_core_nav.to_ports = false;
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+        if (nav_left_pressed()) g_core_nav.to_rail = true;
+        else if (nav_right_pressed()) g_core_nav.to_pane = true;
+    }
     ImGui::EndChild();
     ImGui::SameLine(0, 16.f);
 
     // The selected player.
     const int s = p.seat_tab;
     ImGui::BeginChild("##pane", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+    if (g_core_nav.to_pane) {
+        ImGui::SetKeyboardFocusHere();
+        g_core_nav.to_pane = false;
+    }
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && nav_left_pressed()) g_core_nav.to_ports = true;
     ImGui::PushID(s);
     SeatAssign& a = p.input.seats[static_cast<size_t>(s)];
     SeatPak& pak = p.input.paks[static_cast<size_t>(s)];
@@ -13882,7 +13914,16 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             rail_w = m.compact ? 190.f : 236.f;
             ImGui::BeginChild("##secrail", ImVec2(rail_w, 0), ImGuiChildFlags_NavFlattened);
             for (const CoreSection& c : sections) {
-                if (ov::action_button(c.name.c_str(), c.name == p.section, rail_w - 4.f) && c.name != p.section) {
+                const bool hit = ov::action_button(c.name.c_str(), c.name == p.section, rail_w - 4.f);
+                if (g_core_nav.to_rail && c.name == p.section) {
+                    // Set outright: a request (SetKeyboardFocusHere) is cleared by the
+                    // control that has the ring now, which is drawn after this one.
+                    ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                    ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+                    ImGui::SetNavCursorVisible(true);
+                    g_core_nav.to_rail = false;
+                }
+                if (hit && c.name != p.section) {
                     p.section = c.name;
                     p.configuring = -1;
                     p.acc_seat = -1;
@@ -13891,6 +13932,8 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
                 }
                 ImGui::Dummy(ImVec2(0, 2));
             }
+            g_core_nav.to_rail = false;
+            if (ImGui::IsWindowFocused() && nav_right_pressed()) g_core_nav.to_content = true;
             ImGui::EndChild();
             ImGui::SameLine(0, 16.f);
         }
@@ -13900,6 +13943,11 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             ImGui::BeginChild("##acc", ImVec2(0, 0), ImGuiChildFlags_NavFlattened,
                               p.file_pick ? (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)
                                           : page_wheel_flags(hub));
+            if (g_core_nav.to_content) {
+                ImGui::SetKeyboardFocusHere();
+                g_core_nav.to_content = false;
+            }
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && nav_left_pressed()) g_core_nav.to_rail = true;
             draw_accessories_overlay(hub, p, th, m, boxart);
             ImGui::EndChild();
         } else if (p.section == "About") {
@@ -13917,6 +13965,12 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
             ImGui::EndChild();
         } else {
             ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+            if (g_core_nav.to_content) {
+                ImGui::SetKeyboardFocusHere();
+                g_core_nav.to_content = false;
+            }
+            if (!p.global_only && ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && nav_left_pressed())
+                g_core_nav.to_rail = true;
             if (p.global_only && p.section == "Hotkeys") {
                 draw_hotkeys_overlay(p, th, m);
             } else if (p.global_only) {
