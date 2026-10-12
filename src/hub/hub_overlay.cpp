@@ -587,10 +587,90 @@ int picker(const Metrics& m, const char* id, const char* title,
     return result;
 }
 
+namespace {
+
+// The controls drawn this frame and last, for Left / Right (nav_frame_begin).
+struct NavItem {
+    ImGuiID id = 0;
+    ImRect r;
+    ImGuiWindow* win = nullptr;
+    ImGuiWindow* root = nullptr;
+    ImGuiID scope = 0;
+};
+std::vector<NavItem> g_nav_cur, g_nav_prev;
+ImGuiID g_nav_scroll_to = 0;
+bool g_nav_moved = false;
+
+// After an item was just added: remember it, and scroll it into view if the focus
+// was just sent to it.
+void nav_register() {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    if (!ImGui::IsItemVisible() || (g.CurrentItemFlags & ImGuiItemFlags_Disabled)) return;
+    ImGuiWindow* w = g.CurrentWindow;
+    NavItem n;
+    n.id = ImGui::GetItemID();
+    n.r = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    n.win = w;
+    n.root = w->RootWindowForNav;
+    n.scope = g.CurrentFocusScopeId;
+    g_nav_cur.push_back(n);
+    if (n.id == g_nav_scroll_to) {
+        ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+        g_nav_scroll_to = 0;
+    }
+}
+
+} // namespace
+
+bool nav_moved() { return g_nav_moved; }
+
+void nav_frame_begin() {
+    g_nav_prev.swap(g_nav_cur);
+    g_nav_cur.clear();
+    g_nav_moved = false;
+    if (!enabled()) return;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    if (!g.NavMoveSubmitted || g.NavId == 0 || g.ActiveId != 0) return;
+    if (g.NavMoveDir != ImGuiDir_Left && g.NavMoveDir != ImGuiDir_Right) return;
+    const NavItem* cur = nullptr;
+    for (const NavItem& n : g_nav_prev)
+        if (n.id == g.NavId) cur = &n;
+    if (!cur) return; // not one of ours: ImGui moves it as it always did
+    const float dir = g.NavMoveDir == ImGuiDir_Right ? 1.f : -1.f;
+    const NavItem* best = nullptr;
+    float best_score = FLT_MAX;
+    for (const NavItem& n : g_nav_prev) {
+        if (n.id == cur->id || n.root != cur->root) continue;
+        if (dir * (n.r.GetCenter().x - cur->r.GetCenter().x) <= 1.f) continue;
+        const float overlap = std::min(n.r.Max.y, cur->r.Max.y) - std::max(n.r.Min.y, cur->r.Min.y);
+        if (overlap < 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue; // another row
+        const float gap = std::max(0.f, dir > 0.f ? n.r.Min.x - cur->r.Max.x : cur->r.Min.x - n.r.Max.x);
+        const float score = gap + 0.5f * std::fabs(n.r.GetCenter().y - cur->r.GetCenter().y);
+        if (score < best_score) {
+            best_score = score;
+            best = &n;
+        }
+    }
+    // Left and Right on these controls are ours, found or not: ImGui's would pick a
+    // control on another row.
+    ImGui::NavMoveRequestCancel();
+    if (!best) return;
+    ImGuiWindow* w = best->win;
+    ImGui::SetFocusID(best->id, w);
+    ImGui::SetNavFocusScope(best->scope);
+    const ImVec2 off(w->DC.CursorStartPos.x - w->Pos.x, w->DC.CursorStartPos.y - w->Pos.y);
+    w->NavRectRel[ImGuiNavLayer_Main] = ImRect(ImVec2(best->r.Min.x - off.x, best->r.Min.y - off.y),
+                                              ImVec2(best->r.Max.x - off.x, best->r.Max.y - off.y));
+    g.NavCursorVisible = true;
+    g_nav_scroll_to = best->id;
+    g_nav_moved = true;
+}
+
 bool nav_button(const char* id, ImVec2 size, ImGuiButtonFlags flags) {
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.f, 0.f, 0.f, 0.f));
     const bool pressed = ImGui::InvisibleButton(id, size, flags);
     ImGui::PopStyleColor();
+    nav_register();
     return pressed;
 }
 
@@ -605,6 +685,7 @@ bool action_button(const char* label, bool primary, float width) {
     const bool hit = ImGui::Button(label, ImVec2(width, 0.f));
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
+    nav_register();
     return hit;
 }
 

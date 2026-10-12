@@ -119,6 +119,16 @@ void open_picker(const char* id);
 int picker(const Metrics& m, const char* id, const char* title,
            const std::vector<PickerChoice>& choices, int current);
 
+// Left and Right on the overlay's own controls move to the neighbour in the same row
+// (the nearest control whose vertical extent overlaps this one's), not to whichever
+// control ImGui's scoring finds nearest. nav_frame_begin() takes ImGui's own
+// Left / Right request on such a control when the focus is on one (every nav_button
+// and action_button registers itself), so call it right after ImGui::NewFrame().
+// nav_moved() is true for the frame it moved the focus: code that crosses between
+// panels on Left / Right should do so only when it is false.
+void nav_frame_begin();
+bool nav_moved();
+
 // An InvisibleButton for something the caller draws itself (a card, a row, a tab).
 // ImGui's own InvisibleButton also draws a cursor around it when the controller is
 // on it, a rectangle that is not the shape of what the caller drew; this one draws

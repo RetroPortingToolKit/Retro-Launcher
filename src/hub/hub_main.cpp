@@ -3560,12 +3560,14 @@ struct ModsPageState {
 // Right / Left as a player produces them: d-pad, left stick, or the arrow keys
 // when driving the same UI from a keyboard.
 bool nav_right_pressed() {
+    if (retcomm::hub::overlay::nav_moved()) return false; // the overlay already moved the ring
     return ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
            ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false) ||
            ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
 }
 
 bool nav_left_pressed() {
+    if (retcomm::hub::overlay::nav_moved()) return false;
     return ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) ||
            ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, false) ||
            ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false);
@@ -10537,6 +10539,7 @@ int run_direct_error(SDL_Window* window, UiScale& ui, const std::string& what,
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
+        retcomm::hub::overlay::nav_frame_begin();
         retcomm::hub::touch_frame();
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -16125,6 +16128,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
+        retcomm::hub::overlay::nav_frame_begin();
 
         if (play) {
             play->draw();
@@ -16339,6 +16343,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
+        retcomm::hub::overlay::nav_frame_begin();
         play.draw();
         ImGui::Render();
         int fb_w = 0, fb_h = 0;
@@ -16995,6 +17000,7 @@ int main(int argc, char** argv) {
         apply_ui_scale_frame(window, ui);
         retcomm::hub::touch_prepare_frame(window, ui.coords);
         ImGui::NewFrame();
+        retcomm::hub::overlay::nav_frame_begin();
 
 #if defined(RETCOMM_HUB_HAVE_PLAY)
         const bool playing = play != nullptr;
