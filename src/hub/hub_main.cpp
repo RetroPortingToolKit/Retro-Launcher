@@ -3362,6 +3362,8 @@ fs::path find_hub_logo_path() {
         if (fs::is_regular_file(p, ec)) return p;
         return {};
     };
+    if (const char* assets = std::getenv("RETCOMM_ASSET_DIR"))
+        if (auto h = try_file(fs::path(assets) / "retcomm.png"); !h.empty()) return h;
     if (const char* appdir = std::getenv("APPDIR")) {
         const fs::path ad(appdir);
         if (auto h = try_file(ad / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps" /
@@ -9845,6 +9847,11 @@ void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL
         hub.hub_refocus_pending = false;
     }
     ov::begin("##hub", 1.f, /*solid=*/true, /*keep_back=*/true);
+    {
+        static const fs::path logo = find_hub_logo_path();
+        const BoxartTexture* tex = logo.empty() ? nullptr : boxart.get("hub:logo", logo);
+        ov::set_mark_texture(tex && tex->gl_id ? static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)) : 0);
+    }
 
     const int tab_now = shell_tab_now(hub);
     const bool settings_open = hub.show_settings || hub.show_romm_settings ||
@@ -11047,7 +11054,9 @@ bool save_core_settings(HubModel& hub, std::string* err) {
     if (p.global_only) {
         // Opened from Settings for the play preferences: nothing of a core's.
         if (p.prefs != p.prefs_saved && !retcomm::hub::save_play_prefs(data, p.prefs, err)) return false;
+        if (p.input != p.input_saved && !retcomm::hub::save_platform_input(data, p.platform, p.input, err)) return false;
         p.prefs_saved = p.prefs;
+        p.input_saved = p.input;
         return true;
     }
     if (!retcomm::hub::save_platform_input(data, p.platform, p.input, err)) return false;
@@ -11134,6 +11143,8 @@ bool hotkey_capture_event(CoreSettingsPage& p, const SDL_Event& e) {
     using retcomm::hub::PadSource;
     const bool settled = SDL_GetTicksNS() - p.hk_armed_ns > kCaptureSettleNs;
     const auto a = static_cast<size_t>(p.hk_cap);
+    // A slot past the actions is a player's Function button (the one held with a hotkey).
+    const bool function_slot = p.hk_cap >= retcomm::hub::kHostActionCount;
     if (!p.hk_cap_pad) {
         if (e.type != SDL_EVENT_KEY_DOWN) return false;
         if (settled && !e.key.repeat) {
@@ -11157,7 +11168,11 @@ bool hotkey_capture_event(CoreSettingsPage& p, const SDL_Event& e) {
              e.gaxis.axis != SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
         got = {PadSource::AxisMinus, e.gaxis.axis};
     if (got.kind != PadSource::None) {
-        p.prefs.hotkeys.combo[a] = got;
+        if (function_slot)
+            p.input.maps[static_cast<size_t>(p.hk_cap - retcomm::hub::kHostActionCount)]
+                .pad[static_cast<size_t>(retcomm::hub::PadTarget::Function)] = got;
+        else
+            p.prefs.hotkeys.combo[a] = got;
         p.hk_cap = -1;
     }
     return true;
@@ -11829,6 +11844,147 @@ void draw_core_pad_map(CoreSettingsPage& p, const Theme& th, bool keyboard, Boxa
 
 // One seat's controller page, as a modal over the seat cards: the Super
 // Nintendo page's shape (header row, the pad inside a sized child, a footer).
+void overlay_group_label(const char* text);
+
+// The overlay's page for one player's buttons. Everything on it is saved the moment it
+// changes (core_autosave_input), so it has no Save or Cancel; B leaves. Top: where the
+// input comes from, which map is shown, the stick deadzone and Reset to default. Below:
+// every button as a row; pressing one asks for its binding on a screen of its own.
+void draw_core_configure_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    using namespace retcomm::hub;
+    namespace ov = retcomm::hub::overlay;
+    const int seat = p.configuring;
+    SeatAssign& sa = p.input.seats[static_cast<size_t>(seat)];
+    ImGui::PushID(seat);
+    ImGui::BeginChild("##cfgpage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Waiting for a binding: the page asks for it.
+    if (p.cap_target >= 0) {
+        const PadTarget pt = static_cast<PadTarget>(p.cap_target);
+        const std::string label = pad_target_label(pt, p.desc);
+        const std::uint64_t left = kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.cap_armed_ns);
+        if (left == 0) {
+            cancel_core_capture(p);
+        } else {
+            const float w = ImGui::GetContentRegionAvail().x;
+            ImGui::Dummy(ImVec2(0, std::max(10.f, ImGui::GetContentRegionAvail().y * 0.16f)));
+            auto centred = [&](const std::string& text, float scale, bool muted) {
+                ImGui::SetWindowFontScale(scale);
+                ImGui::SetCursorPosX(std::max(0.f, (w - ImGui::CalcTextSize(text.c_str()).x) * 0.5f));
+                if (muted) ImGui::TextColored(th.text_muted, "%s", text.c_str());
+                else ImGui::TextUnformatted(text.c_str());
+                ImGui::SetWindowFontScale(1.f);
+            };
+            centred(label, 1.6f, false);
+            centred(p.cap_pad ? "Press a gamepad button, or push a stick or trigger" : "Press the key", 1.1f, true);
+            centred("Gives up in " + std::to_string(static_cast<int>(left / 1'000'000'000ull) + 1) + " s", 0.95f, true);
+            ImGui::Dummy(ImVec2(0, 24));
+            ImGui::SetCursorPosX(std::max(0.f, (w - (150.f * 2 + 12.f)) * 0.5f));
+            if (ov::action_button("Unbind", false, 150.f)) {
+                InputBindings& map = p.input.maps[static_cast<size_t>(seat)];
+                if (p.cap_pad) map.pad[static_cast<size_t>(p.cap_target)] = {};
+                else map.key[static_cast<size_t>(p.cap_target)] = SDL_SCANCODE_UNKNOWN;
+                cancel_core_capture(p);
+            }
+            ImGui::SameLine(0, 12.f);
+            if (ov::action_button("Cancel", false, 150.f)) cancel_core_capture(p);
+            ImGui::EndChild();
+            ImGui::PopID();
+            return;
+        }
+    }
+
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::Text("Player %d  >  buttons", seat + 1);
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::BeginChild("##cfgrows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const std::vector<ConnectedPad> pads = connected_pads();
+
+    // Where the input comes from.
+    {
+        std::string src;
+        switch (sa.source) {
+            case SeatAssign::Auto: src = "Auto"; break;
+            case SeatAssign::Keyboard: src = "Keyboard"; break;
+            case SeatAssign::None: src = "None"; break;
+            case SeatAssign::Gamepad: src = sa.name.empty() ? sa.guid : sa.name; break;
+        }
+        if (ov::setting_row(m, "src", "Input source", src,
+                            "What drives this player: the next free gamepad, the keyboard, one gamepad by name, or nothing."))
+            ov::open_picker("##src");
+        std::vector<ov::PickerChoice> choices{{"Auto", "The next free gamepad"}, {"Keyboard", ""}};
+        std::vector<SeatAssign> assigns{{SeatAssign::Auto, "", ""}, {SeatAssign::Keyboard, "", ""}};
+        int current = sa.source == SeatAssign::Auto ? 0 : sa.source == SeatAssign::Keyboard ? 1 : -1;
+        for (const ConnectedPad& c : pads) {
+            if (sa.source == SeatAssign::Gamepad && sa.guid == c.guid) current = static_cast<int>(choices.size());
+            choices.push_back({c.name, ""});
+            assigns.push_back({SeatAssign::Gamepad, c.guid, c.name});
+        }
+        if (sa.source == SeatAssign::Gamepad && current < 0) {
+            current = static_cast<int>(choices.size());
+            choices.push_back({src, "not connected"});
+            assigns.push_back(sa);
+        }
+        if (sa.source == SeatAssign::None) current = static_cast<int>(choices.size());
+        choices.push_back({"None", "Unplugged"});
+        assigns.push_back({SeatAssign::None, "", ""});
+        const int pick = ov::picker(m, "##src", "Input source", choices, current);
+        if (pick >= 0) sa = assigns[static_cast<size_t>(pick)];
+    }
+    // The map is the seat's device. An Auto seat can end up on either (port 1 falls back to
+    // the keyboard), so it is the one seat that picks.
+    const bool is_auto = sa.source == SeatAssign::Auto;
+    if (!is_auto) p.map_keyboard = sa.source == SeatAssign::Keyboard;
+    if (is_auto) {
+        if (ov::setting_row(m, "map", "Map shown", p.map_keyboard ? "Keyboard" : "Gamepad",
+                            "An Auto player can end up on either, so choose which map the rows below show."))
+            ov::open_picker("##map");
+        const int pick = ov::picker(m, "##map", "Map shown", {{"Gamepad", ""}, {"Keyboard", ""}}, p.map_keyboard ? 1 : 0);
+        if (pick >= 0) {
+            p.map_keyboard = pick == 1;
+            cancel_core_capture(p);
+        }
+    }
+    {
+        int dz = p.input.deadzone_pct;
+        if (ov::stepper_row(m, "dz", "Stick deadzone (every player)", &dz, 0, 50, 1, "%",
+                            "Stick travel ignored around the centre, then rescaled so a full push is still full. 0 sends the "
+                            "stick as the pad reports it; most N64 games have a deadzone of their own."))
+            p.input.deadzone_pct = dz;
+    }
+    if (ov::setting_row(m, "reset", "Reset to default", "This player's buttons",
+                        "Puts this player's buttons back to the defaults."))
+        p.input.maps[static_cast<size_t>(seat)] = default_input_bindings();
+
+    // The buttons.
+    overlay_group_label(p.map_keyboard ? "Keyboard keys" : "Gamepad buttons");
+    const InputBindings& map = p.input.maps[static_cast<size_t>(seat)];
+    int n = 0;
+    const CorePadHit* hits = n64_pad_hits(&n);
+    if (ImGui::BeginTable("##binds", ImGui::GetContentRegionAvail().x > 760.f ? 2 : 1,
+                          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+        for (int i = 0; i < n; ++i) {
+            const int t = pad_hit_target(hits, i);
+            if (t == static_cast<int>(PadTarget::Function)) continue; // set under Settings > Hotkeys
+            std::string bound;
+            if (p.map_keyboard) {
+                const SDL_Scancode sc = map.key[static_cast<size_t>(t)];
+                bound = sc == SDL_SCANCODE_UNKNOWN ? "-" : SDL_GetScancodeName(sc);
+            } else {
+                bound = pad_source_short(map.pad[static_cast<size_t>(t)]);
+            }
+            ImGui::TableNextColumn();
+            if (ov::setting_row(m, std::to_string(t).c_str(), pad_target_label(static_cast<PadTarget>(t), p.desc).c_str(), bound))
+                begin_core_capture(p, t, !p.map_keyboard);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
 void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache& boxart) {
     using namespace retcomm::hub;
     if (p.configuring < 0 || p.configuring >= kInputSeats) return;
@@ -11838,6 +11994,10 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
     // The overlay shows this as a page of its own (a scene change), not a window
     // over the settings: the caller gives it the whole body.
     const bool page = retcomm::hub::overlay::enabled() && !p.direct;
+    if (page) {
+        draw_core_configure_overlay(p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        return;
+    }
     if (page && p.cfg_backup_seat != seat) {
         p.cfg_backup = p.input; // Cancel puts this back
         p.cfg_backup_seat = seat;
@@ -13280,7 +13440,10 @@ void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::h
     if (p.hk_cap >= 0) {
         const int a = p.hk_cap;
         const bool pad = p.hk_cap_pad;
-        const char* what = retcomm::hub::host_action_label(static_cast<HostAction>(a));
+        const bool function_slot = a >= kHostActionCount;
+        const std::string what_s = function_slot ? "Player " + std::to_string(a - kHostActionCount + 1) + " Function button"
+                                                  : std::string(retcomm::hub::host_action_label(static_cast<HostAction>(a)));
+        const char* what = what_s.c_str();
         const std::uint64_t left = kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.hk_armed_ns);
         if (left == 0) {
             p.hk_cap = -1;
@@ -13297,8 +13460,9 @@ void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::h
             ImGui::SetWindowFontScale(1.f);
         };
         centred(what, 1.6f, false);
-        centred(pad ? "Hold the Function button and press the one that should do this"
-                    : "Press the key that should do this",
+        centred(function_slot ? "Press the button that should be held with a hotkey (not one the game needs)"
+                : pad          ? "Hold the Function button and press the one that should do this"
+                               : "Press the key that should do this",
                 1.1f, true);
         char sub[64];
         std::snprintf(sub, sizeof sub, "Gives up in %d s", static_cast<int>(left / 1'000'000'000ull) + 1);
@@ -13308,7 +13472,9 @@ void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::h
         ImGui::SetCursorPosX(std::max(0.f, (w - bw) * 0.5f));
         if (ov::action_button("Not set", false, 150.f)) {
             const auto ai = static_cast<size_t>(a);
-            if (pad) hk.combo[ai] = {};
+            if (function_slot) p.input.maps[static_cast<size_t>(a - kHostActionCount)]
+                                   .pad[static_cast<size_t>(retcomm::hub::PadTarget::Function)] = {};
+            else if (pad) hk.combo[ai] = {};
             else hk.key[ai] = SDL_SCANCODE_UNKNOWN;
             p.hk_cap = -1;
         }
@@ -13332,8 +13498,7 @@ void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::h
     }
     ImGui::Dummy(ImVec2(0, 6));
     if (tab == 0)
-        ov::muted("Hold the Function button and press the one bound here. Function is set per controller "
-                  "under Controls > Edit buttons (by default the Select / Back button).");
+        ov::muted("Hold the Function button and press the one bound here. The Function button is set per player at the bottom.");
     for (int a = 0; a < kHostActionCount; ++a) {
         const auto ai = static_cast<size_t>(a);
         std::string value;
@@ -13350,6 +13515,22 @@ void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::h
             p.hk_cap = a;
             p.hk_cap_pad = tab == 0;
             p.hk_armed_ns = SDL_GetTicksNS();
+        }
+    }
+    if (tab == 0) {
+        overlay_group_label("Function button, per player");
+        ov::muted("The button held with the ones above. While it is held that controller sends the game no buttons, "
+                  "so pick one the game does not need. By default the Select / Back button.");
+        for (int seat = 0; seat < retcomm::hub::kInputSeats; ++seat) {
+            const std::string label = "Player " + std::to_string(seat + 1);
+            const std::string now = pad_source_short(
+                p.input.maps[static_cast<size_t>(seat)].pad[static_cast<size_t>(retcomm::hub::PadTarget::Function)]);
+            if (ov::setting_row(m, ("fn" + std::to_string(seat)).c_str(), label.c_str(), now.empty() ? "Not set" : now,
+                                "The Function button of this player's controller.")) {
+                p.hk_cap = kHostActionCount + seat;
+                p.hk_cap_pad = true;
+                p.hk_armed_ns = SDL_GetTicksNS();
+            }
         }
     }
     if (ov::setting_row(m, "defaults", "Default hotkeys", "Reset", "Puts every hotkey, keyboard and controller, back to the defaults."))
@@ -14999,6 +15180,15 @@ bool core_settings_step_back(HubModel& hub) {
         p.hk_cap = -1; // waiting for a hotkey: B gives up on that, not on the page
         return true;
     }
+    if (p.cap_target >= 0 && !p.bind_all) {
+        cancel_core_capture(p); // waiting for a button: B gives up on that, not on the page
+        return true;
+    }
+    if (p.configuring >= 0 && !p.bind_all) {
+        p.cfg_backup_seat = -1; // the buttons were saved as they changed
+        p.configuring = -1;
+        return true;
+    }
     if (p.configuring >= 0) {
         cancel_core_capture(p);
         p.input = p.cfg_backup;
@@ -15025,6 +15215,21 @@ bool core_settings_step_back(HubModel& hub) {
 }
 
 
+// Controls and Accessories are saved the moment they change: no Save, no Cancel.
+void core_autosave_input(HubModel& hub, CoreSettingsPage& p) {
+    if (p.global_only || p.direct) return;
+    if (!(p.configuring >= 0 || p.section == "Controls" || p.section == "Accessories")) return;
+    if (p.input == p.input_saved) return;
+    if (p.cap_target >= 0 || p.bind_all) return; // mid-capture: after it lands
+    std::string err;
+    if (retcomm::hub::save_platform_input(hub.paths.data_dir, p.platform, p.input, &err)) {
+        p.input_saved = p.input;
+    } else {
+        hub.append_log(p.platform + " controls not saved: " + err);
+        p.status = "Save failed: " + err;
+    }
+}
+
 // The page. `standalone` is Direct mode, where nothing else carries the
 // header's Save / Cancel, so the footer is the only place they live.
 void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart) {
@@ -15043,6 +15248,7 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
             draw_bind_all_scene(p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size), boxart);
         else if (p.configuring >= 0) draw_core_configure_modal(p, th, boxart);
         else draw_core_page_overlay(hub, p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size), boxart);
+        core_autosave_input(hub, p);
         ImGui::EndChild();
         return;
     }
