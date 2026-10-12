@@ -14,6 +14,9 @@
 namespace retcomm::hub::overlay {
 namespace {
 
+// The shell's body this frame (begin_body), for where the ring lands first.
+ImRect g_nav_body(0.f, 0.f, 0.f, 0.f);
+
 // The canvas's palette: near-black glass, violet selection, cyan focus.
 constexpr ImU32 kPanelBg = IM_COL32(8, 10, 14, 200);
 constexpr ImU32 kCardBg = IM_COL32(255, 255, 255, 13);
@@ -278,6 +281,7 @@ void begin_body(const Metrics& m, const char* id) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float w = vp->Size.x - m.pad * 2.f;
     const float h = vp->Size.y - m.top - m.legend - 12.f;
+    g_nav_body = ImRect(vp->Pos.x + m.pad, vp->Pos.y + m.top + 6.f, vp->Pos.x + m.pad + w, vp->Pos.y + m.top + 6.f + h);
     ImGui::SetCursorScreenPos(ImVec2(vp->Pos.x + m.pad, vp->Pos.y + m.top + 6.f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.f, 0.f, 0.f, 0.f));
     ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_NavFlattened,
@@ -603,6 +607,7 @@ struct NavItem {
     ImGuiWindow* win = nullptr;
     ImGuiWindow* root = nullptr;
     ImGuiID scope = 0;
+    bool visible = true;
 };
 std::vector<NavItem> g_nav_cur, g_nav_prev;
 ImGuiID g_nav_scroll_to = 0;
@@ -612,7 +617,7 @@ bool g_nav_moved = false;
 // was just sent to it.
 void nav_register() {
     ImGuiContext& g = *ImGui::GetCurrentContext();
-    if (!ImGui::IsItemVisible() || (g.CurrentItemFlags & ImGuiItemFlags_Disabled)) return;
+    if (g.CurrentItemFlags & ImGuiItemFlags_Disabled) return;
     ImGuiWindow* w = g.CurrentWindow;
     NavItem n;
     n.id = ImGui::GetItemID();
@@ -620,6 +625,7 @@ void nav_register() {
     n.win = w;
     n.root = w->RootWindowForNav;
     n.scope = g.CurrentFocusScopeId;
+    n.visible = ImGui::IsItemVisible(); // a control scrolled out of sight is still a place to go
     g_nav_cur.push_back(n);
     if (n.id == g_nav_scroll_to) {
         ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
@@ -637,29 +643,76 @@ void nav_frame_begin() {
     g_nav_moved = false;
     if (!enabled()) return;
     ImGuiContext& g = *ImGui::GetCurrentContext();
-    if (!g.NavMoveSubmitted || g.NavId == 0 || g.ActiveId != 0) return;
-    if (g.NavMoveDir != ImGuiDir_Left && g.NavMoveDir != ImGuiDir_Right) return;
+    if (!g.NavMoveSubmitted || g.ActiveId != 0) return;
+    const ImGuiDir d = g.NavMoveDir;
+    if (d != ImGuiDir_Left && d != ImGuiDir_Right && d != ImGuiDir_Up && d != ImGuiDir_Down) return;
     const NavItem* cur = nullptr;
-    for (const NavItem& n : g_nav_prev)
-        if (n.id == g.NavId) cur = &n;
-    if (!cur) return; // not one of ours: ImGui moves it as it always did
-    const float dir = g.NavMoveDir == ImGuiDir_Right ? 1.f : -1.f;
+    if (g.NavId != 0)
+        for (const NavItem& n : g_nav_prev)
+            if (n.id == g.NavId) cur = &n;
+    if (g.NavId != 0 && !cur) return; // a control that is not one of ours: ImGui moves it as it always did
+
     const NavItem* best = nullptr;
     float best_score = FLT_MAX;
-    for (const NavItem& n : g_nav_prev) {
-        if (n.id == cur->id || n.root != cur->root) continue;
-        if (dir * (n.r.GetCenter().x - cur->r.GetCenter().x) <= 1.f) continue;
-        const float overlap = std::min(n.r.Max.y, cur->r.Max.y) - std::max(n.r.Min.y, cur->r.Min.y);
-        if (overlap < 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue; // another row
-        const float gap = std::max(0.f, dir > 0.f ? n.r.Min.x - cur->r.Max.x : cur->r.Min.x - n.r.Max.x);
-        const float score = gap + 0.5f * std::fabs(n.r.GetCenter().y - cur->r.GetCenter().y);
-        if (score < best_score) {
-            best_score = score;
-            best = &n;
+    if (!cur) {
+        // Nothing has the ring yet: it lands on the first control of the page (top, then
+        // left), not wherever ImGui's first scoring happens to fall.
+        for (const NavItem& n : g_nav_prev) {
+            if (!n.visible || n.r.Min.y < g_nav_body.Min.y - 4.f || n.r.Max.y > g_nav_body.Max.y + 4.f) continue;
+            const float score = n.r.Min.y + 0.001f * n.r.Min.x;
+            if (score < best_score) {
+                best_score = score;
+                best = &n;
+            }
         }
+        if (!best) return; // no page of ours: ImGui's
+    } else if (d == ImGuiDir_Left || d == ImGuiDir_Right) {
+        // The neighbour in the same row.
+        const float dir = d == ImGuiDir_Right ? 1.f : -1.f;
+        for (const NavItem& n : g_nav_prev) {
+            if (n.id == cur->id || n.root != cur->root || !n.visible) continue;
+            if (dir * (n.r.GetCenter().x - cur->r.GetCenter().x) <= 1.f) continue;
+            const float overlap = std::min(n.r.Max.y, cur->r.Max.y) - std::max(n.r.Min.y, cur->r.Min.y);
+            if (overlap < 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue; // another row
+            const float gap = std::max(0.f, dir > 0.f ? n.r.Min.x - cur->r.Max.x : cur->r.Min.x - n.r.Max.x);
+            const float score = gap + 0.5f * std::fabs(n.r.GetCenter().y - cur->r.GetCenter().y);
+            if (score < best_score) {
+                best_score = score;
+                best = &n;
+            }
+        }
+    } else {
+        // The neighbour in the same column: the nearest control below (or above) that
+        // overlaps this one's width; failing that, the nearest in that direction. Controls
+        // scrolled out of sight count, so Down walks a long list rather than skipping it.
+        const float dir = d == ImGuiDir_Down ? 1.f : -1.f;
+        const NavItem* best2 = nullptr;
+        float score2 = FLT_MAX;
+        for (const NavItem& n : g_nav_prev) {
+            if (n.id == cur->id || n.root != cur->root) continue;
+            if (dir * (n.r.GetCenter().y - cur->r.GetCenter().y) <= 1.f) continue;
+            const float overlap_y = std::min(n.r.Max.y, cur->r.Max.y) - std::max(n.r.Min.y, cur->r.Min.y);
+            if (overlap_y >= 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue; // the same row
+            const float gap = std::max(0.f, dir > 0.f ? n.r.Min.y - cur->r.Max.y : cur->r.Min.y - n.r.Max.y);
+            const float dcx = std::fabs(n.r.GetCenter().x - cur->r.GetCenter().x);
+            const float overlap_x = std::min(n.r.Max.x, cur->r.Max.x) - std::max(n.r.Min.x, cur->r.Min.x);
+            if (overlap_x >= 0.2f * std::min(n.r.GetWidth(), cur->r.GetWidth())) {
+                const float score = gap + 0.25f * dcx;
+                if (score < best_score) {
+                    best_score = score;
+                    best = &n;
+                }
+            }
+            const float s2 = gap + dcx;
+            if (s2 < score2) {
+                score2 = s2;
+                best2 = &n;
+            }
+        }
+        if (!best) best = best2;
     }
-    // Left and Right on these controls are ours, found or not: ImGui's would pick a
-    // control on another row.
+    // The four directions on these controls are ours, found or not: ImGui's would pick a
+    // control on another row, or skip the page.
     ImGui::NavMoveRequestCancel();
     if (!best) return;
     ImGuiWindow* w = best->win;
