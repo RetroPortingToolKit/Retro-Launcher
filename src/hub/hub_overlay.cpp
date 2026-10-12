@@ -225,6 +225,8 @@ int rail(const Metrics& m, const char* id, const std::vector<RailItem>& items,
     return activated;
 }
 
+void nav_mark_tab(bool selected);
+
 int tab_bar(const Metrics& m, const std::vector<std::string>& tabs, int selected, bool enabled,
             const std::string& status) {
     const ImVec2 p0 = ImGui::GetWindowPos();
@@ -246,9 +248,10 @@ int tab_bar(const Metrics& m, const std::vector<std::string>& tabs, int selected
         const float tw = ts.x + (m.compact ? 28.f : 40.f);
         ImGui::SetCursorScreenPos(ImVec2(x, cy - h * 0.5f));
         ImGui::PushID(static_cast<int>(i));
-        if (nav_button("##tab", ImVec2(tw, h), ImGuiButtonFlags_EnableNav))
-            clicked = static_cast<int>(i);
+        const bool tab_hit = nav_button("##tab", ImVec2(tw, h), ImGuiButtonFlags_EnableNav);
         const bool on = static_cast<int>(i) == selected;
+        nav_mark_tab(on);
+        if (tab_hit) clicked = static_cast<int>(i);
         const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         const ImVec2 b0 = ImGui::GetItemRectMin(), b1 = ImGui::GetItemRectMax();
         if (on) dl->AddRectFilled(b0, b1, kAccent, h * 0.5f);
@@ -614,6 +617,7 @@ struct NavItem {
     ImGuiWindow* root = nullptr;
     ImGuiID scope = 0;
     bool visible = true;
+    bool is_tab = false, tab_selected = false; // a tab of the shell's tab bar, and the open one
 };
 std::vector<NavItem> g_nav_cur, g_nav_prev;
 ImGuiID g_nav_scroll_to = 0;
@@ -644,6 +648,12 @@ void nav_register() {
 } // namespace
 
 bool nav_moved() { return g_nav_moved; }
+
+void nav_mark_tab(bool selected) {
+    if (g_nav_cur.empty()) return;
+    g_nav_cur.back().is_tab = true;
+    g_nav_cur.back().tab_selected = selected;
+}
 
 void nav_frame_begin() {
     g_nav_prev.swap(g_nav_cur);
@@ -723,6 +733,13 @@ void nav_frame_begin() {
                 }
             }
     }
+    // Into the tab row the ring goes to the open tab, not the tab nearest across.
+    if (best && best->is_tab && !best->tab_selected && (d == ImGuiDir_Up || d == ImGuiDir_Down))
+        for (const NavItem& n : g_nav_prev)
+            if (n.is_tab && n.tab_selected) {
+                best = &n;
+                break;
+            }
     // The four directions on these controls are ours, found or not: ImGui's would pick a
     // control on another row, or skip the page.
     ImGui::NavMoveRequestCancel();
