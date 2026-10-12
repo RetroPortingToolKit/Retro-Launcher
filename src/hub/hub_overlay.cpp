@@ -611,6 +611,7 @@ struct NavItem {
 };
 std::vector<NavItem> g_nav_cur, g_nav_prev;
 ImGuiID g_nav_scroll_to = 0;
+ImGuiID g_nav_last_focus = 0; // the control that last had the ring, for when ImGui drops it
 bool g_nav_moved = false;
 
 // After an item was just added: remember it, and scroll it into view if the focus
@@ -626,6 +627,7 @@ void nav_register() {
     n.root = w->RootWindowForNav;
     n.scope = g.CurrentFocusScopeId;
     n.visible = ImGui::IsItemVisible(); // a control scrolled out of sight is still a place to go
+    if (ImGui::IsItemFocused()) g_nav_last_focus = n.id;
     g_nav_cur.push_back(n);
     if (n.id == g_nav_scroll_to) {
         ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
@@ -646,10 +648,14 @@ void nav_frame_begin() {
     if (!g.NavMoveSubmitted || g.ActiveId != 0) return;
     const ImGuiDir d = g.NavMoveDir;
     if (d != ImGuiDir_Left && d != ImGuiDir_Right && d != ImGuiDir_Up && d != ImGuiDir_Down) return;
+    // From the control that has the ring, or, when ImGui has just dropped it (with a gamepad it
+    // clears the focus whenever the box it remembers is not inside the window's visible area),
+    // from the one that had it.
     const NavItem* cur = nullptr;
-    if (g.NavId != 0)
+    const ImGuiID from = g.NavId != 0 ? g.NavId : g_nav_last_focus;
+    if (from != 0)
         for (const NavItem& n : g_nav_prev)
-            if (n.id == g.NavId) cur = &n;
+            if (n.id == from) cur = &n;
     if (g.NavId != 0 && !cur) return; // a control that is not one of ours: ImGui moves it as it always did
 
     const NavItem* best = nullptr;
@@ -718,9 +724,9 @@ void nav_frame_begin() {
     ImGuiWindow* w = best->win;
     ImGui::SetFocusID(best->id, w);
     ImGui::SetNavFocusScope(best->scope);
-    const ImVec2 off(w->DC.CursorStartPos.x - w->Pos.x, w->DC.CursorStartPos.y - w->Pos.y);
-    w->NavRectRel[ImGuiNavLayer_Main] = ImRect(ImVec2(best->r.Min.x - off.x, best->r.Min.y - off.y),
-                                              ImVec2(best->r.Max.x - off.x, best->r.Max.y - off.y));
+    // The window-relative box ImGui scores the next move from (and, with a gamepad, tests
+    // against the visible area: a wrong one clears the focus every press).
+    w->NavRectRel[ImGuiNavLayer_Main] = ImGui::WindowRectAbsToRel(w, best->r);
     g.NavCursorVisible = true;
     g_nav_scroll_to = best->id;
     g_nav_moved = true;

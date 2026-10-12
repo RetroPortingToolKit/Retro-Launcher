@@ -597,6 +597,7 @@ bool core_settings_dirty();
 // has no switch.
 bool pad_capture_active();
 bool core_settings_step_back(HubModel& hub);
+bool core_settings_is_global();
 void open_global_settings(HubModel& hub, const char* section);
 std::string core_settings_header_title();
 const char* core_settings_switch_label();
@@ -609,6 +610,7 @@ bool core_settings_capture_event(HubModel& hub, const SDL_Event& e);
 void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxart);
 #else
 bool core_settings_platform(const std::string&) { return false; }
+bool core_settings_is_global() { return false; }
 #endif
 
 void SDLCALL on_folder_dialog(void* userdata, const char* const* filelist, int /*filter*/) {
@@ -9005,7 +9007,7 @@ int g_shell_tab = 0;
 int shell_tab_now(const HubModel& hub) {
     if (hub.show_netplay) return 2;
     // A platform's settings are its core's: the Cores tab. The rest are the launcher's.
-    if (hub.show_core_settings || hub.show_psx_settings || hub.show_snes_settings) return 4;
+    if ((hub.show_core_settings && !core_settings_is_global()) || hub.show_psx_settings || hub.show_snes_settings) return 4;
     if (any_settings_page_open(hub) || hub.show_library_panel) return 5;
     if (hub.show_mods_page || hub.library_nav != retcomm::hub::LibraryNav::Platforms) return 1;
     return g_shell_tab;
@@ -13255,82 +13257,103 @@ void overlay_stale_rows(CoreSettingsPage& p, const retcomm::hub::overlay::Metric
         if (ov::setting_row(m, k.c_str(), k.c_str(), layer[k], "Tap to remove this stored value.")) layer.erase(k);
 }
 
-// The hotkeys: the same for every core, so they live under the launcher's own
-// Settings. Action, the keyboard's key, and the pad's Function + button.
+// The hotkeys: the same for every core, so they live under the launcher's own Settings.
+// Two lists, the controller's (hold Function, press a button) and the keyboard's; a row
+// is an action and what it is bound to, and pressing it asks for the new binding on a
+// screen of its own.
 void draw_hotkeys_overlay(CoreSettingsPage& p, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
     namespace ov = retcomm::hub::overlay;
     using retcomm::hub::HostAction;
     using retcomm::hub::kHostActionCount;
     retcomm::hub::HostHotkeys& hk = p.prefs.hotkeys;
-    const float w = ImGui::GetContentRegionAvail().x;
-    const float chip_k = std::min(180.f, w * 0.2f), chip_p = std::min(260.f, w * 0.3f);
-    if (ImGui::BeginTable("##hk", 3, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("a", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, chip_k + 8.f);
-        ImGui::TableSetupColumn("p", ImGuiTableColumnFlags_WidthFixed, chip_p + 8.f);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ov::muted("Action");
-        ImGui::TableNextColumn();
-        ov::muted("Keyboard");
-        ImGui::TableNextColumn();
-        ov::muted("Controller");
-        for (int a = 0; a < kHostActionCount; ++a) {
-            ImGui::PushID(a);
-            ImGui::TableNextRow(0, m.item_h + 8.f);
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.f);
-            ImGui::TextUnformatted(retcomm::hub::host_action_label(static_cast<HostAction>(a)));
-            ImGui::TableNextColumn();
-            const SDL_Scancode k = hk.key[static_cast<size_t>(a)];
-            const bool cap_k = p.hk_cap == a && !p.hk_cap_pad;
-            const std::string kl = cap_k ? "press a key..." : (k == SDL_SCANCODE_UNKNOWN ? "Not set" : SDL_GetScancodeName(k));
-            if (ov::action_button((kl + "##k").c_str(), cap_k, chip_k)) {
-                p.hk_cap = a;
-                p.hk_cap_pad = false;
-                p.hk_armed_ns = SDL_GetTicksNS();
-            }
-            ImGui::TableNextColumn();
-            const bool cap_p = p.hk_cap == a && p.hk_cap_pad;
-            const std::string b = retcomm::hub::pad_source_label(hk.combo[static_cast<size_t>(a)]);
-            const std::string pl = cap_p ? "press a button..." : (b.empty() ? "Not set" : "Function + " + b);
-            if (ov::action_button((pl + "##p").c_str(), cap_p, chip_p)) {
-                p.hk_cap = a;
-                p.hk_cap_pad = true;
-                p.hk_armed_ns = SDL_GetTicksNS();
-            }
-            ImGui::PopID();
+    static int tab = 0; // 0 controller, 1 keyboard
+    static const char* kWhat[] = {
+        "Opens the pause menu. F1, or both sticks pressed in (L3 + R3) on any controller, opens it too.",
+        "Opens the save states page.",
+        "Shows or hides the frame counter in the top left.",
+        "Fast-forwards while held. On a controller the combo turns it on and off; its key works while held.",
+        "Raises the volume.",
+        "Lowers the volume.",
+    };
+
+    // Waiting for a binding: the whole page asks for it.
+    if (p.hk_cap >= 0) {
+        const int a = p.hk_cap;
+        const bool pad = p.hk_cap_pad;
+        const char* what = retcomm::hub::host_action_label(static_cast<HostAction>(a));
+        const std::uint64_t left = kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.hk_armed_ns);
+        if (left == 0) {
+            p.hk_cap = -1;
+            return;
         }
-        ImGui::EndTable();
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImGui::Dummy(ImVec2(0, std::max(10.f, ImGui::GetContentRegionAvail().y * 0.16f)));
+        auto centred = [&](const char* text, float scale, bool muted) {
+            ImGui::SetWindowFontScale(scale);
+            const float tw = ImGui::CalcTextSize(text).x;
+            ImGui::SetCursorPosX(std::max(0.f, (w - tw) * 0.5f));
+            if (muted) ImGui::TextColored(th.text_muted, "%s", text);
+            else ImGui::TextUnformatted(text);
+            ImGui::SetWindowFontScale(1.f);
+        };
+        centred(what, 1.6f, false);
+        centred(pad ? "Hold the Function button and press the one that should do this"
+                    : "Press the key that should do this",
+                1.1f, true);
+        char sub[64];
+        std::snprintf(sub, sizeof sub, "Gives up in %d s", static_cast<int>(left / 1'000'000'000ull) + 1);
+        centred(sub, 0.95f, true);
+        ImGui::Dummy(ImVec2(0, 24));
+        const float bw = 150.f * 2 + 12.f;
+        ImGui::SetCursorPosX(std::max(0.f, (w - bw) * 0.5f));
+        if (ov::action_button("Not set", false, 150.f)) {
+            const auto ai = static_cast<size_t>(a);
+            if (pad) hk.combo[ai] = {};
+            else hk.key[ai] = SDL_SCANCODE_UNKNOWN;
+            p.hk_cap = -1;
+        }
+        ImGui::SameLine(0, 12.f);
+        if (ov::action_button("Cancel", false, 150.f)) p.hk_cap = -1;
+        return;
     }
-    ov::muted("The pause menu also opens with F1, or both sticks pressed in (L3 + R3) on any controller. "
-              "Function is set per controller under Controls > Edit buttons.");
-    // The capture prompt (any key is bindable, Escape included).
-    if (p.hk_cap >= 0 && !ImGui::IsPopupOpen("Hotkey###hk_bind")) ImGui::OpenPopup("Hotkey###hk_bind");
-    center_modal_next();
-    if (ImGui::BeginPopupModal("Hotkey###hk_bind", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        if (p.hk_cap < 0) {
-            ImGui::CloseCurrentPopup();
+
+    // The two lists.
+    {
+        const float bw = std::min(260.f, ImGui::GetContentRegionAvail().x * 0.3f);
+        if (ov::action_button("Controller", tab == 0, bw)) {
+            tab = 0;
+            ov::row_info_reset();
+        }
+        ImGui::SameLine(0, 10.f);
+        if (ov::action_button("Keyboard", tab == 1, bw)) {
+            tab = 1;
+            ov::row_info_reset();
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    if (tab == 0)
+        ov::muted("Hold the Function button and press the one bound here. Function is set per controller "
+                  "under Controls > Edit buttons (by default the Select / Back button).");
+    for (int a = 0; a < kHostActionCount; ++a) {
+        const auto ai = static_cast<size_t>(a);
+        std::string value;
+        if (tab == 0) {
+            const std::string b = retcomm::hub::pad_source_label(hk.combo[ai]);
+            value = b.empty() ? "Not set" : "Function + " + b;
         } else {
-            const char* what = retcomm::hub::host_action_label(static_cast<HostAction>(p.hk_cap));
-            const std::uint64_t left = kCaptureTimeoutNs - std::min(kCaptureTimeoutNs, SDL_GetTicksNS() - p.hk_armed_ns);
-            if (p.hk_cap_pad) ImGui::Text("Press the button to hold with Function for %s.", what);
-            else ImGui::Text("Press the key for %s.", what);
-            ImGui::TextColored(th.text_muted, "Cancels by itself in %d s.", static_cast<int>(left / 1'000'000'000ull) + 1);
-            if (left == 0) p.hk_cap = -1;
-            ImGui::Dummy(ImVec2(0, 6));
-            if (ov::action_button("Not set", false, 120.f) && p.hk_cap >= 0) {
-                const auto a = static_cast<size_t>(p.hk_cap);
-                if (p.hk_cap_pad) hk.combo[a] = {};
-                else hk.key[a] = SDL_SCANCODE_UNKNOWN;
-                p.hk_cap = -1;
-            }
-            ImGui::SameLine();
-            if (ov::action_button("Cancel", false, 120.f)) p.hk_cap = -1;
+            const SDL_Scancode k = hk.key[ai];
+            value = k == SDL_SCANCODE_UNKNOWN ? "Not set" : SDL_GetScancodeName(k);
         }
-        ImGui::EndPopup();
+        const std::string label = retcomm::hub::host_action_label(static_cast<HostAction>(a));
+        if (ov::setting_row(m, (label + std::to_string(tab)).c_str(), label.c_str(), value,
+                            a < static_cast<int>(sizeof(kWhat) / sizeof(kWhat[0])) ? kWhat[a] : nullptr)) {
+            p.hk_cap = a;
+            p.hk_cap_pad = tab == 0;
+            p.hk_armed_ns = SDL_GetTicksNS();
+        }
     }
+    if (ov::setting_row(m, "defaults", "Default hotkeys", "Reset", "Puts every hotkey, keyboard and controller, back to the defaults."))
+        hk = retcomm::hub::default_host_hotkeys();
 }
 
 // Controls: the players in a column, the selected one's controller beside it.
@@ -14972,6 +14995,10 @@ void draw_shell_add_files(HubModel& hub, const Theme& th, SDL_Window* window, co
 bool core_settings_step_back(HubModel& hub) {
     CoreSettingsPage& p = core_settings_page();
     if (!hub.show_core_settings || !retcomm::hub::overlay::enabled()) return false;
+    if (p.hk_cap >= 0) {
+        p.hk_cap = -1; // waiting for a hotkey: B gives up on that, not on the page
+        return true;
+    }
     if (p.configuring >= 0) {
         cancel_core_capture(p);
         p.input = p.cfg_backup;
@@ -15180,6 +15207,9 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
 bool core_settings_dirty() { return core_settings_page().dirty(); }
 
 // A binding is waiting for a press: the pad is the capture's, not the UI's.
+// Opened from the Settings tab for the launcher's own play settings (no core).
+bool core_settings_is_global() { return core_settings_page().global_only; }
+
 bool pad_capture_active() {
     const CoreSettingsPage& p = core_settings_page();
     return p.cap_target >= 0 || p.hk_cap >= 0;
