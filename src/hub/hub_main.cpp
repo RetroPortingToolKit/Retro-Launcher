@@ -9368,6 +9368,7 @@ void shell_home(HubModel& hub) {
 }
 
 // B (or Back) when no page handled it: step out of what is open, then to Home.
+bool title_options_step_back();
 void shell_back_fallback(HubModel& hub) {
 #if defined(RETCOMM_HUB_HAVE_PLAY)
     if (core_settings_step_back(hub)) return; // out of a scene, or a section, first
@@ -9390,6 +9391,7 @@ void shell_back_fallback(HubModel& hub) {
         return;
     }
     if (hub.library_nav == retcomm::hub::LibraryNav::Detail) {
+        if (title_options_step_back()) return;
         go_back_to_titles(hub);
         return;
     }
@@ -9768,7 +9770,20 @@ void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::ove
 // ---- the overlay shell: Library and the game page ---------------------------------
 
 int g_lib_filter = 0;       // 0 all, 1 installed, 2 with an update
-bool g_detail_all = false;  // the game page's "All options": the full, older page
+bool g_detail_all = false;  // the game page's "All options" rows
+int g_opt_sub = 0;          // 0 main, 1 saves, 2 game data, 3 texture packs
+int g_opt_slot = 0;         // which save slot the saves page shows
+bool g_opt_steam_remove = false;
+std::string g_opt_pack;
+std::string g_opt_rename;
+
+bool title_options_step_back() {
+    if (!g_detail_all) return false;
+    if (g_opt_sub != 0) g_opt_sub = 0;
+    else g_detail_all = false;
+    retcomm::hub::overlay::row_info_reset();
+    return true;
+}
 int g_detail_last = -2;
 
 void shell_platform_settings(HubModel& hub, const std::string& platform, const TitleRow* row) {
@@ -10055,6 +10070,9 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
     if (platform_settings) shell_platform_settings(hub, hub.library_platform, nullptr);
 }
 
+void draw_shell_title_options(HubModel& hub, const Theme& th, SDL_Window* window,
+                              const retcomm::hub::overlay::Metrics& m);
+
 // One game: its cover, name and state, the one thing to do next, and rows for
 // the rest. "All options" opens the full page the hub has always had.
 void draw_shell_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_Window* window,
@@ -10062,7 +10080,7 @@ void draw_shell_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
     namespace ov = retcomm::hub::overlay;
     if (g_detail_all) {
         if (hub.selected != g_detail_last) g_detail_last = hub.selected;
-        draw_detail(hub, boxart, th, window);
+        draw_shell_title_options(hub, th, window, m);
         return;
     }
     if (hub.selected != g_detail_last) g_detail_last = hub.selected;
@@ -15808,6 +15826,505 @@ void open_global_settings(HubModel& hub, const char* section) {
     p.section = section;
     p.desc_ready = true;
     p.describing = {};
+}
+
+// ---- a game's "All options", in rows ----------------------------------------------
+
+// Everything the old title page put in its actions column, as the shell's rows: the
+// main page holds the day-to-day choices, and three pages go deeper (saves, game
+// data, texture packs). B steps out of those, then back to the game page.
+void draw_shell_title_options(HubModel& hub, const Theme& th, SDL_Window* window,
+                              const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    TitleRow row;
+    bool have = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        have = hub.selected >= 0 && hub.selected < static_cast<int>(hub.rows.size());
+        if (have) row = hub.rows[static_cast<size_t>(hub.selected)];
+    }
+    if (!have) {
+        g_detail_all = false;
+        go_back_to_titles(hub);
+        return;
+    }
+    static std::string last_id;
+    if (last_id != row.id) {
+        last_id = row.id;
+        g_opt_sub = 0;
+        ov::row_info_reset();
+    }
+    const bool job_busy = hub.job_running.load();
+    const bool install_op = job_busy && retcomm::hub::hub_job_is_install(hub.job);
+    const bool this_busy = job_busy && hub.job_title_id == row.id;
+    constexpr float info_h = 64.f;
+
+    ImGui::BeginChild("##topts", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (ImGui::IsWindowAppearing()) ov::row_info_reset();
+    {
+        static const char* kSubs[] = {"", "Saves", "Game data", "Texture packs"};
+        ImGui::SetWindowFontScale(1.1f);
+        ImGui::TextColored(ImVec4(0.60f, 0.64f, 0.74f, 1.f), "%s  >  ", row.name.c_str());
+        ImGui::SameLine(0, 0);
+        ImGui::TextUnformatted(g_opt_sub == 0 ? "All options" : kSubs[g_opt_sub]);
+        ImGui::SetWindowFontScale(1.f);
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    ImGui::BeginChild("##toptsrows", ImVec2(0, -info_h), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+
+    auto slot_label = [&](int index, bool card2) -> std::string {
+        if (card2 && index < 0) return "Empty card slot";
+        if (index >= 0 && index < static_cast<int>(row.save_labels.size()))
+            return row.save_labels[static_cast<size_t>(index)];
+        if (!row.save_labels.empty() && !card2) return row.save_labels.front();
+        return "None";
+    };
+
+    if (g_opt_sub == 0) {
+        // ---- the main page ----
+        ov::value_row(m, "status", "Status", this_busy && !hub.status.empty() ? hub.status : chip_label(row));
+        if (row.installed) {
+            const bool reinstall_w_bios = row.built_with_openbios && row.supports_local_build &&
+                                          row.bios_choice != retcomm::kOpenBiosChoice && !row.bios_choice.empty();
+            if (reinstall_w_bios) {
+                const bool act = job_busy && hub.job == HubJob::GenerateRebuild && hub.job_title_id == row.id;
+                const bool queued = hub.is_job_queued(HubJob::GenerateRebuild, row.id);
+                if (ov::setting_row(m, "rebuild", "Reinstall with BIOS",
+                                    act ? "Reinstalling..." : queued ? "Queued" : job_busy ? "Queue" : "Reinstall",
+                                    "This install was built with OpenBIOS only. Rebuild it with your selected "
+                                    "retail BIOS and OpenBIOS. Can be queued behind another job.",
+                                    !(act || queued)))
+                    hub.start_job(HubJob::GenerateRebuild, row.id);
+            } else if (ov::setting_row(m, "play", "Play", row.update_available ? "Update available" : "",
+                                       "Start the game.", !hub.launch_running.load())) {
+                if (hub.cfg.check_updates_before_launch) {
+                    const auto* t = hub.catalog.find(row.id);
+                    hub.start_job(t && !t->release.github.empty() ? HubJob::CheckLaunchUpdate : HubJob::Launch,
+                                  row.id);
+                } else {
+                    hub.start_job(HubJob::Launch, row.id);
+                }
+            }
+            const bool upd_act = job_busy && hub.job == HubJob::Update && hub.job_title_id == row.id;
+            const bool upd_queued = hub.is_job_queued(HubJob::Update, row.id);
+            if (ov::setting_row(m, "update", "Update",
+                                upd_act ? "Updating..." : upd_queued ? "Queued" : job_busy ? "Queue" : "Check",
+                                "Fetch and install the newest release of this game.", !(upd_act || upd_queued)))
+                hub.start_job(HubJob::Update, row.id);
+        } else {
+            if (row.supports_local_build && !row.has_rom)
+                ov::banner(("No verified ROM or disc in your library yet. Install will offer to rescan " +
+                            std::string(platform_display_name(row.platform)) + ", import files or download from RomM.")
+                               .c_str());
+            const bool act = job_busy && retcomm::hub::hub_job_is_install(hub.job) && hub.job_title_id == row.id &&
+                             hub.job != HubJob::Update;
+            const bool queued = hub.is_job_queued(HubJob::Install, row.id);
+            const char* verb = row.install_dir_present ? "Reinstall" : "Install";
+            if (ov::setting_row(m, "install", verb,
+                                act ? "Working..." : queued ? "Queued" : job_busy ? "Queue" : "Start",
+                                "Install this game from the catalog.", !(act || queued)))
+                hub.begin_install(row.id);
+        }
+
+        if (row.installed) {
+            const fs::path game_dir = title_game_dir(hub, row);
+            if (!game_dir.empty()) {
+                bool skip = retcomm::title_skip_launcher(game_dir, row.platform);
+                if (ov::toggle_row(m, "skip", "Skip launcher", &skip,
+                                   "Boot straight into the game, past the engine's own launcher screen. "
+                                   "Stored with this install, not the platform defaults.")) {
+                    std::string err;
+                    if (!retcomm::set_title_skip_launcher(game_dir, row.platform, skip, &err)) {
+                        hub.append_log("Skip Launcher failed: " + err);
+                        hub.set_status("Skip Launcher failed");
+                    }
+                }
+            }
+        }
+
+        if (row.disc_choice_paths.size() > 1) {
+            const char* cur = (row.selected_disc_index >= 0 &&
+                               row.selected_disc_index < static_cast<int>(row.disc_choice_labels.size()))
+                                  ? row.disc_choice_labels[static_cast<size_t>(row.selected_disc_index)].c_str()
+                                  : "(select)";
+            if (ov::setting_row(m, "disc", "Disc", cur,
+                                row.installed ? "Which disc the game boots." : "Applies once this title is installed.",
+                                !hub.launch_running.load()))
+                ov::open_picker("##disc");
+            std::vector<ov::PickerChoice> ch;
+            for (size_t i = 0; i < row.disc_choice_paths.size(); ++i)
+                ch.push_back({row.disc_choice_labels[i], row.disc_choice_paths[i]});
+            const int pick = ov::picker(m, "##disc", "Disc", ch, row.selected_disc_index);
+            if (pick >= 0 && pick < static_cast<int>(row.disc_choice_paths.size())) {
+                std::string err;
+                if (!hub.set_title_preferred_disc(row.id, row.disc_choice_paths[static_cast<size_t>(pick)], &err))
+                    hub.append_log("Disc selection failed: " + err);
+                else
+                    hub.set_status("Disc set to " + row.disc_choice_labels[static_cast<size_t>(pick)]);
+            }
+        }
+
+        if (row.installed) {
+            if (row.dual_memcard) {
+                if (ov::setting_row(m, "mc1", "Memory card 1", slot_label(row.preferred_save_index, false),
+                                    "Pick, create, rename or import the card in slot 1.")) {
+                    g_opt_slot = 1;
+                    g_opt_sub = 1;
+                    ov::row_info_reset();
+                }
+                if (ov::setting_row(m, "mc2", "Memory card 2", slot_label(row.preferred_save_card2_index, true),
+                                    "Pick, create, rename or import the card in slot 2.")) {
+                    g_opt_slot = 2;
+                    g_opt_sub = 1;
+                    ov::row_info_reset();
+                }
+            } else if (ov::setting_row(m, "save", "Save file", slot_label(row.preferred_save_index, false),
+                                       "Pick, create, rename or import this game's save file.")) {
+                g_opt_slot = 0;
+                g_opt_sub = 1;
+                ov::row_info_reset();
+            }
+        }
+
+        if (ov::setting_row(m, "manage", "Manage game data", "Open",
+                            "Open the install folder, move or uninstall it, Steam, RomM downloads.",
+                            !install_op)) {
+            g_opt_sub = 2;
+            ov::row_info_reset();
+        }
+        if (row.installed && retcomm::is_psx_platform(row.platform)) {
+            if (ov::setting_row(m, "texpk", "Texture packs",
+                                row.active_texture_pack.empty() ? "Native" : row.active_texture_pack,
+                                "HD texture packs for this game. One is active at a time.", !install_op)) {
+                hub.refresh_texture_packs(row.id);
+                hub.texpack_status.clear();
+                g_opt_sub = 3;
+                ov::row_info_reset();
+            }
+        }
+        if (ov::setting_row(m, "mods", "Mods", "Open",
+                            "Mod packages installed for this game, read from the mods/ folder."))
+            hub.pending_open_mods = true;
+        if (!row.github_url.empty() &&
+            ov::setting_row(m, "gh", "GitHub source", "Open in browser", row.github_url.c_str())) {
+            std::string err;
+            if (!retcomm::open_url_in_browser(row.github_url, &err)) hub.append_log("Open URL failed: " + err);
+        }
+
+        if (row.needs_bios || row.supports_openbios) {
+            overlay_group_label("BIOS");
+            int dump_count = 0;
+            bool has_openbios_opt = false;
+            for (const auto& id : row.bios_choice_ids) {
+                if (id == retcomm::kOpenBiosChoice) has_openbios_opt = true;
+                else ++dump_count;
+            }
+            const auto pref_label = [&](const char* fallback) -> std::string {
+                return (row.preferred_bios_index >= 0 &&
+                        row.preferred_bios_index < static_cast<int>(row.bios_choice_labels.size()))
+                           ? row.bios_choice_labels[static_cast<size_t>(row.preferred_bios_index)]
+                           : std::string(fallback);
+            };
+            const char* openbios_note = "";
+            if (row.bios_choice == retcomm::kOpenBiosChoice)
+                openbios_note = "OpenBIOS regenerates at install (no dump needed).";
+            else if (row.built_with_openbios && row.installed)
+                openbios_note = "This install used OpenBIOS: Play becomes Reinstall with BIOS.";
+            if (row.bios_choice_ids.size() > 1) {
+                if (ov::setting_row(m, "bios", "BIOS", pref_label("(select)"), openbios_note))
+                    ov::open_picker("##bios");
+                std::vector<ov::PickerChoice> ch;
+                for (const std::string& l : row.bios_choice_labels) ch.push_back({l, ""});
+                const int pick = ov::picker(m, "##bios", "BIOS", ch, row.preferred_bios_index);
+                if (pick >= 0 && pick < static_cast<int>(row.bios_choice_ids.size())) {
+                    std::string err;
+                    if (!hub.set_title_preferred_bios(row.id, row.bios_choice_ids[static_cast<size_t>(pick)], &err))
+                        hub.append_log("BIOS preference failed: " + err);
+                }
+            } else if (dump_count == 1) {
+                ov::value_row(m, "bios", "BIOS", "Using " + pref_label("matched"));
+            } else if (has_openbios_opt) {
+                ov::value_row(m, "bios", "BIOS", "OpenBIOS (regenerates at install)");
+            } else if (row.has_bios) {
+                ov::value_row(m, "bios", "BIOS", "Matched");
+            } else {
+                ov::value_row(m, "bios", "BIOS",
+                              row.supports_openbios ? "Missing: import one, or use OpenBIOS after a catalog refresh"
+                                                    : "Missing: import one from Add / scan files");
+            }
+        }
+    } else if (g_opt_sub == 1) {
+        // ---- saves for one slot ----
+        const bool card2 = g_opt_slot == 2;
+        const int cur = card2 ? row.preferred_save_card2_index : row.preferred_save_index;
+        const char* what = g_opt_slot == 0 ? "save file" : g_opt_slot == 1 ? "card 1" : "card 2";
+        auto apply = [&](int sel) {
+            std::string err;
+            bool ok = false;
+            if (card2) {
+                if (sel < 0) ok = hub.set_title_preferred_save_card2(row.id, retcomm::kBlankMemcardId, &err);
+                else if (sel < static_cast<int>(row.save_ids.size()))
+                    ok = hub.set_title_preferred_save_card2(row.id, row.save_ids[static_cast<size_t>(sel)], &err);
+            } else if (sel >= 0 && sel < static_cast<int>(row.save_ids.size())) {
+                ok = hub.set_title_preferred_save(row.id, row.save_ids[static_cast<size_t>(sel)], &err);
+            }
+            if (!ok && !err.empty()) hub.append_log("Could not save preference: " + err);
+        };
+        overlay_group_label("In use");
+        if (card2 && ov::item_row(m, "empty", "Empty card slot", "", cur < 0 ? "In use" : "", ov::kColGood))
+            apply(-1);
+        for (size_t i = 0; i < row.save_labels.size(); ++i) {
+            const bool on = static_cast<int>(i) == cur;
+            if (ov::item_row(m, ("s" + std::to_string(i)).c_str(), row.save_labels[i], "", on ? "In use" : "",
+                             ov::kColGood))
+                apply(static_cast<int>(i));
+        }
+        if (row.save_labels.empty() && !card2) ov::muted("No save files yet.");
+        const bool has_file = cur >= 0 && cur < static_cast<int>(row.save_ids.size());
+        overlay_group_label("Manage");
+        if (ov::setting_row(m, "create", std::string(std::string("Create a new ") + what).c_str(), "Create",
+                            "Make a fresh, empty one and use it.", !job_busy)) {
+            std::string err;
+            if (!hub.create_title_save(row.id, &err, card2)) hub.append_log("Create failed: " + err);
+        }
+        if (ov::setting_row(m, "rename", "Rename the one in use", "Rename...", "Give it a new name.", has_file)) {
+            g_opt_rename = row.save_labels[static_cast<size_t>(cur)];
+            ImGui::OpenPopup("##rename_save");
+        }
+        {
+            const int r = ov::text_dialog("##rename_save", "Rename", g_opt_rename, "new name");
+            if (r == 1 && has_file) {
+                std::string err;
+                if (!hub.rename_title_save(row.id, row.save_ids[static_cast<size_t>(cur)], g_opt_rename, &err))
+                    hub.append_log("Rename failed: " + err);
+            }
+        }
+        bool file_busy = false;
+        {
+            std::lock_guard<std::mutex> lock(hub.file_pick_mu);
+            file_busy = hub.file_pick_busy;
+        }
+        if (ov::setting_row(m, "import", "Import a save file", "Choose...",
+                            "Copy a save from elsewhere into this game's saves.",
+                            !(job_busy || file_busy || window == nullptr))) {
+            const auto exts = save_exts_for_platform(hub.catalog, row.platform);
+            begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportSave, row.platform, "Save files", exts,
+                            false, row.id);
+        }
+        if (ov::setting_row(m, "romm", "Sync with RomM", "Sync", "Upload and fetch this game's saves on RomM.",
+                            !job_busy && row.romm_ready && row.installed))
+            hub.start_job(HubJob::SyncRommSaves, row.id);
+        if (ov::setting_row(m, "delete", "Delete the one in use", "Delete...", "Permanently remove it.", has_file))
+            ImGui::OpenPopup("##del_save");
+        if (overlay_confirm("##del_save", "Delete this save?",
+                            has_file ? row.save_labels[static_cast<size_t>(cur)].c_str() : "", "Delete", has_file)) {
+            std::string err;
+            if (!hub.delete_title_save(row.id, row.save_ids[static_cast<size_t>(cur)], &err))
+                hub.append_log("Delete failed: " + err);
+        }
+    } else if (g_opt_sub == 2) {
+        // ---- game data ----
+        const bool can_open = row.installed || row.install_dir_present || row.has_preserved_state;
+        overlay_group_label("Installation");
+        if (can_open && ov::setting_row(m, "open", "Open the install folder", "Open", "", !job_busy)) {
+            fs::path open_dir;
+            if (!row.install_root.empty()) open_dir = retcomm::resolve_current_release_dir(row.install_root);
+            if (open_dir.empty() && !row.binary_path.empty()) {
+                fs::path walk = fs::path(row.binary_path).parent_path();
+                while (!walk.empty() && walk.has_parent_path()) {
+                    if (walk.parent_path().filename() == "releases") {
+                        open_dir = walk;
+                        break;
+                    }
+                    const fs::path parent = walk.parent_path();
+                    if (parent == walk) break;
+                    walk = parent;
+                }
+                if (open_dir.empty()) open_dir = fs::path(row.binary_path).parent_path();
+            }
+            if (open_dir.empty()) open_dir = row.install_root;
+            std::string err;
+            if (!retcomm::open_path_in_file_manager(open_dir, &err)) hub.append_log("Open Folder failed: " + err);
+        }
+        if (can_open && row.core_manifest.empty()) {
+            const bool can_move = retcomm::effective_install_roots(hub.cfg, hub.paths).size() > 1;
+            if (ov::setting_row(m, "move", "Move the installation", "Move...",
+                                can_move ? "Move releases, build data and preserved saves to another install location."
+                                         : "Add another install location in Library settings to enable this.",
+                                can_move && !job_busy))
+                hub.begin_move_install(row.id);
+        }
+        if (retcomm::platform_has_config_section(row.platform)) {
+            bool exclude = retcomm::title_excludes_platform_config(hub.app_state, row.id);
+            if (ov::toggle_row(m, "excl", "Exclude from platform config", &exclude,
+                               "Retro will not overwrite this game's settings from the platform's global settings "
+                               "on install, update or launch. Existing files are left as they are.")) {
+                std::string err;
+                if (!hub.set_title_exclude_platform_config(row.id, exclude, &err))
+                    hub.append_log("Exclude toggle failed: " + err);
+                else
+                    hub.app_state = retcomm::load_app_state(hub.paths.state_path);
+            }
+        }
+
+        if (row.installed) {
+            overlay_group_label("Steam");
+            if (!hub.steam_state_valid.load()) hub.refresh_steam_state();
+            if (!hub.steam_found) {
+                ov::muted(hub.steam_hint.c_str());
+            } else {
+                const bool in_steam = hub.steam_shortcut_ids.count(row.id) > 0;
+                const bool sb = hub.steam_busy.load();
+                if (ov::setting_row(m, "steam", in_steam ? "Update the Steam entry" : "Add to Steam",
+                                    sb ? "Working..." : "Go",
+                                    "A non-Steam shortcut that starts this game through Retro Launcher, with "
+                                    "Steam's grid, hero and icon filled from the cover art.",
+                                    !sb)) {
+                    g_opt_steam_remove = false;
+                    if (retcomm::steam_is_running()) ImGui::OpenPopup("##steam_running");
+                    else hub.begin_steam_shortcut(row.id, false);
+                }
+                if (in_steam &&
+                    ov::setting_row(m, "steamrm", "Remove from Steam", "Remove", "", !sb)) {
+                    g_opt_steam_remove = true;
+                    if (retcomm::steam_is_running()) ImGui::OpenPopup("##steam_running");
+                    else hub.begin_steam_shortcut(row.id, true);
+                }
+                if (overlay_confirm("##steam_running", "Steam is running",
+                                    "Steam holds its shortcut list in memory and writes it back when it exits, so "
+                                    "anything written now is discarded when you close Steam. Close Steam and try "
+                                    "again to be sure, or continue and restart Steam straight afterwards.",
+                                    "Continue anyway", true))
+                    hub.begin_steam_shortcut(row.id, g_opt_steam_remove);
+                if (row.boxart_path.empty())
+                    ov::muted("No cover art for this game yet, so the Steam entry would have none either.");
+            }
+        }
+
+        overlay_group_label("Files");
+        ov::value_row(m, "rom", "ROM / disc",
+                      row.has_rom      ? row.rom_path
+                      : row.has_romm   ? "Available on RomM" + (row.romm_file_name.empty() ? std::string{} : ": " + row.romm_file_name)
+                                       : "No library match" + (row.suggested_rom.empty() ? std::string{} : ": looking for " + row.suggested_rom));
+        if (!row.romm_ready) {
+            ov::value_row(m, "rommoff", "RomM", "Not configured (Settings > RomM sync)");
+        } else {
+            if (row.has_rom_identity &&
+                ov::setting_row(m, "rommrom", row.has_rom ? "Re-download the ROM" : "Download the ROM", "RomM", "",
+                                !job_busy))
+                hub.start_job(HubJob::FetchRommRom, row.id);
+            if (row.needs_bios &&
+                ov::setting_row(m, "rommbios", row.has_bios ? "Re-download the BIOS" : "Download the BIOS", "RomM",
+                                "", !job_busy))
+                hub.start_job(HubJob::FetchRommBios, row.id);
+            if (!row.has_rom_identity && !row.needs_bios)
+                ov::muted("No RomM downloads for this game.");
+        }
+
+        const bool can_uninstall = can_open;
+        const bool preserved_only = row.has_preserved_state && !row.installed && !row.install_dir_present;
+        overlay_group_label("Remove");
+        if (!can_uninstall) {
+            ov::muted("No install folder or preserved data yet.");
+        } else if (preserved_only) {
+            ov::muted("Game files are already removed. Preserved saves and settings remain for the next install.");
+            if (ov::setting_row(m, "purge", "Remove saves and config", "Remove...",
+                                "Deletes the preserved saves, settings and keybinds from the last uninstall. "
+                                "Library ROMs and managed saves are not deleted.",
+                                !job_busy))
+                ImGui::OpenPopup("##purge");
+            if (overlay_confirm("##purge", "Remove saves and config?", "This cannot be undone.", "Remove", true))
+                hub.start_job(HubJob::UninstallPurge, row.id);
+        } else {
+            if (row.supports_local_build &&
+                (row.installed || row.install_dir_present || row.install_method == "build") &&
+                ov::setting_row(m, "build", "Delete build data", "Delete",
+                                row.has_cmake_build_data
+                                    ? "Frees disk space. The next update needs a full rebuild. The game, saves and "
+                                      "ROMs are untouched."
+                                    : "No build data on disk.",
+                                row.has_cmake_build_data && !job_busy))
+                hub.start_job(HubJob::DeleteBuildData, row.id);
+            const bool core_reg = !row.core_manifest.empty();
+            static bool keep_saves = true;
+            static std::string keep_for;
+            if (keep_for != row.id) {
+                keep_for = row.id;
+                keep_saves = true;
+            }
+            if (!core_reg)
+                ov::toggle_row(m, "keep", "Keep save data when uninstalling", &keep_saves,
+                               "Saves and settings are stashed for the next install.");
+            if (ov::setting_row(m, "uninst", "Uninstall", "Uninstall...",
+                                core_reg ? "Removes it from the library. Its files are not Retro's and stay where "
+                                           "they are."
+                                         : "Removes the game from this device.",
+                                !job_busy))
+                ImGui::OpenPopup("##uninstall");
+            if (overlay_confirm("##uninstall", "Uninstall?",
+                                (row.name + (core_reg || keep_saves ? "" : "\n\nIts save data will be deleted too."))
+                                    .c_str(),
+                                "Uninstall", true)) {
+                hub.start_job(core_reg || keep_saves ? HubJob::Uninstall : HubJob::UninstallPurge, row.id);
+                g_opt_sub = 0;
+            }
+        }
+    } else {
+        // ---- texture packs ----
+        const auto& packs = hub.texpack_list;
+        ov::muted("Beetle PSX HW format packs. One pack is active at a time.");
+        if (packs.empty()) ov::muted("No texture packs installed for this game.");
+        for (const auto& p : packs) {
+            const bool active = row.active_texture_pack == p.id;
+            std::string sub = p.author;
+            if (!p.version.empty()) sub += (sub.empty() ? "" : "  -  ") + p.version;
+            sub += std::string(sub.empty() ? "" : "  -  ") + std::to_string(p.texture_count) + " textures";
+            if (p.has_coverage && p.coverage_entries > 0)
+                sub += "  -  " + std::to_string(static_cast<int>((100.0 * p.coverage_matched) / p.coverage_entries + 0.5)) +
+                       "% seen";
+            if (ov::item_row(m, ("p" + p.id).c_str(), p.name, sub, active ? "Active" : "", ov::kColGood,
+                             !job_busy)) {
+                g_opt_pack = p.id;
+                ImGui::OpenPopup("##pack");
+            }
+        }
+        {
+            std::string pname;
+            bool active = false;
+            for (const auto& p : packs)
+                if (p.id == g_opt_pack) {
+                    pname = p.name;
+                    active = row.active_texture_pack == p.id;
+                }
+            const int pick = ov::picker(m, "##pack", pname.c_str(),
+                                        {{active ? "Use native textures" : "Use this pack", ""}, {"Remove it...", ""}},
+                                        -1);
+            if (pick == 0) hub.set_texture_pack(row.id, active ? std::string{} : g_opt_pack);
+            if (pick == 1) ImGui::OpenPopup("##pack_rm");
+            if (overlay_confirm("##pack_rm", "Remove this texture pack?",
+                                "It is deleted from disk. The game's own textures are untouched.", "Remove", true))
+                hub.remove_texture_pack_now(row.id, g_opt_pack);
+        }
+        overlay_group_label("Add");
+        if (ov::setting_row(m, "install", "Install a pack", "Choose...",
+                            "A .zip of <hash>-<hash>.png files, as dumped by Beetle PSX HW or this game's texture "
+                            "dumper. A wrapping folder inside the zip is handled for you.",
+                            !job_busy && window != nullptr))
+            begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportTexturePack, row.platform,
+                            "Texture pack (.zip)", {"zip"}, false, row.id);
+        if (ov::setting_row(m, "folder", "Open the packs folder", "Open", "")) {
+            const fs::path dir = retcomm::texture_packs_dir(hub.paths, row.id);
+            std::error_code ec;
+            fs::create_directories(dir, ec);
+            std::string err;
+            if (!retcomm::open_path_in_file_manager(dir, &err)) hub.append_log("Open Folder failed: " + err);
+        }
+        if (!hub.texpack_status.empty()) ov::muted(hub.texpack_status.c_str());
+    }
+    (void)th;
+    ImGui::EndChild();
+    overlay_info_strip(info_h);
+    ImGui::EndChild();
 }
 
 } // namespace
