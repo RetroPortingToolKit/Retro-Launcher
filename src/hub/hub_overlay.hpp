@@ -13,6 +13,7 @@
 
 #include <SDL3/SDL_events.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -138,6 +139,16 @@ bool nav_moved();
 // on it, a rectangle that is not the shape of what the caller drew; this one draws
 // none, so the caller's fitted ring is the only highlight.
 bool nav_button(const char* id, ImVec2 size, ImGuiButtonFlags flags = ImGuiButtonFlags_EnableNav);
+
+// A text value in a modal over the page; the on-screen keyboard raises with the field.
+// 1 = OK, 2 = Clear, 0 = nothing yet (or cancelled). Call every frame after
+// ImGui::OpenPopup(id).
+int text_dialog(const char* id, const char* title, std::string& value, const char* hint,
+                bool password = false);
+// A question with a way out: true the frame the answer is yes. `body` wraps; `extra`
+// draws between it and the buttons.
+bool confirm_dialog(const char* id, const char* title, const char* body, const char* yes_label,
+                    bool yes_enabled = true, const std::function<void()>& extra = {});
 
 // A button in the overlay's style. `primary` fills it with the accent.
 bool action_button(const char* label, bool primary, float width = 0.f);

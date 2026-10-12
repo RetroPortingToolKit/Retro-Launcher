@@ -1,7 +1,9 @@
 #include "hub/hub_android.hpp"
 
+#include "retcomm/paths.hpp"
 #include "retcomm/self_update.hpp"
 
+#include <SDL3/SDL_misc.h>
 #include <SDL3/SDL_system.h>
 #include <jni.h>
 
@@ -85,7 +87,16 @@ void android_show_folder_dialog(SDL_DialogFileCallback callback, void* userdata)
     env->DeleteLocalRef(activity);
 }
 
-void android_register_apk_installer() { set_apk_installer(install_apk); }
+// Discord sign-in and the other links: the platform's browser through an ACTION_VIEW intent
+// (xdg-open does not exist here). SDL attaches the calling thread to the VM.
+std::string open_url(const std::string& url) {
+    return SDL_OpenURL(url.c_str()) ? std::string() : std::string(SDL_GetError());
+}
+
+void android_register_apk_installer() {
+    set_apk_installer(install_apk);
+    set_url_opener(open_url);
+}
 
 }  // namespace retcomm::hub
 

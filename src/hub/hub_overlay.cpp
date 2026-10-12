@@ -1051,3 +1051,84 @@ void pad_nav_frame(bool block) {
 }
 
 }  // namespace retcomm::hub::overlay
+
+namespace retcomm::hub::overlay {
+
+namespace {
+// The modal frame the dialogs share: dark, rounded, over a dimmed page.
+bool begin_dialog(const char* id, float width, float top_frac) {
+    if (!ImGui::IsPopupOpen(id)) return false;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, top_frac < 0.f ? vp->GetCenter().y : vp->Size.y * top_frac),
+                            ImGuiCond_Always, ImVec2(0.5f, top_frac < 0.f ? 0.5f : 0.f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(width, vp->Size.x * 0.94f), 0.f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, vp->Size.y * 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
+    const bool open = ImGui::BeginPopupModal(id, nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    return open;
+}
+} // namespace
+
+int text_dialog(const char* id, const char* title, std::string& value, const char* hint, bool password) {
+    static char buf[512];
+    if (!begin_dialog(id, 680.f, 0.28f)) return 0;
+    int result = 0;
+    if (ImGui::IsWindowAppearing()) std::snprintf(buf, sizeof buf, "%s", value.c_str());
+    ImGui::TextUnformatted(title);
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    const bool enter = ImGui::InputTextWithHint("##text", hint, buf, sizeof buf,
+                                                ImGuiInputTextFlags_EnterReturnsTrue |
+                                                    (password ? ImGuiInputTextFlags_Password : 0));
+    ImGui::Dummy(ImVec2(0, 6));
+    if (action_button("OK", true, 120.f) || enter) {
+        value = buf;
+        result = 1;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (action_button("Clear", false, 120.f)) {
+        result = 2;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (action_button("Cancel", false, 120.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return result;
+}
+
+bool confirm_dialog(const char* id, const char* title, const char* body, const char* yes_label, bool yes_enabled,
+                    const std::function<void()>& extra) {
+    if (!begin_dialog(id, 700.f, -1.f)) return false;
+    bool yes = false;
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::TextUnformatted(title);
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextUnformatted(body);
+    ImGui::PopTextWrapPos();
+    if (extra) extra();
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::BeginDisabled(!yes_enabled);
+    if (action_button(yes_label, true, 0.f)) {
+        yes = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (action_button("Cancel", false, 140.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return yes;
+}
+
+} // namespace retcomm::hub::overlay

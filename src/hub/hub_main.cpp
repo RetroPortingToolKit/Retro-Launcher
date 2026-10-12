@@ -9053,6 +9053,7 @@ void shell_back_fallback(HubModel& hub) {
         return;
     }
     if (hub.show_netplay) {
+        if (retcomm::hub::netplay_step_back()) return;
         shell_select_tab(hub, 0);
         return;
     }

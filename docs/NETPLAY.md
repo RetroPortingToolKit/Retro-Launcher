@@ -145,3 +145,26 @@ game needs.
   - seat moves and swaps between two people;
   - reports;
   - the page inside the running hub on a real screen.
+
+## The overlay's Netplay (2026-10-12)
+
+In the shell (the Netplay tab; not Direct mode) the page is `draw_netplay_overlay`:
+rows a finger or a controller reaches, a header with where you are and Back (B steps back
+through `netplay_step_back`), sections as a row of buttons, and dialogs in the overlay's look.
+
+- **Netplay** opens on two cards, LAN / Direct IP and Online Netplay, then Account (sign in or
+  out), Player name, Lobby server and the ignored/blocked list as rows.
+- **Online**: a Game filter row, then Lobbies / Players online / Server chat with Host a lobby and
+  Refresh on the same row. A lobby is a row (Join on press); a player or a chat line opens
+  Ignore / Block / Report. Hosting is a page of rows (game, name, max players, spectators,
+  password) with Create lobby.
+- **The room**: Seats / Chat / Info with Leave lobby and Play beside them. A seat row opens
+  what can be done with it (move here, swap, kick, ignore) instead of dragging.
+- **LAN / Direct IP**: Rooms on your network and Direct IP (host, port, Look up), as before.
+  Joining or hosting a LAN room stays in the game's own Netplay menu (above): the game owns
+  the lobby, so the hub still cannot take a seat in one.
+- **Sign in with Discord** works on Android: the sign-in page opens through `SDL_OpenURL`
+  (`set_url_opener`; there is no xdg-open there), the link can be opened again or copied, and
+  the app finishes the sign-in by polling the lobby server, so it needs no redirect back into
+  the app. The Android libcurl is now built with WebSocket (`HTTP_ONLY` switched it off), which
+  the lobby connection needs.
