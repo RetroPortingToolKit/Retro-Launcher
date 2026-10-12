@@ -5,8 +5,7 @@ over what is behind it, a top bar, a rail of choices on the left, cards on the
 right, and a legend of button hints along the bottom. It is the "Retro Overlay
 Redesign" draft (the canvas the design was reviewed on), first slice.
 
-**Switch.** On by default on Android. `RETCOMM_OVERLAY_UI=1` (or `0`) overrides it
-on any platform, so the desktop can try it. Off, every menu is the old one.
+**Switch.** On by default on every platform. `RETCOMM_OVERLAY_UI=0` turns it off. Off, every menu is the old one.
 
 ## What is in it
 

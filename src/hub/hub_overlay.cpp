@@ -43,11 +43,7 @@ bool enabled() {
     if (g_forced) return true;
     static const bool on = [] {
         if (const char* e = std::getenv("RETCOMM_OVERLAY_UI"); e && *e) return e[0] != '0';
-#if defined(__ANDROID__)
         return true;
-#else
-        return false;
-#endif
     }();
     return on;
 }

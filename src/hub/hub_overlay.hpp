@@ -19,8 +19,8 @@
 
 namespace retcomm::hub::overlay {
 
-// Whether the hub draws its menus as the overlay. On by default on Android;
-// RETCOMM_OVERLAY_UI=1 or 0 overrides it on any platform. Read once.
+// Whether the hub draws its menus as the overlay. On by default everywhere;
+// RETCOMM_OVERLAY_UI=0 turns it off (the older menus). Read once.
 bool enabled();
 // Direct mode (a title's own window) always draws as the overlay, on every platform.
 void set_forced(bool on);
