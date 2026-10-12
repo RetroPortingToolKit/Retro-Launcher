@@ -34,7 +34,13 @@ ImVec4 v4(ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); }
 
 }  // namespace
 
+namespace {
+bool g_forced = false;
+}
+void set_forced(bool on) { g_forced = on; }
+
 bool enabled() {
+    if (g_forced) return true;
     static const bool on = [] {
         if (const char* e = std::getenv("RETCOMM_OVERLAY_UI"); e && *e) return e[0] != '0';
 #if defined(__ANDROID__)
@@ -1137,6 +1143,45 @@ bool confirm_dialog(const char* id, const char* title, const char* body, const c
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
     return yes;
+}
+
+} // namespace retcomm::hub::overlay
+
+namespace retcomm::hub::overlay {
+
+bool item_row(const Metrics& m, const char* id, const std::string& title, const std::string& sub,
+              const std::string& right, ImU32 right_col, bool enabled) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = sub.empty() ? m.item_h + 10.f : (m.compact ? 66.f : 78.f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = nav_button("##it", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    ImGui::EndDisabled();
+    const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+    float right_w = 0.f;
+    if (!right.empty()) {
+        right_w = ImGui::CalcTextSize(right.c_str()).x;
+        dl->AddText(ImVec2(p1.x - 18.f - right_w, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f), right_col,
+                    right.c_str());
+    }
+    const float tw = std::max(80.f, w - 56.f - right_w);
+    dl->PushClipRect(p0, ImVec2(p0.x + 18.f + tw, p1.y), true);
+    const ImU32 tc = enabled ? kText : IM_COL32(153, 163, 188, 160);
+    if (sub.empty()) {
+        dl->AddText(ImVec2(p0.x + 18.f, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f), tc, title.c_str());
+    } else {
+        dl->AddText(ImVec2(p0.x + 18.f, p0.y + 11.f), tc, title.c_str());
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f,
+                    ImVec2(p0.x + 18.f, p0.y + 11.f + ImGui::GetTextLineHeight() + 3.f), kMuted, sub.c_str());
+    }
+    dl->PopClipRect();
+    ImGui::PopID();
+    ImGui::Dummy(ImVec2(0.f, 6.f));
+    return pressed && enabled;
 }
 
 } // namespace retcomm::hub::overlay

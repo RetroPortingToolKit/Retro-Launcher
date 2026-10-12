@@ -10170,6 +10170,14 @@ void draw_shell_detail(HubModel& hub, BoxartCache& boxart, const Theme& th, SDL_
 
 // The shell: tabs on top, the page in the body, hints (or Save / Cancel while a
 // settings page holds edits) along the bottom.
+// The launcher's mark in the top bar's corner (assets/retcomm.png).
+void set_overlay_mark(BoxartCache& boxart) {
+    static const fs::path logo = find_hub_logo_path();
+    const BoxartTexture* tex = logo.empty() ? nullptr : boxart.get("hub:logo", logo);
+    retcomm::hub::overlay::set_mark_texture(tex && tex->gl_id ? static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id))
+                                                               : 0);
+}
+
 void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Window* window) {
     namespace ov = retcomm::hub::overlay;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -10179,11 +10187,7 @@ void draw_overlay_shell(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL
         hub.hub_refocus_pending = false;
     }
     ov::begin("##hub", 1.f, /*solid=*/true, /*keep_back=*/true);
-    {
-        static const fs::path logo = find_hub_logo_path();
-        const BoxartTexture* tex = logo.empty() ? nullptr : boxart.get("hub:logo", logo);
-        ov::set_mark_texture(tex && tex->gl_id ? static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)) : 0);
-    }
+    set_overlay_mark(boxart);
 
     const int tab_now = shell_tab_now(hub);
     const bool settings_open = hub.show_settings || hub.show_romm_settings ||
@@ -12051,7 +12055,7 @@ void draw_core_seat_source_combo(CoreSettingsPage& p, int seat,
 void draw_core_pad_map(CoreSettingsPage& p, const Theme& th, bool keyboard, BoxartCache& boxart) {
     using namespace retcomm::hub;
     const InputBindings& map = p.input.maps[static_cast<size_t>(p.configuring)];
-    if (retcomm::hub::overlay::enabled() && !p.direct) {
+    if (retcomm::hub::overlay::enabled()) {
         // The overlay lists the inputs as rows, two across: a chip on a picture
         // is too small to hit on a phone.
         namespace ov = retcomm::hub::overlay;
@@ -12325,7 +12329,7 @@ void draw_core_configure_modal(CoreSettingsPage& p, const Theme& th, BoxartCache
 
     // The overlay shows this as a page of its own (a scene change), not a window
     // over the settings: the caller gives it the whole body.
-    const bool page = retcomm::hub::overlay::enabled() && !p.direct;
+    const bool page = retcomm::hub::overlay::enabled();
     if (page) {
         draw_core_configure_overlay(p, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
         return;
@@ -14400,6 +14404,10 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
         ImGui::TextColored(muted, "Settings  > ");
         ImGui::SameLine(0, 0);
         ImGui::TextUnformatted(p.section.c_str());
+    } else if (p.direct) {
+        ImGui::TextColored(muted, "Settings  >  ");
+        ImGui::SameLine(0, 0);
+        ImGui::TextUnformatted(p.section.empty() ? core_name.c_str() : p.section.c_str());
     } else {
         ImGui::TextColored(muted, "Cores  >  ");
         ImGui::SameLine(0, 0);
@@ -14413,7 +14421,13 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
     }
     ImGui::SetWindowFontScale(1.f);
     const bool scoped = !p.global_only && p.section != "Controls" && p.section != "About" && p.section != "Accessories";
-    if (!p.global_only) {
+    if (p.direct) {
+        // One title: its own values, nothing to choose.
+        const std::string t = (p.title_name.empty() ? p.title_key : p.title_name) + " only";
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 20.f, ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(t.c_str()).x - 8.f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(muted, "%s", t.c_str());
+    } else if (!p.global_only) {
         const std::string chip = (p.title_scope ? (p.title_name.empty() ? p.title_key : p.title_name) + " only"
                                                 : std::string("All ") + platform_display_name(p.platform) + " games");
         const float cw = ImGui::CalcTextSize(chip.c_str()).x + 64.f;
@@ -15549,7 +15563,7 @@ bool core_settings_step_back(HubModel& hub) {
 
 // Controls and Accessories are saved the moment they change: no Save, no Cancel.
 void core_autosave_input(HubModel& hub, CoreSettingsPage& p) {
-    if (p.global_only || p.direct) return;
+    if (p.global_only) return;
     if (!(p.configuring >= 0 || p.section == "Controls" || p.section == "Accessories")) return;
     if (p.input == p.input_saved) return;
     if (p.cap_target >= 0 || p.bind_all) return; // mid-capture: after it lands
@@ -15569,7 +15583,7 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
     tick_core_settings(hub);
 
     // In the overlay shell the body is already the panel, so no border of its own.
-    const bool in_shell = retcomm::hub::overlay::enabled() && !p.direct;
+    const bool in_shell = retcomm::hub::overlay::enabled();
     ImGui::BeginChild("core_settings", ImVec2(0, 0),
                       in_shell ? ImGuiChildFlags_NavFlattened : ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -15800,7 +15814,7 @@ void open_global_settings(HubModel& hub, const char* section) {
 
 // ---- Direct home ------------------------------------------------------------
 
-enum class DirectPage { Home, Mods, Update, Netplay };
+enum class DirectPage { Home, Mods, Update, Netplay, TransferPak, Details };
 
 // run_direct_home's answer when the player pressed Restart on the Update page:
 // main closes the window and starts the app again (restart_hub).
@@ -16574,6 +16588,8 @@ void take_dev_pick(DirectHome& h) {
     h.dev_bad[i] = false;
 }
 
+void load_tpak_state(DirectHome& h, HubModel& hub);
+
 void open_direct_page(DirectHome& h, HubModel& hub, DirectPage p) {
     h.page = p;
     h.focus_pending = true;
@@ -16586,6 +16602,7 @@ void open_direct_page(DirectHome& h, HubModel& hub, DirectPage p) {
         hub.mods_focus_pending = true;
         mods_page_state().title_id.clear(); // rescan on entry
     }
+    if (p == DirectPage::TransferPak) load_tpak_state(h, hub);
     if (p == DirectPage::Home) refresh_direct_mods(h);
 }
 
@@ -17244,6 +17261,475 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
                  sc.game_name.c_str());
 }
 
+// ---- Direct mode as the overlay ----------------------------------------------------------------
+//
+// A title's own window, in the shell's look: the top bar with the title, a body, and the legend.
+// Home is the cover and details on the left and what can be done on the right; every page under
+// it (Updates, Transfer Pak Support, Details, Mods, Netplay, the core's settings) is a page of rows
+// with Back in the top right. The same state and the same actions as the pages above.
+
+void load_tpak_state(DirectHome& h, HubModel& hub) {
+    using retcomm::hub::kSupportedGbRoms;
+    h.tpak_lib = retcomm::hub::load_tpak_library(hub.paths.data_dir, h.platform);
+    // Say up front whether what was saved still checks out.
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        h.tpak_note[k].clear();
+        h.tpak_bad[k] = false;
+        const std::string& p = h.tpak_lib.path[k];
+        if (p.empty()) continue;
+        std::string sha, err;
+        if (!retcomm::hub::verify_supported_gb_rom(i, p, &sha, &err)) {
+            h.tpak_note[k] = err;
+            h.tpak_bad[k] = true;
+        } else if (sha != h.tpak_lib.sha256[k]) {
+            h.tpak_note[k] = "Changed since it was saved; choose it again.";
+            h.tpak_bad[k] = true;
+        } else {
+            h.tpak_note[k] = "Verified";
+        }
+    }
+}
+
+// One step back out of whatever is open. False at Home.
+bool direct_step_back(DirectHome& h, HubModel& hub) {
+    if (hub.show_core_settings) {
+        if (core_settings_step_back(hub)) return true;
+        CoreSettingsPage& p = core_settings_page();
+        if (!p.dirty() && p.cap_target < 0 && p.hk_cap < 0) {
+            close_core_settings(hub);
+            h.focus_pending = true;
+        }
+        return true; // edits held: Save or Cancel decide
+    }
+    if (h.page == DirectPage::Mods && mods_page_state().detail) {
+        mods_page_state().detail = false;
+        return true;
+    }
+    if (h.page == DirectPage::Netplay && retcomm::hub::netplay_step_back()) return true;
+    if (h.page != DirectPage::Home) {
+        open_direct_page(h, hub, DirectPage::Home);
+        return true;
+    }
+    return false;
+}
+
+void open_direct_core_settings(DirectHome& h, HubModel& hub, const char* section) {
+    open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core, h.d.args.package,
+                       h.desc_ready ? &h.desc : nullptr, /*direct=*/true, h.title_dir);
+    core_settings_page().section = section;
+}
+
+DirectAction draw_direct_home_overlay(DirectHome& h, HubModel& hub, const Theme& th,
+                                      retcomm::hub::BoxartCache& boxart,
+                                      const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    DirectAction act = DirectAction::None;
+    ImGui::BeginChild("##dhome", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+    const float total = ImGui::GetContentRegionAvail().x;
+    const float left_w = std::clamp(total * 0.34f, 260.f, 440.f);
+    const bool have_rom = !h.d.args.rom.empty();
+
+    // The cover and what the title is.
+    ov::begin_card("##dhero", "", left_w);
+    if (const retcomm::hub::BoxartTexture* tex = h.boxart.empty() ? nullptr : boxart.get("direct:" + h.title_key, h.boxart);
+        tex && tex->width > 0 && tex->height > 0) {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float max_h = std::max(100.f, ImGui::GetMainViewport()->Size.y * (m.compact ? 0.34f : 0.42f));
+        float w = std::min(avail, 300.f);
+        float hgt = w * static_cast<float>(tex->height) / static_cast<float>(tex->width);
+        if (hgt > max_h) {
+            w *= max_h / hgt;
+            hgt = max_h;
+        }
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - w) * 0.5f));
+        ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex->gl_id)), ImVec2(w, hgt));
+        ImGui::Dummy(ImVec2(0, 6));
+    }
+    ImGui::SetWindowFontScale(1.3f);
+    ImGui::TextWrapped("%s", h.name.c_str());
+    ImGui::SetWindowFontScale(1.f);
+    std::string sub = platform_label(h.platform);
+    if (!h.cartid.empty()) sub += "  \xC2\xB7  " + h.cartid;
+    if (!h.region.empty()) sub += "  \xC2\xB7  region " + h.region;
+    ImGui::TextColored(th.text_muted, "%s", sub.c_str());
+    if (!h.desc_ready) ImGui::TextColored(th.text_muted, "Asking the core what it declares...");
+    else if (h.desc.ok) ImGui::TextColored(th.text_muted, "%s %s", h.desc.core_id.c_str(), h.desc.core_version.c_str());
+    else ImGui::TextColored(th.warn, "The core's declarations are unavailable");
+    ov::end_card();
+    ImGui::SameLine(0, 16.f);
+
+    // What can be done.
+    ImGui::BeginChild("##dact", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_None);
+    const float w = ImGui::GetContentRegionAvail().x;
+    if (h.d.title_mode && !have_rom) {
+        bool picking = false;
+        if (h.pick) {
+            std::lock_guard<std::mutex> lock(h.pick->mu);
+            picking = h.pick->busy;
+        }
+        take_direct_focus(h);
+        ImGui::BeginDisabled(picking);
+        if (ov::action_button(picking ? "Choosing..." : "Choose ROM...", true, w)) begin_title_rom_pick(h);
+        ImGui::EndDisabled();
+        const std::string& label = h.d.title.rom.label;
+        ov::muted((h.name + " needs " + (label.empty() ? std::string("its ROM image") : label) +
+                   ". It is checked, then remembered.")
+                      .c_str());
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (!h.rom_note.empty()) {
+        if (h.rom_note_bad) ov::banner(h.rom_note.c_str());
+        else ov::muted(h.rom_note.c_str());
+    }
+    ImGui::BeginDisabled(!have_rom);
+    if (have_rom) take_direct_focus(h);
+    if (ov::action_button("Play", true, w)) act = DirectAction::Play;
+    ImGui::EndDisabled();
+    if (!h.status.empty()) {
+        if (h.status_bad) ov::banner(h.status.c_str());
+        else ov::muted(h.status.c_str());
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    if (h.d.title_mode && have_rom && ov::setting_row(m, "rom", "ROM", "Choose another...", nullptr))
+        begin_title_rom_pick(h);
+
+    // THE BASE: the game itself, or one installed romhack (it is the title's system.romhack
+    // option, so a session, its saves and its netplay match key all follow it).
+    if (!h.romhacks.empty()) {
+        const std::string cur = direct_base_id(h, hub);
+        const retcomm::InstalledRomhack* sel = retcomm::find_romhack(h.romhacks, cur);
+        const std::string preview = cur.empty() ? std::string("The game") : (sel ? sel->title : cur + " (not installed)");
+        if (ov::setting_row(m, "base", "Base", preview,
+                            sel ? (sel->saves_shared ? "Shares the game's saves (its author says the save layout is "
+                                                        "unchanged)."
+                                                      : "Keeps its own saves, apart from the game's.")
+                                : nullptr))
+            ov::open_picker("##base");
+        std::vector<ov::PickerChoice> choices{{"The game", ""}};
+        int current = cur.empty() ? 0 : -1;
+        for (size_t i = 0; i < h.romhacks.size(); ++i) {
+            const retcomm::InstalledRomhack& r = h.romhacks[i];
+            choices.push_back({r.title + (r.version.empty() ? "" : " " + r.version),
+                               r.error.empty() ? std::string() : "Unusable: " + r.error});
+            if (r.id == cur) current = static_cast<int>(i) + 1;
+        }
+        const int pick = ov::picker(m, "##base", "Base", choices, current);
+        if (pick >= 0 && (pick == 0 || h.romhacks[static_cast<size_t>(pick - 1)].error.empty())) {
+            auto title = retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, h.title_key);
+            if (pick == 0) title.erase(retcomm::kRomhackOption);
+            else title[retcomm::kRomhackOption] = h.romhacks[static_cast<size_t>(pick - 1)].id;
+            std::string err;
+            if (!retcomm::hub::save_core_options(hub.paths.data_dir, h.platform, h.title_key, title, &err)) {
+                h.status = "Cannot save the base: " + err;
+                h.status_bad = true;
+            }
+        }
+    }
+
+    if (ov::setting_row(m, "settings", "Settings", "Core options, video, accessories")) open_direct_core_settings(h, hub, "");
+    if (ov::setting_row(m, "controls", "Controls", "Players, buttons")) open_direct_core_settings(h, hub, "Controls");
+    if (ov::setting_row(m, "mods", "Mods", "")) open_direct_page(h, hub, DirectPage::Mods);
+    if (ov::setting_row(m, "netplay", "Netplay", have_rom ? "Online and LAN" : "choose the ROM first", nullptr, have_rom))
+        open_direct_page(h, hub, DirectPage::Netplay);
+    {
+        const int n = h.updates.attention();
+        const std::string v = h.updates.running() ? std::string("checking...") : (n ? std::to_string(n) + " available" : std::string());
+        if (ov::setting_row(m, "update", "Updates", v, "Check for a newer game, core, runner and hub, and install them."))
+            open_direct_page(h, hub, DirectPage::Update);
+    }
+    if (h.tpak_supported &&
+        ov::setting_row(m, "tpak", "Transfer Pak Support", h.tpak_lib.complete() ? "all three set" : "",
+                        "Pokemon Red, Blue and Yellow for Transfer Pak netplay lobbies."))
+        open_direct_page(h, hub, DirectPage::TransferPak);
+    if (ov::setting_row(m, "details", "Details", "Files and the last session")) open_direct_page(h, hub, DirectPage::Details);
+    if (ov::setting_row(m, "quit", "Quit", "")) act = DirectAction::Quit;
+    ImGui::EndChild();
+    ImGui::EndChild();
+    return act;
+}
+
+void draw_direct_details_overlay(DirectHome& h, HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    ImGui::BeginChild("##ddetails", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted("Details");
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::BeginChild("##drows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (!h.desc_ready) ov::value_row(m, "core", "Core", "asking the core what it declares...");
+    else if (h.desc.ok) ov::value_row(m, "core", "Core", h.desc.core_id + " " + h.desc.core_version);
+    else ov::value_row(m, "core", "Core", h.desc.error);
+    auto row = [&](const char* id, const char* k, const std::string& v) {
+        if (!v.empty()) ov::value_row(m, id, k, v);
+    };
+    row("game", "Game", h.d.args.package.empty() ? h.d.args.core.string() : h.d.args.package.string());
+    row("corep", "Core file", h.d.args.core.string());
+    row("rom", "ROM", h.d.args.rom);
+    row("title", "Title folder", h.title_dir.string());
+    {
+        const std::string base = direct_base_id(h, hub);
+        const retcomm::InstalledRomhack* r = retcomm::find_romhack(h.romhacks, base);
+        row("saves", "Saves", retcomm::base_save_dir(hub.paths.data_dir, h.title_key, base, r && r->saves_shared).string());
+    }
+    if (h.d.title_mode) row("data", "Data", h.d.data.dir.string());
+    if (!h.session_notes.empty()) {
+        overlay_group_label("Last session");
+        for (const std::string& l : h.session_notes) ov::muted(l.c_str());
+    }
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+void draw_direct_tpak_overlay(DirectHome& h, HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    using retcomm::hub::kSupportedGbRoms;
+    using retcomm::hub::supported_gb_rom;
+    (void)th;
+    take_tpak_pick(h, hub);
+    ImGui::BeginChild("##dtpak", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted("Transfer Pak Support");
+    ImGui::SetWindowFontScale(1.f);
+    ov::muted("Transfer Pak lobbies need all three cartridges on every player's machine: each player's pak is simulated by "
+              "everyone. Only these dumps are accepted; each file is checked when you choose it and again before a "
+              "Transfer Pak lobby.");
+    bool picking = false;
+    if (h.tpak_pick) {
+        std::lock_guard<std::mutex> lock(h.tpak_pick->mu);
+        picking = h.tpak_pick->busy;
+    }
+    ImGui::BeginChild("##dtrows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    for (int i = 0; i < kSupportedGbRoms; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        const auto& rom = supported_gb_rom(i);
+        ImGui::PushID(i);
+        const std::string& p = h.tpak_lib.path[k];
+        std::string sub = p.empty() ? std::string("Not set") : retro::corelink::utf8_path(p).filename().string();
+        if (!h.tpak_note[k].empty()) sub += "  \xC2\xB7  " + h.tpak_note[k];
+        if (ov::item_row(m, "row", rom.label, sub, picking && h.tpak_picking == i ? "choosing..." : p.empty() ? "Choose" : "Change",
+                         h.tpak_bad[k] ? ov::kColWarn : ov::kColMuted, !picking))
+            ov::open_picker("##tpick");
+        const int pick = ov::picker(m, "##tpick", rom.label, {{"Choose a file...", rom.dump}, {"Clear", "Forget this cartridge"}}, -1);
+        if (pick == 0) begin_tpak_pick(h, i);
+        else if (pick == 1) {
+            retcomm::hub::TransferPakLibrary lib = h.tpak_lib;
+            lib.path[k].clear();
+            lib.sha256[k].clear();
+            std::string err;
+            if (retcomm::hub::save_tpak_library(hub.paths.data_dir, h.platform, lib, &err)) {
+                h.tpak_lib = lib;
+                h.tpak_note[k].clear();
+            } else {
+                h.tpak_note[k] = "Not saved: " + err;
+                h.tpak_bad[k] = true;
+            }
+        }
+        ImGui::PopID();
+    }
+    if (h.tpak_lib.complete()) ov::muted("All three are set: you can host and join Transfer Pak lobbies.");
+    else ov::muted("Set all three to host or join a Transfer Pak lobby.");
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+void draw_direct_updates_overlay(DirectHome& h, HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    const bool running = h.updates.running();
+    const DirectUpdates::Items items = h.updates.items();
+    const bool dev = kLocalBuild && hub.cfg.show_developer_options;
+    int installable = 0;
+    bool restart = h.restart_needed;
+    for (int i = 0; i < 4; ++i) {
+        installable += items[static_cast<size_t>(i)].available;
+        restart = restart || (i != 2 && items[static_cast<size_t>(i)].installed);
+    }
+    bool picking = false;
+    if (h.dev_pick) {
+        std::lock_guard<std::mutex> lock(h.dev_pick->mu);
+        picking = h.dev_pick->busy;
+    }
+    ImGui::BeginChild("##dupd", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted("Updates");
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 4));
+    // The actions first, so the ring lands on the one that matters.
+    if (restart) {
+        take_direct_focus(h);
+        ImGui::BeginDisabled(running);
+        if (ov::action_button("Restart now", true, 0.f)) h.restart = true;
+        ImGui::EndDisabled();
+        ImGui::SameLine(0, 8.f);
+    }
+    ImGui::BeginDisabled(running || installable == 0);
+    if (installable) take_direct_focus(h);
+    const std::string inst = "Install " + std::to_string(installable) + " update" + (installable == 1 ? "" : "s");
+    if (ov::action_button(installable ? inst.c_str() : "Install updates", installable > 0 && !restart, 0.f))
+        h.updates.start(direct_update_target(h, hub), true);
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, 8.f);
+    ImGui::BeginDisabled(running);
+    take_direct_focus(h);
+    if (ov::action_button("Check again", false, 0.f)) h.updates.start(direct_update_target(h, hub), false);
+    ImGui::EndDisabled();
+    if (running) ov::muted(h.updates.installing() ? "Installing..." : "Checking...");
+    else if (restart) ov::banner("Restart to use what was installed.");
+    ImGui::Dummy(ImVec2(0, 4));
+
+    ImGui::BeginChild("##duitems", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    for (int i = 0; i < 4; ++i) {
+        const retcomm::hub::UpdateItem& it = items[static_cast<size_t>(i)];
+        ImGui::PushID(i);
+        const std::string cur = it.current.empty() ? std::string("-") : it.current;
+        const std::string right = !it.latest.empty() && it.latest != it.current ? cur + "  >  " + it.latest : cur;
+        const std::string msg = h.updates.have() ? it.message : std::string("Not checked yet.");
+        const ImU32 col = !h.updates.have() ? ov::kColMuted
+                          : !it.ok          ? ov::kColWarn
+                          : (it.available || it.manual || it.installed) ? ov::kColAccent
+                                                                          : ov::kColMuted;
+        if (ov::item_row(m, "row", DirectUpdates::kNames[i], msg, right, col) && !it.link.empty())
+            SDL_OpenURL(it.link.c_str());
+        if (dev && i >= 1) {
+            const int slot = i - 1; // core, runner, hub
+            const auto si = static_cast<size_t>(slot);
+            const bool core_locked = slot == kDevCore && (h.d.core_given || !h.d.title_mode);
+            const std::string& path = h.dev_draft[si];
+            const bool changed = path != dev_config_path(hub.cfg, slot);
+            std::string line = core_locked ? std::string("Direct mode runs the core its command line names.")
+                                           : (path.empty() ? std::string("Default") : path);
+            if (!core_locked && !h.dev_note[si].empty()) line += "  (" + h.dev_note[si] + ")";
+            if (changed) line += "  -- Save & Restart to use";
+            if (ov::setting_row(m, "dev", (std::string(DirectUpdates::kNames[i]) + " from a file").c_str(), line, nullptr,
+                                !(picking || core_locked)))
+                begin_dev_pick(h, slot);
+        }
+        ImGui::PopID();
+    }
+    {
+        bool on_start = hub.cfg.check_updates_on_startup;
+        if (ov::toggle_row(m, "startup", "Check for updates on startup", &on_start,
+                           "Checks the game, core, runner and hub when this window opens, and asks before installing.")) {
+            hub.cfg.check_updates_on_startup = on_start;
+            std::string err;
+            if (!retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err))
+                set_direct_status(h, "The setting was not saved: " + err, true);
+        }
+    }
+    if (dev) {
+        if (ov::setting_row(m, "reset", "Reset the developer paths", "Defaults",
+                            "Back to the bundled core, runner and hub (and any installed updates). Save & Restart applies it.",
+                            !running)) {
+            for (int i = 0; i < 3; ++i) {
+                h.dev_draft[static_cast<size_t>(i)].clear();
+                h.dev_bad[static_cast<size_t>(i)] = false;
+                describe_dev_path(h, i, "", &h.dev_note[static_cast<size_t>(i)]);
+            }
+        }
+        if (ov::setting_row(m, "saverestart", "Save the developer paths and restart", "Save & Restart", nullptr, !running)) {
+            for (int i = 0; i < 3; ++i) dev_config_path(hub.cfg, i) = h.dev_draft[static_cast<size_t>(i)];
+            std::string err;
+            if (retcomm::save_app_config(hub.paths.config_path, hub.cfg, &err)) h.restart = true;
+            else set_direct_status(h, "The dev paths were not saved: " + err, true);
+        }
+    }
+    ov::muted(("Updates install into " + hub.paths.data_dir.string() + ", never into the app itself.").c_str());
+    ImGui::EndChild();
+    ImGui::EndChild();
+    (void)th;
+}
+
+// "Updates available", after the launch's check.
+void draw_direct_update_prompt_overlay(DirectHome& h, HubModel& hub, const Theme& th) {
+    namespace ov = retcomm::hub::overlay;
+    if (h.prompt_pending) {
+        ImGui::OpenPopup("##updprompt");
+        h.prompt_pending = false;
+    }
+    const DirectUpdates::Items items = h.updates.items();
+    int installable = 0;
+    for (const auto& it : items) installable += it.available;
+    bool details = false;
+    const bool yes = ov::confirm_dialog(
+        "##updprompt", "Updates available", "Install what was found and restart, or look at the details.",
+        installable ? "Install & Restart" : "Details", true, [&] {
+            ImGui::Dummy(ImVec2(0, 4));
+            for (int i = 0; i < 4; ++i) {
+                const retcomm::hub::UpdateItem& it = items[static_cast<size_t>(i)];
+                if (!it.available && !it.manual) continue;
+                ImGui::Text("%s   %s  >  %s", DirectUpdates::kNames[i], it.current.empty() ? "-" : it.current.c_str(),
+                            it.latest.c_str());
+                if (it.manual) ImGui::TextColored(th.text_muted, "%s", it.message.c_str());
+            }
+            ImGui::Dummy(ImVec2(0, 4));
+            if (installable && ov::action_button("Details", false, 140.f)) {
+                details = true;
+                ImGui::CloseCurrentPopup();
+            }
+        });
+    if (yes && installable) {
+        h.install_then_restart = true;
+        h.updates.start(direct_update_target(h, hub), true);
+        set_direct_status(h, "Installing updates...", false);
+    } else if (yes || details) {
+        open_direct_page(h, hub, DirectPage::Update);
+    }
+}
+
+// The whole frame: top bar, the page, the legend. Returns the action Home asked for.
+DirectAction draw_direct_overlay(DirectHome& h, HubModel& hub, const Theme& th, retcomm::hub::BoxartCache& boxart,
+                                 SDL_Window* window) {
+    namespace ov = retcomm::hub::overlay;
+    const ov::Metrics m = ov::metrics(ImGui::GetMainViewport()->Size);
+    DirectAction act = DirectAction::None;
+    set_overlay_mark(boxart);
+    ov::top_bar(m, h.name, platform_label(h.platform),
+                h.updates.running() ? (h.updates.installing() ? "Installing updates" : "Checking updates") : std::string());
+    const bool sub_open = hub.show_core_settings || h.page != DirectPage::Home;
+    if (sub_open) {
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float back_w = ImGui::CalcTextSize("Back").x + 44.f;
+        const float clock_w = ImGui::CalcTextSize(ov::clock_text().c_str()).x;
+        // Left of the clock and of the status pill (when there is one).
+        const float pill_w = h.updates.running() ? ImGui::CalcTextSize(h.updates.installing() ? "Installing updates" : "Checking updates").x + 26.f + 16.f : 0.f;
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + ImGui::GetWindowWidth() - m.pad - clock_w - 16.f - pill_w - back_w,
+                                         wp.y + (m.top - ImGui::GetFrameHeight() - 8.f) * 0.5f));
+        if (ov::action_button("Back", false, back_w)) direct_step_back(h, hub);
+    }
+    ov::begin_body(m, "##direct_body");
+    if (hub.show_core_settings) {
+        draw_core_settings_panel(hub, th, boxart);
+        if (!hub.show_core_settings) h.focus_pending = true;
+    } else {
+        switch (h.page) {
+        case DirectPage::Mods: {
+            const auto* b = retcomm::find_romhack(h.romhacks, direct_base_id(h, hub));
+            g_mods_page_base = b ? std::optional<retcomm::InstalledRomhack>(*b) : std::nullopt;
+            draw_shell_mods(hub, th, m);
+            g_mods_page_base.reset();
+            break;
+        }
+        case DirectPage::Update: draw_direct_updates_overlay(h, hub, th, m); break;
+        case DirectPage::TransferPak: draw_direct_tpak_overlay(h, hub, th, m); break;
+        case DirectPage::Details: draw_direct_details_overlay(h, hub, th, m); break;
+        case DirectPage::Netplay:
+            prepare_net_scope(h, hub);
+            ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            retcomm::hub::draw_netplay_page(hub, th, window, &h.net_scope);
+            ImGui::EndChild();
+            break;
+        case DirectPage::Home:
+            act = draw_direct_home_overlay(h, hub, th, boxart, m);
+            draw_direct_update_prompt_overlay(h, hub, th);
+            break;
+        }
+    }
+    ov::end_body();
+    ov::legend(m, {{"A", "Select"}, {"B", "Back"}}, {});
+    return act;
+}
+
 // A match: the player's session, settled for every peer alike -- a fresh save
 // sandbox per match (every peer starts from blank cartridge saves), only the
 // options that do not change the simulation, no Transfer Pak until the pak
@@ -17339,6 +17825,7 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
 int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const DirectPlay& d,
                     HubModel& hub) {
     DirectHome h;
+    retcomm::hub::overlay::set_forced(true); // a title's window is the overlay too
     StderrTee tee(hub); // the ` console shows what stderr does
     h.d = d;
     h.window = window;
@@ -17484,62 +17971,8 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             }
         } else {
             retcomm::hub::touch_frame();
-            const ImGuiViewport* vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(vp->WorkPos);
-            ImGui::SetNextWindowSize(vp->WorkSize);
-            ImGui::Begin("##direct", nullptr,
-                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                             ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoBringToFrontOnFocus);
-            DirectAction act = DirectAction::None;
-            if (hub.show_core_settings) {
-                draw_core_settings_panel(hub, th, boxart);
-                if (!hub.show_core_settings) h.focus_pending = true;
-            } else if (h.page == DirectPage::Mods) {
-                if (draw_direct_subpage_header(th, "")) {
-                    open_direct_page(h, hub, DirectPage::Home);
-                } else {
-                    ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-                    {
-                        const auto* b = retcomm::find_romhack(h.romhacks, direct_base_id(h, hub));
-                        g_mods_page_base = b ? std::optional<retcomm::InstalledRomhack>(*b)
-                                             : std::nullopt;
-                    }
-                    draw_mods_page(hub, th);
-                    g_mods_page_base.reset();
-                    ImGui::EndChild();
-                }
-            } else if (h.page == DirectPage::Update) {
-                if (draw_direct_subpage_header(th, "Updates"))
-                    open_direct_page(h, hub, DirectPage::Home);
-                else
-                    draw_direct_updates(h, hub, th);
-            } else if (h.page == DirectPage::Netplay) {
-                if (draw_direct_subpage_header(th, "Netplay")) {
-                    open_direct_page(h, hub, DirectPage::Home);
-                } else {
-                    prepare_net_scope(h, hub);
-                    ImGui::BeginChild("netplay_page_host", ImVec2(0, 0),
-                                      ImGuiChildFlags_NavFlattened);
-                    retcomm::hub::draw_netplay_page(hub, th, window, &h.net_scope);
-                    ImGui::EndChild();
-                }
-            } else {
-                draw_page_header(th, platform_label(h.platform).c_str(), "");
-                const float total = ImGui::GetContentRegionAvail().x;
-                const float right = std::clamp(total * 0.38f, 300.f, 440.f);
-                ImGui::BeginChild("direct_info_host",
-                                  ImVec2(total - right - ImGui::GetStyle().ItemSpacing.x, 0));
-                draw_direct_info(h, hub, th, boxart);
-                ImGui::EndChild();
-                ImGui::SameLine();
-                ImGui::BeginChild("direct_actions_host", ImVec2(right, 0),
-                                  ImGuiChildFlags_NavFlattened);
-                act = draw_direct_actions(h, hub, th);
-                ImGui::EndChild();
-                draw_direct_update_prompt(h, hub, th);
-                if (h.tpak_supported) draw_tpak_support(h, hub, th);
-            }
+            retcomm::hub::overlay::begin("##direct", 1.f, /*solid=*/true, /*keep_back=*/true);
+            DirectAction act = draw_direct_overlay(h, hub, th, boxart, window);
             // B / Escape backs out of a page, unless something in front owns it
             // or the settings page holds edits (Save or Cancel decides those).
             const bool back_pressed =
@@ -17548,19 +17981,8 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
                 !ImGui::IsAnyItemActive() &&
                 (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                  ImGui::IsKeyPressed(ImGuiKey_Escape, false));
-            if (back_pressed) {
-                if (hub.show_core_settings && core_settings_page().developer_page) {
-                    core_settings_page().developer_page = false; // back to the tab
-                } else if (hub.show_core_settings) {
-                    if (!core_settings_page().dirty() && core_settings_page().cap_target < 0) {
-                        close_core_settings(hub);
-                        h.focus_pending = true;
-                    }
-                } else if (h.page != DirectPage::Home) {
-                    open_direct_page(h, hub, DirectPage::Home);
-                }
-            }
-            ImGui::End();
+            if (back_pressed) direct_step_back(h, hub);
+            retcomm::hub::overlay::end();
             // The activity console, as in the library: ` drops it down.
             const bool console_was_open = hub.log_overlay_open;
             draw_log_overlay(hub, th, window);

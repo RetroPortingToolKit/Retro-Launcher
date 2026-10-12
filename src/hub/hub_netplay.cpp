@@ -1893,48 +1893,15 @@ namespace ov = retcomm::hub::overlay;
 
 constexpr float kRowGap = 8.f;
 
-// A list entry: title and a muted line under it on the left, a value on the right.
-// Returns true when pressed.
 bool ov_item(const ov::Metrics& m, const char* id, const std::string& title, const std::string& sub,
              const std::string& right, ImU32 right_col, bool enabled = true) {
-    const float w = ImGui::GetContentRegionAvail().x;
-    const float h = sub.empty() ? m.item_h + 10.f : (m.compact ? 66.f : 78.f);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImGui::PushID(id);
-    ImGui::BeginDisabled(!enabled);
-    const bool pressed = ov::nav_button("##it", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
-    ImGui::EndDisabled();
-    const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
-    const ImVec2 p1(p0.x + w, p0.y + h);
-    ov::card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    float right_w = 0.f;
-    if (!right.empty()) {
-        right_w = ImGui::CalcTextSize(right.c_str()).x;
-        dl->AddText(ImVec2(p1.x - 18.f - right_w, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f), right_col,
-                    right.c_str());
-    }
-    const float tw = std::max(80.f, w - 56.f - right_w);
-    dl->PushClipRect(p0, ImVec2(p0.x + 18.f + tw, p1.y), true);
-    const ImU32 tc = enabled ? IM_COL32(233, 237, 248, 255) : IM_COL32(153, 163, 188, 160);
-    if (sub.empty()) {
-        dl->AddText(ImVec2(p0.x + 18.f, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f), tc, title.c_str());
-    } else {
-        dl->AddText(ImVec2(p0.x + 18.f, p0.y + 11.f), tc, title.c_str());
-        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f,
-                    ImVec2(p0.x + 18.f, p0.y + 11.f + ImGui::GetTextLineHeight() + 3.f),
-                    IM_COL32(153, 163, 188, 255), sub.c_str());
-    }
-    dl->PopClipRect();
-    ImGui::PopID();
-    ImGui::Dummy(ImVec2(0.f, kRowGap - 2.f));
-    return pressed && enabled;
+    return ov::item_row(m, id, title, sub, right, right_col, enabled);
 }
 
-constexpr ImU32 kColMuted = IM_COL32(153, 163, 188, 255);
-constexpr ImU32 kColGood = IM_COL32(52, 211, 153, 255);
-constexpr ImU32 kColWarn = IM_COL32(245, 165, 36, 255);
-constexpr ImU32 kColAccent = IM_COL32(180, 150, 255, 255);
+using ov::kColMuted;
+using ov::kColGood;
+using ov::kColWarn;
+using ov::kColAccent;
 
 // A row of buttons choosing one of `names`; p.sub follows. Reset when the view changes.
 void ov_sections(const std::vector<std::string>& names, bool end_row = true) {
@@ -2335,7 +2302,9 @@ void ov_online(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::
     // The game filter.
     {
         const std::string label = all ? "All games" : title_for(hub, p.filter);
-        if (ov::setting_row(m, "game", "Game", label,
+        if (p.scope) {
+            ov::value_row(m, "game", "Game", p.scope->title + "  \xC2\xB7  " + p.scope->pin);
+        } else if (ov::setting_row(m, "game", "Game", label,
                             "Show every game's lobbies, or one installed game's. Server chat and players online "
                             "follow the game you pick."))
             ov::open_picker("##gamefilter");
@@ -2430,7 +2399,8 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
     const Game& g = games[static_cast<size_t>(p.host_game)];
     ImGui::BeginChild("##hostrows", ImVec2(0, std::max(80.f, ImGui::GetContentRegionAvail().y - (m.item_h + 22.f))),
                       ImGuiChildFlags_NavFlattened);
-    if (ov::setting_row(m, "game", "Game", g.title, "The game the lobby is for. Guests need the same build.", games.size() > 1))
+    if (p.scope) ov::value_row(m, "game", "Game", g.title + "  \xC2\xB7  " + g.pin);
+    else if (ov::setting_row(m, "game", "Game", g.title, "The game the lobby is for. Guests need the same build.", games.size() > 1))
         ov::open_picker("##hostgame");
     {
         std::vector<ov::PickerChoice> choices;
@@ -2456,6 +2426,10 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
         }
     }
     ov::toggle_row(m, "spec", "Allow spectators", &p.host_spectators, "Up to 4 watchers, on top of the players.");
+    if (p.scope && p.scope->tpak_supported)
+        ov::toggle_row(m, "tpak", "Transfer Paks", &p.host_tpak,
+                       "A Transfer Pak lobby needs all three Game Boy cartridges (Red, Blue, Yellow) set in Transfer Pak "
+                       "Support, on every player's machine.");
     {
         std::string pw = p.host_pw;
         if (ov_text(m, "pw", "Password", pw, "optional", "Players need it to join. Empty means anyone can.", true))
@@ -2469,7 +2443,17 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
     if (ov::action_button("Create lobby", true, 0.f)) {
         const std::string name = trim(p.host_name);
         p.host_error = name_problem(name, "lobby name");
-        if (p.host_error.empty()) {
+        if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
+            p.host_error = p.scope->tpak_problem();
+        if (p.host_error.empty() && p.scope) {
+            json caps = json::object();
+            caps["tpak"] = p.host_tpak;
+            caps["relay"] = "host"; // the lobby server's relay only as a fallback
+            p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max, p.host_spectators, caps);
+            if (p.filter.empty()) p.scope_dirty = true;
+            p.status = "Creating lobby...";
+            p.view = View::Online;
+        } else if (p.host_error.empty()) {
             Page::PendingSeat ps;
             ps.create = true;
             ps.game_name = g.game_name;
@@ -2579,7 +2563,31 @@ void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
     const std::string where = (s.room_name.empty() ? std::string("Lobby") : s.room_name) +
                               (game_label.empty() ? "" : "  \xC2\xB7  " + game_label + " " + version);
     ov_begin(where.c_str(), false, View::Online);
-    if (p.lib && p.lib->capable)
+    const bool tpak_room = s.match_caps.is_object() && s.match_caps.value("tpak", false);
+    if (p.scope) {
+        ov::muted((std::string("Transfer Paks: ") + (tpak_room ? "on" : "off") +
+                   ". The host's Play starts the match here on every player's machine.")
+                      .c_str());
+        if (p.scope->match_problem)
+            if (const std::string mw = p.scope->match_problem(); !mw.empty()) ov::banner(mw.c_str());
+        if (tpak_room) {
+            std::string line = "Transfer Paks:";
+            for (const np::Member& mm : s.members) {
+                if (mm.is_spectator) continue;
+                const auto it = p.paks.find(mm.player_id);
+                line += "  P" + std::to_string(mm.slot + 1) + " ";
+                line += it == p.paks.end() ? std::string("...")
+                        : it->second.cart < 0 ? std::string("no pak")
+                                              : std::string(supported_gb_rom(it->second.cart).label);
+            }
+            ov::muted(line.c_str());
+            if (!p.pak_note.empty()) ov::banner(("Your pak: " + p.pak_note).c_str());
+        }
+        if (!p.relay_note.empty()) {
+            if (p.relay_note_bad) ov::banner(p.relay_note.c_str());
+            else ov::muted(p.relay_note.c_str());
+        }
+    } else if (p.lib && p.lib->capable)
         ov::muted(("The host's PLAY starts " + p.lib->title.name + " on every player's machine, into this match.").c_str());
     else
         ov::banner((p.lib && !p.lib->why.empty()
@@ -2601,16 +2609,26 @@ void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
         else p.client.leave();
     }
     if (s.is_host) {
-        const Page::LibGame* lib = p.lib.get();
-        const std::string lib_why = !lib ? std::string("Retro cannot start this game into a match")
+        const Page::LibGame* lib = p.scope ? nullptr : p.lib.get();
+        const std::string lib_why = p.scope ? std::string()
+                                    : !lib ? std::string("Retro cannot start this game into a match")
                                     : !lib->capable ? lib->why
                                     : !lib->identity.is_object() ? "Preparing " + lib->title.name + "..."
                                     : lib->settle_f.valid() ? std::string("Settling the match...")
                                                             : std::string();
-        play_why = seated < 2 ? std::string("Waiting for another player to join") : lib_why;
+        const std::string match_why = p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
+        play_why = seated < 2 ? std::string("Waiting for another player to join")
+                   : !lib_why.empty() ? lib_why
+                   : !match_why.empty() ? match_why
+                   : tpak_room && p.scope && !paks_complete(s) ? std::string("Waiting for every player's Transfer Pak")
+                                                                : std::string();
         ImGui::SameLine(0, 8.f);
         ImGui::BeginDisabled(!play_why.empty());
-        if (ov::action_button("Play", true, 0.f)) {
+        const bool play_pressed = ov::action_button("Play", true, 0.f);
+        if (play_pressed && p.scope) {
+            p.client.start_match();
+            p.room_status = "Starting the match...";
+        } else if (play_pressed) {
             const json req = np::handoff_settle_request(s);
             p.lib->settle_f = std::async(std::launch::async,
                                          [paths = hub.paths, title = p.lib->title, opts = p.lib->opts,
@@ -3173,7 +3191,7 @@ void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/,
     const std::vector<Game> games = installed_games(hub);
 
     // In the shell (not one game's Direct mode) the page is the overlay's.
-    if (!scope && retcomm::hub::overlay::enabled()) {
+    if (retcomm::hub::overlay::enabled()) {
         draw_netplay_overlay(hub, th, games);
         return;
     }

@@ -22,6 +22,8 @@ namespace retcomm::hub::overlay {
 // Whether the hub draws its menus as the overlay. On by default on Android;
 // RETCOMM_OVERLAY_UI=1 or 0 overrides it on any platform. Read once.
 bool enabled();
+// Direct mode (a title's own window) always draws as the overlay, on every platform.
+void set_forced(bool on);
 
 // Sizes for this display. A short screen (a phone in landscape) gets a smaller
 // top bar, legend and rows.
@@ -98,6 +100,15 @@ bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
 bool stepper_row(const Metrics& m, const char* id, const char* label, int* v, int lo, int hi,
                  int step, const char* unit = "", const char* description = nullptr,
                  bool overridden = false);
+
+// A list entry: a title and a muted line under it on the left, a value on the right
+// (in `right_col`). True when pressed.
+bool item_row(const Metrics& m, const char* id, const std::string& title, const std::string& sub,
+              const std::string& right, ImU32 right_col, bool enabled = true);
+constexpr ImU32 kColMuted = IM_COL32(153, 163, 188, 255);
+constexpr ImU32 kColGood = IM_COL32(52, 211, 153, 255);
+constexpr ImU32 kColWarn = IM_COL32(245, 165, 36, 255);
+constexpr ImU32 kColAccent = IM_COL32(180, 150, 255, 255);
 
 // A row that only shows a value (no chevron, nothing to press).
 void value_row(const Metrics& m, const char* id, const char* label, const std::string& value);
