@@ -426,11 +426,19 @@ void value_row(const Metrics& m, const char* id, const char* label, const std::s
     const ImVec2 p1(p0.x + w, p0.y + h);
     card_frame(p0, p1, false, false);
     draw_row_label(dl, p0, h, label, true);
-    const ImVec2 vs = ImGui::CalcTextSize(value.c_str());
-    dl->PushClipRect(ImVec2(p0.x + w * 0.35f, p0.y), p1, true);
-    dl->AddText(ImVec2(std::max(p0.x + w * 0.35f, p1.x - 18.f - vs.x), p0.y + (h - vs.y) * 0.5f), kMuted,
-                value.c_str());
-    dl->PopClipRect();
+    // A value too long loses its start: the end of a path says which one it is.
+    const float room = p1.x - 18.f - (p0.x + w * 0.35f);
+    std::string shown = value;
+    if (ImGui::CalcTextSize(shown.c_str()).x > room) {
+        while (shown.size() > 4 && ImGui::CalcTextSize(("\xE2\x80\xA6" + shown).c_str()).x > room) {
+            size_t cut = 1;
+            while (cut < shown.size() && (static_cast<unsigned char>(shown[cut]) & 0xC0) == 0x80) ++cut;
+            shown.erase(0, cut);
+        }
+        shown = "\xE2\x80\xA6" + shown;
+    }
+    const ImVec2 vs = ImGui::CalcTextSize(shown.c_str());
+    dl->AddText(ImVec2(p1.x - 18.f - vs.x, p0.y + (h - vs.y) * 0.5f), kMuted, shown.c_str());
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0.f, 6.f));
 }

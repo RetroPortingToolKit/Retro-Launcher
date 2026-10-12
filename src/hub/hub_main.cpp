@@ -3559,6 +3559,7 @@ struct ModsPageState {
     bool focus_detail = false;    // set by the list, consumed the same frame
     bool focus_list = false;      // set by the detail column, consumed next frame
     bool pending_rescan = false;  // a write landed; re-read once the panel is done
+    bool detail = false;          // the overlay: one feature's page is open
 };
 
 // Right / Left as a player produces them: d-pad, left stick, or the arrow keys
@@ -3992,6 +3993,333 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
 
     if (st.pending_rescan) {
         st.pending_rescan = false;
+        refresh_mods_page(hub, row);
+    }
+}
+
+
+// ---- the overlay's Mods page -----------------------------------------------------------------
+//
+// The same packages and writes as draw_mods_page, as rows: a list of features (a switch to
+// turn one on or off, and Details beside it), and one feature's page with its description,
+// where it stands and its options. Every control is a row or a button, so a controller reaches
+// all of it. Writes are deferred until the lists have been walked: a rescan replaces them.
+
+void overlay_group_label(const char* text);
+
+void draw_shell_mods(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    ModsPageState& st = mods_page_state();
+    TitleRow row;
+    bool have_row = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.mu);
+        have_row = hub.selected >= 0 && hub.selected < static_cast<int>(hub.rows.size());
+        if (have_row) row = hub.rows[static_cast<size_t>(hub.selected)];
+    }
+    if (!have_row) {
+        hub.show_mods_page = false;
+        return;
+    }
+    if (st.title_id != row.id) {
+        refresh_mods_page(hub, row);
+        st.detail = false;
+    }
+    const fs::path game_dir = title_game_dir(hub, row);
+    std::function<void()> pending; // the write this frame asked for, applied after the walk
+
+    ImGui::BeginChild("##mods", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    const retcomm::ModPackageInfo* sp = nullptr;
+    const retcomm::ModFeatureInfo* sf = nullptr;
+    if (st.detail)
+        for (const retcomm::ModPackageInfo& p : st.scan.packages) {
+            if (p.id != st.sel_package) continue;
+            sp = &p;
+            for (const retcomm::ModFeatureInfo& f : p.features)
+                if (f.id == st.sel_feature) sf = &f;
+            break;
+        }
+    if (st.detail && !sp) st.detail = false;
+
+    // Header: where this is, and Back out of a feature.
+    ImGui::SetWindowFontScale(1.1f);
+    const ImVec4 muted(0.60f, 0.64f, 0.74f, 1.f);
+    ImGui::TextColored(muted, "Mods  >  ");
+    ImGui::SameLine(0, 0);
+    if (sp) {
+        ImGui::TextColored(muted, "%s  >  ", row.name.c_str());
+        ImGui::SameLine(0, 0);
+        ImGui::TextUnformatted(sf ? sf->name.c_str() : sp->name.c_str());
+    } else {
+        ImGui::TextUnformatted(row.name.c_str());
+    }
+    ImGui::SetWindowFontScale(1.f);
+    if (st.detail) {
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 130.f);
+        ImGui::SetCursorPosY(0.f);
+        if (ov::action_button("< Back", false, 130.f)) {
+            st.detail = false;
+            ov::row_info_reset();
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+
+    if (!st.detail) {
+        // Toolbar.
+        const bool none = st.scan.packages.empty();
+        ImGui::BeginDisabled(none);
+        if (ov::action_button("Enable all", false, 0.f))
+            pending = [&] {
+                std::string err;
+                for (const retcomm::ModPackageInfo& p : st.scan.packages)
+                    if (!p.builtin && !retcomm::set_scanned_mod_all(st.scan, game_dir, p, true, &err))
+                        hub.append_log("Mod toggle failed: " + err);
+            };
+        ImGui::SameLine(0, 8.f);
+        if (ov::action_button("Disable all", false, 0.f))
+            pending = [&] {
+                std::string err;
+                for (const retcomm::ModPackageInfo& p : st.scan.packages)
+                    if (!p.builtin && !retcomm::set_scanned_mod_all(st.scan, game_dir, p, false, &err))
+                        hub.append_log("Mod toggle failed: " + err);
+            };
+        ImGui::EndDisabled();
+        ImGui::SameLine(0, 8.f);
+        if (ov::action_button("Rescan", false, 0.f)) pending = [] {};
+        ImGui::SameLine(0, 8.f);
+        ImGui::BeginDisabled(!st.scan.root_exists);
+        if (ov::action_button("Open folder", false, 0.f)) {
+            std::string err;
+            if (!retcomm::open_path_in_file_manager(st.scan.root, &err)) hub.append_log("Open folder failed: " + err);
+        }
+        ImGui::EndDisabled();
+        ImGui::Dummy(ImVec2(0, 8));
+
+        ImGui::BeginChild("##modlist", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+        {
+            std::string q = st.search;
+            if (ov::setting_row(m, "search", "Search", q.empty() ? std::string("all features") : q,
+                                "Filter features by name, group or package.")) {
+                ImGui::OpenPopup("##msearch");
+            }
+            const int r = ov::text_dialog("##msearch", "Search features", q, "name, group or package");
+            if (r == 1) std::snprintf(st.search, sizeof st.search, "%s", q.c_str());
+            else if (r == 2) st.search[0] = '\0';
+        }
+        const std::string needle = st.search;
+        if (!st.scan.root_exists)
+            ov::muted("No mods folder yet. The engine creates mods/bundled at build time; mods/installed is where "
+                      "packages are added.");
+        else if (st.scan.packages.empty())
+            ov::muted("No mod packages installed for this title.");
+        if (st.scan.packages.empty() && st.scan.unstaged_manifests > 0) {
+            ov::banner((std::to_string(st.scan.unstaged_manifests) +
+                        " manifest(s) sit in this title's build tree but were never staged into the release, so the "
+                        "game cannot load them either. Generate & Rebuild restages a build's own packages.")
+                           .c_str());
+        }
+        std::vector<std::string> groups;
+        for (const retcomm::ModPackageInfo& p : st.scan.packages) {
+            if (p.has_features()) {
+                for (const retcomm::ModFeatureInfo& f : p.features)
+                    if (std::find(groups.begin(), groups.end(), f.group) == groups.end()) groups.push_back(f.group);
+            } else if (std::find(groups.begin(), groups.end(), "Packages") == groups.end()) {
+                groups.push_back("Packages");
+            }
+        }
+        std::sort(groups.begin(), groups.end());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        for (const std::string& g : groups) {
+            std::vector<ModRowRef> rows;
+            for (size_t pi = 0; pi < st.scan.packages.size(); ++pi) {
+                const retcomm::ModPackageInfo& p = st.scan.packages[pi];
+                if (p.has_features()) {
+                    for (size_t fi = 0; fi < p.features.size(); ++fi) {
+                        if (p.features[fi].group != g || !mod_row_matches(p, &p.features[fi], needle)) continue;
+                        rows.push_back({pi, fi});
+                    }
+                } else if (g == "Packages" && mod_row_matches(p, nullptr, needle)) {
+                    rows.push_back({pi, ModRowRef::kNoFeature});
+                }
+            }
+            if (rows.empty()) continue;
+            overlay_group_label(g.empty() ? "Other" : g.c_str());
+            for (const ModRowRef& r : rows) {
+                const retcomm::ModPackageInfo& p = st.scan.packages[r.pkg];
+                const bool is_feature = r.feat != ModRowRef::kNoFeature;
+                const retcomm::ModFeatureInfo* f = is_feature ? &p.features[r.feat] : nullptr;
+                const std::string fid = is_feature ? f->id : std::string();
+                const bool on = is_feature ? f->enabled : p.enabled;
+                ImGui::PushID(static_cast<int>(r.pkg * 1000 + (is_feature ? r.feat : 999)));
+                const float w = ImGui::GetContentRegionAvail().x;
+                const float h = m.compact ? 66.f : 78.f;
+                const float det_w = 150.f;
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                // Left: the feature and its switch.
+                ImGui::BeginDisabled(p.builtin);
+                const bool toggled = ov::nav_button("##tog", ImVec2(w - det_w - 8.f, h), ImGuiButtonFlags_EnableNav);
+                ImGui::EndDisabled();
+                const bool hot = !p.builtin && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+                const bool ring = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
+                if (ImGui::IsItemFocused() && (st.sel_package != p.id || st.sel_feature != fid)) {
+                    st.sel_package = p.id;
+                    st.sel_feature = fid;
+                }
+                const ImVec2 p1(p0.x + w - det_w - 8.f, p0.y + h);
+                ov::card_frame(p0, p1, hot, ring);
+                const std::string name = is_feature ? f->name : p.name;
+                dl->PushClipRect(p0, ImVec2(p1.x - 84.f, p1.y), true);
+                dl->AddText(ImVec2(p0.x + 18.f, p0.y + 11.f), IM_COL32(233, 237, 248, 255), name.c_str());
+                dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f,
+                            ImVec2(p0.x + 18.f, p0.y + 11.f + ImGui::GetTextLineHeight() + 3.f),
+                            IM_COL32(153, 163, 188, 255),
+                            (p.builtin ? "Built into the game  \xC2\xB7  " + p.name : p.name).c_str());
+                dl->PopClipRect();
+                {
+                    constexpr float kTrackW = 52.f, kTrackH = 28.f;
+                    const ImVec2 t0(p1.x - 18.f - kTrackW, p0.y + (h - kTrackH) * 0.5f);
+                    const ImVec2 t1(t0.x + kTrackW, t0.y + kTrackH);
+                    dl->AddRectFilled(t0, t1, on ? IM_COL32(139, 92, 246, 245) : IM_COL32(255, 255, 255, 40), kTrackH * 0.5f);
+                    const float kx = on ? t1.x - kTrackH * 0.5f : t0.x + kTrackH * 0.5f;
+                    dl->AddCircleFilled(ImVec2(kx, t0.y + kTrackH * 0.5f), kTrackH * 0.5f - 3.f,
+                                        p.builtin ? IM_COL32(255, 255, 255, 120) : IM_COL32_WHITE);
+                }
+                if (toggled && !p.builtin) {
+                    const size_t pkg = r.pkg;
+                    pending = [&, pkg, fid, on] {
+                        std::string err;
+                        if (!retcomm::set_scanned_mod_enabled(st.scan, game_dir, st.scan.packages[pkg], fid, !on, &err))
+                            hub.append_log("Mod toggle failed: " + err);
+                    };
+                }
+                // Right: its page.
+                ImGui::SameLine(0, 8.f);
+                const ImVec2 d0 = ImGui::GetCursorScreenPos();
+                if (ov::nav_button("##det", ImVec2(det_w, h), ImGuiButtonFlags_EnableNav)) {
+                    st.sel_package = p.id;
+                    st.sel_feature = fid;
+                    st.detail = true;
+                    ov::row_info_reset();
+                }
+                ov::card_frame(d0, ImVec2(d0.x + det_w, d0.y + h), ImGui::IsItemHovered() || ImGui::IsItemFocused(),
+                               ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+                const ImVec2 ts = ImGui::CalcTextSize("Details  >");
+                dl->AddText(ImVec2(d0.x + (det_w - ts.x) * 0.5f, d0.y + (h - ts.y) * 0.5f),
+                            IM_COL32(233, 237, 248, 255), "Details  >");
+                ImGui::PopID();
+                ImGui::Dummy(ImVec2(0, 6));
+            }
+        }
+        for (const std::string& e : st.scan.errors) ov::banner(e.c_str());
+        ImGui::EndChild();
+    } else {
+        // One feature.
+        ImGui::BeginChild("##modpage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+        {
+            bool on = sf ? sf->enabled : sp->enabled;
+            if (sp->builtin) {
+                ov::value_row(m, "state", "State", on ? "Enabled" : "Disabled");
+            } else if (ov::toggle_row(m, "enabled", "Enabled", &on,
+                                      "Turns this on or off for the game. The engine re-resolves the selection when "
+                                      "it starts; one it refuses (a guard mismatch, conflicting features) fails "
+                                      "there.")) {
+                const size_t pkg = static_cast<size_t>(sp - st.scan.packages.data());
+                const std::string fid = sf ? sf->id : std::string();
+                pending = [&, pkg, fid, on] {
+                    std::string err;
+                    if (!retcomm::set_scanned_mod_enabled(st.scan, game_dir, st.scan.packages[pkg], fid, on, &err))
+                        hub.append_log("Mod toggle failed: " + err);
+                };
+            }
+        }
+        {
+            const std::string& desc = sf ? sf->description : sp->description;
+            if (!desc.empty()) ov::muted(desc.c_str());
+        }
+        ov::value_row(m, "from", "From", sp->name + " " + sp->version + (sp->author.empty() ? "" : "  \xC2\xB7  by " + sp->author));
+        if (sf && sf->channel == "experimental") ov::banner("Experimental: default-off and not validated here.");
+        if (g_mods_page_base) {
+            const auto& b = *g_mods_page_base;
+            switch (retcomm::mod_base_standing(*sp, &b)) {
+            case retcomm::ModBaseStanding::Declared:
+                ov::muted(("Made for " + b.title + ".").c_str());
+                break;
+            case retcomm::ModBaseStanding::Unverified:
+                ov::banner(("Unverified on " + b.title + ": its author does not list this romhack. The game refuses it "
+                            "if it conflicts with the romhack; it may still depend on something the romhack changed.")
+                               .c_str());
+                break;
+            case retcomm::ModBaseStanding::Stock:
+                break;
+            }
+        }
+        if (sp->builtin)
+            ov::banner("Built into the game. Switch it in the game's own Mods menu: it keeps its own state, not "
+                       "mods/state.toml.");
+        ov::value_row(m, "origin", retcomm::mod_origin_name(sp->origin), sp->manifest.string());
+
+        std::vector<const retcomm::ModOptionInfo*> opts;
+        for (const retcomm::ModOptionInfo& o : sp->options)
+            if (!sf || o.feature_id == sf->id) opts.push_back(&o);
+        if (!opts.empty()) {
+            overlay_group_label(sf && !sf->group.empty() ? sf->group.c_str() : "Settings");
+            const std::string feat_for_opts = sf ? sf->id : std::string();
+            const size_t pkg = static_cast<size_t>(sp - st.scan.packages.data());
+            auto write_option = [&, pkg, feat_for_opts](const std::string& oid, const std::string& v) {
+                pending = [&, pkg, feat_for_opts, oid, v] {
+                    std::string err;
+                    if (!retcomm::set_scanned_mod_option(st.scan, game_dir, st.scan.packages[pkg], feat_for_opts, oid, v, &err))
+                        hub.append_log("Mod option failed: " + err);
+                };
+            };
+            for (size_t oi = 0; oi < opts.size(); ++oi) {
+                const retcomm::ModOptionInfo& o = *opts[oi];
+                ImGui::PushID(static_cast<int>(oi));
+                const std::string cur = o.value.empty() ? o.default_value : o.value;
+                const char* desc = o.description.empty() ? nullptr : o.description.c_str();
+                if (sp->builtin) {
+                    ov::value_row(m, "ro", o.label.c_str(), cur);
+                } else if (!o.choices.empty()) {
+                    std::string shown = cur;
+                    int current = -1;
+                    std::vector<ov::PickerChoice> choices;
+                    for (size_t ci = 0; ci < o.choices.size(); ++ci) {
+                        choices.push_back({o.choices[ci].label, ""});
+                        if (o.choices[ci].value == cur) {
+                            shown = o.choices[ci].label;
+                            current = static_cast<int>(ci);
+                        }
+                    }
+                    if (ov::setting_row(m, "row", o.label.c_str(), shown, desc)) ov::open_picker("##pick");
+                    const int pick = ov::picker(m, "##pick", o.label.c_str(), choices, current);
+                    if (pick >= 0 && pick != current) write_option(o.id, o.choices[static_cast<size_t>(pick)].value);
+                } else if (o.type == "boolean") {
+                    bool on = cur == "true" || cur == "1" || cur == "yes";
+                    if (ov::toggle_row(m, "row", o.label.c_str(), &on, desc)) write_option(o.id, on ? "true" : "false");
+                } else if (o.type == "integer") {
+                    int v = std::atoi(cur.c_str());
+                    const int lo = o.has_range ? static_cast<int>(o.min) : -1000000;
+                    const int hi = o.has_range ? static_cast<int>(o.max) : 1000000;
+                    if (ov::stepper_row(m, "row", o.label.c_str(), &v, lo, hi, o.step ? static_cast<int>(o.step) : 1, "", desc))
+                        write_option(o.id, std::to_string(std::clamp(v, lo, hi)));
+                } else {
+                    std::string v = cur;
+                    if (ov::setting_row(m, "row", o.label.c_str(), cur.empty() ? std::string("not set") : cur, desc))
+                        ImGui::OpenPopup("##edit");
+                    const int r = ov::text_dialog("##edit", o.label.c_str(), v, "value");
+                    if (r == 1) write_option(o.id, v);
+                    else if (r == 2) write_option(o.id, "");
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::EndChild();
+    (void)th;
+    if (pending) {
+        pending();
         refresh_mods_page(hub, row);
     }
 }
@@ -9049,6 +9377,10 @@ void shell_back_fallback(HubModel& hub) {
         return;
     }
     if (hub.show_mods_page) {
+        if (mods_page_state().detail) { // out of a feature first
+            mods_page_state().detail = false;
+            return;
+        }
         hub.show_mods_page = false;
         return;
     }
@@ -9074,6 +9406,7 @@ void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
 void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_cores(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+void draw_shell_mods(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_library_settings(HubModel& hub, const Theme& th, SDL_Window* window,
                                  const retcomm::hub::overlay::Metrics& m);
 void draw_shell_romm_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
@@ -9120,7 +9453,10 @@ void draw_hub_root(HubModel& hub, const Theme& th, BoxartCache& boxart) {
 void draw_hub_pages(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Window* window) {
     if (hub.show_mods_page) {
         ImGui::BeginChild("mods_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-        draw_mods_page(hub, th);
+        if (retcomm::hub::overlay::enabled())
+            draw_shell_mods(hub, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        else
+            draw_mods_page(hub, th);
         ImGui::EndChild();
     } else if (hub.show_netplay) {
         ImGui::BeginChild("netplay_page_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
