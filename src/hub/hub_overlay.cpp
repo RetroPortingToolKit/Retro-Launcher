@@ -96,6 +96,18 @@ std::string clock_text() {
     return out;
 }
 
+namespace {
+ImTextureID g_mark_tex = 0;
+// The mark: the mascot image, rounded; a plain tile until it has loaded.
+void draw_mark(ImDrawList* dl, ImVec2 a, float mk) {
+    const ImVec2 b(a.x + mk, a.y + mk);
+    if (g_mark_tex) dl->AddImageRounded(g_mark_tex, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, mk * 0.26f);
+    else dl->AddRectFilled(a, b, kAccent, mk * 0.26f);
+}
+} // namespace
+
+void set_mark_texture(ImTextureID tex) { g_mark_tex = tex; }
+
 void top_bar(const Metrics& m, const std::string& crumb, const std::string& sub,
              const std::string& status) {
     const ImVec2 p0 = ImGui::GetWindowPos();
@@ -106,10 +118,7 @@ void top_bar(const Metrics& m, const std::string& crumb, const std::string& sub,
     // The mark.
     const float mk = m.compact ? 28.f : 34.f;
     const ImVec2 a(p0.x + m.pad, cy - mk * 0.5f);
-    dl->AddRectFilledMultiColor(a, ImVec2(a.x + mk, a.y + mk), kAccent, kGood, kGood, kAccent);
-    const ImVec2 rs = ImGui::CalcTextSize("R");
-    dl->AddText(ImVec2(a.x + (mk - rs.x) * 0.5f, a.y + (mk - rs.y) * 0.5f),
-                IM_COL32(6, 16, 26, 255), "R");
+    draw_mark(dl, a, mk);
     // Crumb and subtitle.
     ImGui::SetWindowFontScale(1.15f);
     std::string up = crumb;
@@ -225,10 +234,7 @@ int tab_bar(const Metrics& m, const std::vector<std::string>& tabs, int selected
     const float cy = p0.y + m.top * 0.5f;
     const float mk = m.compact ? 28.f : 34.f;
     const ImVec2 a(p0.x + m.pad, cy - mk * 0.5f);
-    dl->AddRectFilledMultiColor(a, ImVec2(a.x + mk, a.y + mk), kAccent, kGood, kGood, kAccent);
-    const ImVec2 rs = ImGui::CalcTextSize("R");
-    dl->AddText(ImVec2(a.x + (mk - rs.x) * 0.5f, a.y + (mk - rs.y) * 0.5f),
-                IM_COL32(6, 16, 26, 255), "R");
+    draw_mark(dl, a, mk);
 
     int clicked = -1;
     const float h = m.compact ? 34.f : 40.f;

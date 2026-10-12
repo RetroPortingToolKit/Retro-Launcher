@@ -92,6 +92,7 @@ cp "$SDL_SRC"/android-project/app/src/main/java/org/libsdl/app/*.java "$STAGE/ja
 for dir in fonts platforms controllers setup; do
   cp -a "$ROOT/assets/$dir" "$STAGE/assets/retcomm/"
 done
+cp "$ROOT/assets/retcomm.png" "$STAGE/assets/retcomm/retcomm.png"
 cp "$RUNTIME/LICENSE" "$STAGE/assets/retcomm/licenses/Retro-Runtime.txt"
 cp "$ROOT/LICENSE" "$STAGE/assets/retcomm/licenses/Retro-Launcher.txt"
 cp "$SDL_SRC/LICENSE.txt" "$STAGE/assets/retcomm/licenses/SDL3.txt"

@@ -54,6 +54,10 @@ struct Hint {
 void begin(const char* id, float t, bool solid = false, bool keep_back = false);
 void end();
 
+// The launcher's mark in the top bar's corner: an image (the mascot), set once it is
+// loaded (0 = not yet; a plain tile is drawn meanwhile).
+void set_mark_texture(ImTextureID tex);
+
 // The top bar: the mark, "CRUMB  sub" on the left, battery and clock on the
 // right. `status` is an extra pill ("Paused", "Live 24 ms"), empty for none.
 void top_bar(const Metrics& m, const std::string& crumb, const std::string& sub,
