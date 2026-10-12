@@ -119,6 +119,12 @@ void open_picker(const char* id);
 int picker(const Metrics& m, const char* id, const char* title,
            const std::vector<PickerChoice>& choices, int current);
 
+// An InvisibleButton for something the caller draws itself (a card, a row, a tab).
+// ImGui's own InvisibleButton also draws a cursor around it when the controller is
+// on it, a rectangle that is not the shape of what the caller drew; this one draws
+// none, so the caller's fitted ring is the only highlight.
+bool nav_button(const char* id, ImVec2 size, ImGuiButtonFlags flags = ImGuiButtonFlags_EnableNav);
+
 // A button in the overlay's style. `primary` fills it with the accent.
 bool action_button(const char* label, bool primary, float width = 0.f);
 

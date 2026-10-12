@@ -1,4 +1,5 @@
 #include "hub/hub_netplay.hpp"
+#include "hub/hub_overlay.hpp"
 
 #include "hub/hub_model.hpp"
 #include "hub/hub_theme.hpp"
@@ -666,7 +667,7 @@ bool mode_card(const char* id, const char* title, const char* body, bool accent,
     const float h = 150.f;
     ImGui::BeginDisabled(!enabled);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool pressed = retcomm::hub::overlay::nav_button(id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h),

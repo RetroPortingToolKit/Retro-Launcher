@@ -2045,7 +2045,7 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
             }
             // InvisibleButton opts out of nav unless told otherwise (1.90+);
             // without EnableNav a controller could never reach a card.
-            if (ImGui::InvisibleButton("##plat", ImVec2(tile_w, tile_h),
+            if (retcomm::hub::overlay::nav_button("##plat", ImVec2(tile_w, tile_h),
                                        ImGuiButtonFlags_EnableNav))
                 enter_platform_titles(hub, card.id.c_str());
             // InvisibleButton draws no nav cursor of its own; ring the card so
@@ -2149,7 +2149,7 @@ void draw_library(HubModel& hub, BoxartCache& boxart, const Theme& th) {
                 ImGui::SetKeyboardFocusHere();
                 ImGui::SetNavCursorVisible(true);
             }
-            if (ImGui::InvisibleButton("##row", ImVec2(tile_w, tile_h),
+            if (retcomm::hub::overlay::nav_button("##row", ImVec2(tile_w, tile_h),
                                        ImGuiButtonFlags_EnableNav))
                 open_title_page(hub, i);
             tile_pop_end(r.id, ImGui::IsItemFocused() || ImGui::IsItemHovered());
@@ -9252,7 +9252,7 @@ void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
                 r->name.c_str(), nullptr, &badge, false, !r->installed, r->update_available,
                 tile_status_icon(*r), false, false, 1.f);
             ImGui::SetCursorScreenPos(tile_min);
-            if (ImGui::InvisibleButton("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav)) {
+            if (retcomm::hub::overlay::nav_button("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav)) {
                 hub.library_platform = r->platform;
                 open_index = idx;
             }
@@ -9448,7 +9448,7 @@ void draw_shell_cores(HubModel& hub, const Theme& th, const retcomm::hub::overla
         if (idx % cols) ImGui::SameLine(0, gap);
         ImGui::PushID(plat.c_str());
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        const bool pressed = ImGui::InvisibleButton("##core", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+        const bool pressed = retcomm::hub::overlay::nav_button("##core", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
         const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         const ImVec2 p1(p0.x + cw, p0.y + ch);
         ov::card_frame(p0, p1, hot, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, 14.f);
@@ -9534,7 +9534,7 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                     ImGui::SetKeyboardFocusHere();
                     ImGui::SetNavCursorVisible(true);
                 }
-                if (ImGui::InvisibleButton("##plat", ImVec2(w, h), ImGuiButtonFlags_EnableNav))
+                if (retcomm::hub::overlay::nav_button("##plat", ImVec2(w, h), ImGuiButtonFlags_EnableNav))
                     enter_platform = plat;
                 const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
                 const ImVec2 p1(p0.x + w, p0.y + h);
@@ -9661,7 +9661,7 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                     ImGui::SetKeyboardFocusHere();
                     ImGui::SetNavCursorVisible(true);
                 }
-                if (ImGui::InvisibleButton("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav))
+                if (retcomm::hub::overlay::nav_button("##tile", ImVec2(tile_w, tile_h), ImGuiButtonFlags_EnableNav))
                     open_index = i;
                 if (ImGui::IsItemFocused()) {
                     dl->AddRect(tile_min, ImVec2(tile_min.x + tile_w, tile_min.y + tile_h),
@@ -13341,7 +13341,7 @@ void draw_core_controls_overlay(HubModel& hub, CoreSettingsPage& p, const Theme&
             ImGui::SetKeyboardFocusHere();
             g_core_nav.to_content = false;
         }
-        const bool pressed = ImGui::InvisibleButton("##port", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+        const bool pressed = retcomm::hub::overlay::nav_button("##port", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
         if (g_core_nav.to_ports && s == p.seat_tab) {
             ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
             ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);

@@ -819,7 +819,7 @@ void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
         ImGui::BeginDisabled(busy);
-        if (ImGui::InvisibleButton("##slot", ImVec2(w, card_h), ImGuiButtonFlags_EnableNav))
+        if (retcomm::hub::overlay::nav_button("##slot", ImVec2(w, card_h), ImGuiButtonFlags_EnableNav))
             pick = i;
         ImGui::EndDisabled();
         const bool focused = ImGui::IsItemFocused();

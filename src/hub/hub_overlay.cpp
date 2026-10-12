@@ -182,7 +182,7 @@ int rail(const Metrics& m, const char* id, const std::vector<RailItem>& items,
             }
             if (it.enabled) first = false;
             ImGui::BeginDisabled(!it.enabled);
-            const bool pressed = ImGui::InvisibleButton("##item", ImVec2(w, m.item_h),
+            const bool pressed = nav_button("##item", ImVec2(w, m.item_h),
                                                         ImGuiButtonFlags_EnableNav);
             ImGui::EndDisabled();
             const bool hot = it.enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
@@ -237,7 +237,7 @@ int tab_bar(const Metrics& m, const std::vector<std::string>& tabs, int selected
         const float tw = ts.x + (m.compact ? 28.f : 40.f);
         ImGui::SetCursorScreenPos(ImVec2(x, cy - h * 0.5f));
         ImGui::PushID(static_cast<int>(i));
-        if (ImGui::InvisibleButton("##tab", ImVec2(tw, h), ImGuiButtonFlags_EnableNav))
+        if (nav_button("##tab", ImVec2(tw, h), ImGuiButtonFlags_EnableNav))
             clicked = static_cast<int>(i);
         const bool on = static_cast<int>(i) == selected;
         const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
@@ -295,7 +295,7 @@ bool list_row(const Metrics& m, const char* id, const char* label, const std::st
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool pressed = nav_button("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
     const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
     const ImVec2 p1(p0.x + w, p0.y + h);
@@ -370,7 +370,7 @@ bool setting_row(const Metrics& m, const char* id, const char* label, const std:
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool pressed = nav_button("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
     const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
     note_info(hot, description);
@@ -449,7 +449,7 @@ bool toggle_row(const Metrics& m, const char* id, const char* label, bool* on,
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
-    const bool pressed = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool pressed = nav_button("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
     note_info(hot, description);
     const ImVec2 p1(p0.x + w, p0.y + h);
@@ -553,7 +553,7 @@ int picker(const Metrics& m, const char* id, const char* title,
         const float rw = ImGui::GetContentRegionAvail().x;
         const float rh = m.item_h + (choices[i].detail.empty() ? 0.f : 14.f);
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        const bool pressed = ImGui::InvisibleButton("##c", ImVec2(rw, rh), ImGuiButtonFlags_EnableNav);
+        const bool pressed = nav_button("##c", ImVec2(rw, rh), ImGuiButtonFlags_EnableNav);
         const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         const ImVec2 p1(p0.x + rw, p0.y + rh);
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -585,6 +585,13 @@ int picker(const Metrics& m, const char* id, const char* title,
     }
     ImGui::EndPopup();
     return result;
+}
+
+bool nav_button(const char* id, ImVec2 size, ImGuiButtonFlags flags) {
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.f, 0.f, 0.f, 0.f));
+    const bool pressed = ImGui::InvisibleButton(id, size, flags);
+    ImGui::PopStyleColor();
+    return pressed;
 }
 
 bool action_button(const char* label, bool primary, float width) {
