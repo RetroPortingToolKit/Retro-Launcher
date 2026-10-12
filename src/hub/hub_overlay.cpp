@@ -381,14 +381,21 @@ bool setting_row(const Metrics& m, const char* id, const char* label, const std:
     dl->AddText(ImVec2(p1.x - 18.f - cs.x, p0.y + (h - cs.y) * 0.5f), kMuted, ">");
     float left = p1.x - 36.f - cs.x;
     if (!value.empty()) {
-        // Clipped to the value's room, so a long value never runs into the label.
-        const float value_w = std::min(w * 0.45f, ImGui::CalcTextSize(value.c_str()).x + 8.f);
-        dl->PushClipRect(ImVec2(left - value_w, p0.y), p1, true);
-        const ImVec2 vs = ImGui::CalcTextSize(value.c_str());
-        const float vx = std::max(left - vs.x, left - value_w);
-        dl->AddText(ImVec2(vx, p0.y + (h - vs.y) * 0.5f), hot ? kText : kMuted, value.c_str());
-        dl->PopClipRect();
-        left -= std::min(vs.x, value_w);
+        // A value too long for the row loses its start (the end of a path is the part
+        // that says which one it is), so it never runs into the label or the chevron.
+        const float value_w = std::min(w * 0.5f, ImGui::CalcTextSize(value.c_str()).x + 8.f);
+        std::string shown = value;
+        if (ImGui::CalcTextSize(shown.c_str()).x > value_w) {
+            while (shown.size() > 4 && ImGui::CalcTextSize(("\xE2\x80\xA6" + shown).c_str()).x > value_w) {
+                size_t cut = 1;
+                while (cut < shown.size() && (static_cast<unsigned char>(shown[cut]) & 0xC0) == 0x80) ++cut;
+                shown.erase(0, cut);
+            }
+            shown = "\xE2\x80\xA6" + shown;
+        }
+        const ImVec2 vs = ImGui::CalcTextSize(shown.c_str());
+        dl->AddText(ImVec2(left - vs.x, p0.y + (h - vs.y) * 0.5f), hot ? kText : kMuted, shown.c_str());
+        left -= vs.x;
     }
     if (overridden) draw_override_tag(dl, left - 14.f, p0, h);
     ImGui::PopID();

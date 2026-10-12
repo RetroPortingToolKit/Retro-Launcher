@@ -9069,6 +9069,20 @@ void draw_shell_home(HubModel& hub, BoxartCache& boxart, const Theme& th,
 void draw_shell_updates(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_cores(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
 void draw_shell_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+void draw_shell_library_settings(HubModel& hub, const Theme& th, SDL_Window* window,
+                                 const retcomm::hub::overlay::Metrics& m);
+void draw_shell_romm_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m);
+void draw_shell_add_files(HubModel& hub, const Theme& th, SDL_Window* window,
+                          const retcomm::hub::overlay::Metrics& m);
+#if defined(RETCOMM_HUB_HAVE_PLAY)
+constexpr bool kOverlayPages = true;
+#else
+constexpr bool kOverlayPages = false;
+// Without the play layer the older pages stay (the overlay's pages share its helpers).
+void draw_shell_library_settings(HubModel&, const Theme&, SDL_Window*, const retcomm::hub::overlay::Metrics&) {}
+void draw_shell_romm_settings(HubModel&, const Theme&, const retcomm::hub::overlay::Metrics&) {}
+void draw_shell_add_files(HubModel&, const Theme&, SDL_Window*, const retcomm::hub::overlay::Metrics&) {}
+#endif
 
 void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                         const retcomm::hub::overlay::Metrics& m);
@@ -9109,15 +9123,25 @@ void draw_hub_pages(HubModel& hub, const Theme& th, BoxartCache& boxart, SDL_Win
         ImGui::EndChild();
     } else if (hub.show_library_panel) {
         ImGui::BeginChild("library_panel_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-        draw_library_panel(hub, th, window);
+        if (kOverlayPages && retcomm::hub::overlay::enabled())
+            draw_shell_add_files(hub, th, window, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        else
+            draw_library_panel(hub, th, window);
         ImGui::EndChild();
     } else if (hub.show_settings) {
         ImGui::BeginChild("settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-        draw_settings_panel(hub, th, window);
+        if (kOverlayPages && retcomm::hub::overlay::enabled())
+            draw_shell_library_settings(hub, th, window,
+                                        retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        else
+            draw_settings_panel(hub, th, window);
         ImGui::EndChild();
     } else if (hub.show_romm_settings) {
         ImGui::BeginChild("romm_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
-        draw_romm_settings_panel(hub, th);
+        if (kOverlayPages && retcomm::hub::overlay::enabled())
+            draw_shell_romm_settings(hub, th, retcomm::hub::overlay::metrics(ImGui::GetMainViewport()->Size));
+        else
+            draw_romm_settings_panel(hub, th);
         ImGui::EndChild();
     } else if (hub.show_psx_settings) {
         ImGui::BeginChild("psx_settings_host", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
@@ -14192,6 +14216,755 @@ void draw_bind_all_scene(CoreSettingsPage& p, const Theme& th, const retcomm::hu
         p.configuring = -1;
         p.bind_all = false;
     }
+}
+
+// ---- Library settings, RomM sync, Add / scan files: the overlay's pages -----------------
+//
+// The same settings as the older pages (draw_settings_panel, draw_romm_settings_panel,
+// draw_library_panel), as finger-sized rows: a rail of sections beside the rows, the
+// focused row's description in a strip below, a path or a text opening an editor over
+// the page, and the shell's own Save / Cancel along the bottom. The shell closes the
+// page on B.
+
+// A text value in a modal; the on-screen keyboard raises with the field. 1 = OK,
+// 2 = Clear, 0 = nothing. (The older overlay_text_editor, with a password switch.)
+int overlay_text_dialog(const char* id, const char* title, std::string& value, const char* hint,
+                        bool password = false) {
+    namespace ov = retcomm::hub::overlay;
+    static char buf[512];
+    if (!ImGui::IsPopupOpen(id)) return 0;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->Size.y * 0.28f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(680.f, vp->Size.x * 0.94f), 0.f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
+    const bool open = ImGui::BeginPopupModal(id, nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    int result = 0;
+    if (open) {
+        if (ImGui::IsWindowAppearing()) copy_buf(buf, sizeof buf, value);
+        ImGui::TextUnformatted(title);
+        ImGui::SetNextItemWidth(-1.f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        const bool enter = hub_input_text_hint("##text", hint, buf, sizeof buf,
+                                               ImGuiInputTextFlags_EnterReturnsTrue |
+                                                   (password ? ImGuiInputTextFlags_Password : 0));
+        ImGui::Dummy(ImVec2(0, 6));
+        if (ov::action_button("OK", true, 120.f) || enter) {
+            value = buf;
+            result = 1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ov::action_button("Clear", false, 120.f)) {
+            result = 2;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ov::action_button("Cancel", false, 120.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    return result;
+}
+
+// A folder: the field, Browse (the OS folder picker; its answer lands in `buf` through
+// HubModel::apply_pending_folder_pick), Clear and Done.
+void overlay_path_dialog(HubModel& hub, SDL_Window* window, const char* id, const char* title, char* buf, size_t n,
+                         FolderPickTarget target, bool* dirty, int install_index = -1) {
+    namespace ov = retcomm::hub::overlay;
+    if (!ImGui::IsPopupOpen(id)) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->Size.y * 0.28f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->Size.x * 0.94f), 0.f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
+    const bool open = ImGui::BeginPopupModal(id, nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (!open) return;
+    ImGui::TextUnformatted(title);
+    ImGui::SetNextItemWidth(-1.f);
+    if (hub_input_text("##path", buf, n)) *dirty = true;
+    ImGui::Dummy(ImVec2(0, 6));
+    bool busy = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.folder_pick_mu);
+        busy = hub.folder_pick_busy;
+    }
+    ImGui::BeginDisabled(busy);
+    if (ov::action_button(busy ? "Waiting for the folder picker..." : "Browse...", true, 0.f)) {
+        hub.folder_pick_install_index = install_index;
+        begin_folder_pick(hub, window, target, buf);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ov::action_button("Clear", false, 0.f)) {
+        buf[0] = '\0';
+        *dirty = true;
+    }
+    ImGui::SameLine();
+    if (ov::action_button("Done", false, 0.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+// A folder as a row: its path is the value; pressing opens the dialog.
+void overlay_path_row(HubModel& hub, SDL_Window* window, const retcomm::hub::overlay::Metrics& m, const char* id,
+                      const char* label, char* buf, size_t n, FolderPickTarget target, const char* description) {
+    namespace ov = retcomm::hub::overlay;
+    ImGui::PushID(id);
+    if (ov::setting_row(m, "row", label, buf[0] ? std::string(buf) : std::string("not set"), description))
+        ImGui::OpenPopup("##pd");
+    overlay_path_dialog(hub, window, "##pd", label, buf, n, target, &hub.settings.dirty);
+    ImGui::PopID();
+}
+
+// A short text kept in a fixed buffer, as a row and its dialog.
+bool overlay_text_row(const retcomm::hub::overlay::Metrics& m, const char* id, const char* label, char* buf, size_t n,
+                      const char* hint, const char* description, bool secret = false) {
+    namespace ov = retcomm::hub::overlay;
+    bool changed = false;
+    ImGui::PushID(id);
+    const std::string shown = buf[0] ? (secret ? std::string("set") : std::string(buf)) : std::string("not set");
+    if (ov::setting_row(m, "row", label, shown, description)) ImGui::OpenPopup("##td");
+    std::string v = buf;
+    const int r = overlay_text_dialog("##td", label, v, hint, secret);
+    if (r == 1) {
+        copy_buf(buf, n, v);
+        changed = true;
+    } else if (r == 2) {
+        buf[0] = '\0';
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// A question with a way out: true the frame the answer is yes. `extra` draws between
+// the text and the buttons (the Uninstall confirmation types a word there).
+bool overlay_confirm(const char* id, const char* title, const char* body, const char* yes_label, bool yes_enabled,
+                     const std::function<void()>& extra = {}) {
+    namespace ov = retcomm::hub::overlay;
+    if (!ImGui::IsPopupOpen(id)) return false;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(700.f, vp->Size.x * 0.94f), 0.f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, vp->Size.y * 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 170));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.f, 16.f));
+    const bool open = ImGui::BeginPopupModal(id, nullptr,
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    bool yes = false;
+    if (open) {
+        ImGui::SetWindowFontScale(1.2f);
+        ImGui::TextUnformatted(title);
+        ImGui::SetWindowFontScale(1.f);
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextUnformatted(body);
+        ImGui::PopTextWrapPos();
+        if (extra) extra();
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::BeginDisabled(!yes_enabled);
+        if (ov::action_button(yes_label, true, 0.f)) {
+            yes = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ov::action_button("Cancel", false, 140.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    return yes;
+}
+
+// The description of the row in focus.
+void overlay_info_strip(float h) {
+    namespace ov = retcomm::hub::overlay;
+    const std::string& info = ov::row_info();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h - 6.f), IM_COL32(0, 0, 0, 100), 12.f);
+    dl->PushClipRect(p0, ImVec2(p0.x + w, p0.y + h - 6.f), true);
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.92f, ImVec2(p0.x + 18.f, p0.y + 8.f),
+                info.empty() ? IM_COL32(153, 163, 188, 255) : IM_COL32(201, 209, 228, 255),
+                info.empty() ? "Select a setting to see what it does." : info.c_str(), nullptr, w - 36.f);
+    dl->PopClipRect();
+    ImGui::Dummy(ImVec2(w, h));
+}
+
+// A page of sections: a title, a rail of the sections, the open one beside it, and the
+// strip. Left / Right cross between the rail and the rows (CoreNavHandoff).
+void overlay_sections_page(HubModel& hub, const retcomm::hub::overlay::Metrics& m, const char* title,
+                           const std::vector<std::string>& names, std::string& current,
+                           const std::function<void(const std::string&)>& body) {
+    namespace ov = retcomm::hub::overlay;
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted(title);
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 6));
+    if (std::find(names.begin(), names.end(), current) == names.end()) current = names.empty() ? std::string() : names.front();
+    const float info_h = 64.f;
+    ImGui::BeginChild("##sp", ImVec2(0, std::max(100.f, ImGui::GetContentRegionAvail().y - info_h)), ImGuiChildFlags_NavFlattened);
+    const float rail_w = m.compact ? 190.f : 236.f;
+    ImGui::BeginChild("##sprail", ImVec2(rail_w, 0), ImGuiChildFlags_NavFlattened);
+    for (const std::string& n : names) {
+        const bool hit = ov::action_button(n.c_str(), n == current, rail_w - 4.f);
+        if (g_core_nav.to_rail && n == current) {
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
+            ImGui::SetNavCursorVisible(true);
+            g_core_nav.to_rail = false;
+        }
+        if (hit && n != current) {
+            current = n;
+            ov::row_info_reset();
+        }
+        ImGui::Dummy(ImVec2(0, 2));
+    }
+    g_core_nav.to_rail = false;
+    if (ImGui::IsWindowFocused() && nav_right_pressed()) g_core_nav.to_content = true;
+    ImGui::EndChild();
+    ImGui::SameLine(0, 16.f);
+    ImGui::BeginChild("##sprows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+    if (g_core_nav.to_content) {
+        ImGui::SetKeyboardFocusHere();
+        g_core_nav.to_content = false;
+    }
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && nav_left_pressed()) g_core_nav.to_rail = true;
+    body(current);
+    ImGui::EndChild();
+    ImGui::EndChild();
+    overlay_info_strip(info_h);
+}
+
+// A row that runs something; greyed while another job holds the worker.
+bool overlay_action_row(const retcomm::hub::overlay::Metrics& m, const char* id, const char* label, const char* what,
+                        const char* description, bool enabled = true) {
+    return retcomm::hub::overlay::setting_row(m, id, label, what, description, enabled);
+}
+
+void draw_shell_library_settings(HubModel& hub, const Theme& th, SDL_Window* window,
+                                 const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    auto& st = hub.settings;
+    static std::string section;
+    std::vector<std::string> names{"Folders", "Install locations", "Folder names", "Behaviour", "Maintenance"};
+#if !defined(__ANDROID__)
+    names.push_back("Builds and caches");
+#endif
+    names.push_back("Danger zone");
+    ImGui::BeginChild("##libset", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (ImGui::IsWindowAppearing()) ov::row_info_reset();
+    overlay_sections_page(hub, m, "Library settings", names, section, [&](const std::string& sec) {
+        const bool busy = hub.job_running.load();
+        if (sec == "Folders") {
+            overlay_path_row(hub, window, m, "rom", "ROM library", st.library_root, sizeof st.library_root,
+                             FolderPickTarget::LibraryRoot,
+                             "Where your ROMs live. Each platform has a folder of its own inside it.");
+            overlay_path_row(hub, window, m, "bios", "BIOS", st.bios_root, sizeof st.bios_root,
+                             FolderPickTarget::BiosRoot, "Where your BIOS dumps live.");
+            overlay_path_row(hub, window, m, "saves", "Game saves", st.saves_root, sizeof st.saves_root,
+                             FolderPickTarget::SavesRoot,
+                             "Native SRAM / memory-card files (RomM sync and launch): each game gets "
+                             "<platform>/<title id>/ here. Empty keeps saves inside each install.");
+            if (overlay_text_row(m, "excl", "Excluded folders", st.exclude_dirs, sizeof st.exclude_dirs,
+                                 "comma-separated folder names",
+                                 "Folder names the scan skips, separated by commas."))
+                st.dirty = true;
+            overlay_group_label("Retro's own folder");
+            ov::value_row(m, "root", "Retro data folder", hub.paths.data_dir.string());
+            if (overlay_action_row(m, "openroot", "Open the data folder", "Open",
+                                   "Toolchains, engines, installs and caches live here.")) {
+                std::string err;
+                if (!retcomm::open_path_in_file_manager(hub.paths.data_dir, &err))
+                    hub.append_log("open data folder failed: " + err);
+            }
+            const bool env_pinned = hub.paths.root_source == retcomm::DataRootSource::Env ||
+                                    hub.paths.root_source == retcomm::DataRootSource::Explicit;
+            if (overlay_action_row(m, "chroot", "Change the data folder", "Change...",
+                                   env_pinned ? "Pinned by an environment variable or --root for this launch; "
+                                                "clear it to change the folder here."
+                                              : "Moves or re-points Retro's whole data folder.",
+                                   !env_pinned && !busy)) {
+                hub.seed_data_root_input();
+                hub.data_root_mode = retcomm::RootMigrationMode::Move;
+                hub.show_data_root_dialog = true;
+            }
+            ov::muted("A relative path is read against the launcher's folder, so a setup copied to "
+                      "another drive or machine needs no re-pointing.");
+        } else if (sec == "Install locations") {
+            ov::muted("Folders that hold installed games. The default is where Install puts a new game; "
+                      "existing installs stay where they are.");
+            for (int i = 0; i < static_cast<int>(st.install_roots.size()); ++i) {
+                auto& row = st.install_roots[static_cast<size_t>(i)];
+                ImGui::PushID(i);
+                const std::string label = row.label[0] ? std::string(row.label) : "Location " + std::to_string(i + 1);
+                const std::string value = (i == st.default_install_root_index ? std::string("default  \xC2\xB7  ") : std::string()) +
+                                          (row.path[0] ? std::string(row.path) : std::string("not set"));
+                if (ov::setting_row(m, "row", label.c_str(), value, "Tap to rename, re-point, make default or remove."))
+                    ImGui::OpenPopup("##ir");
+                if (ImGui::IsPopupOpen("##ir")) {
+                    const ImGuiViewport* vp = ImGui::GetMainViewport();
+                    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->Size.y * 0.2f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+                    ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp->Size.x * 0.94f), 0.f));
+                    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+                    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
+                    const bool open = ImGui::BeginPopupModal("##ir", nullptr,
+                                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopStyleColor(2);
+                    if (open) {
+                        ImGui::TextUnformatted("Name");
+                        ImGui::SetNextItemWidth(-1.f);
+                        if (hub_input_text("##label", row.label, sizeof row.label)) st.dirty = true;
+                        ImGui::TextUnformatted("Folder");
+                        ImGui::SetNextItemWidth(-1.f);
+                        if (hub_input_text("##path", row.path, sizeof row.path)) st.dirty = true;
+                        ImGui::Dummy(ImVec2(0, 6));
+                        bool pick_busy = false;
+                        {
+                            std::lock_guard<std::mutex> lock(hub.folder_pick_mu);
+                            pick_busy = hub.folder_pick_busy;
+                        }
+                        ImGui::BeginDisabled(pick_busy);
+                        if (ov::action_button("Browse...", true, 0.f)) {
+                            hub.folder_pick_install_index = i;
+                            begin_folder_pick(hub, window, FolderPickTarget::InstallRoot, row.path);
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ov::action_button("Make default", i == st.default_install_root_index, 0.f)) {
+                            st.default_install_root_index = i;
+                            st.dirty = true;
+                        }
+                        ImGui::SameLine();
+                        bool removed = false;
+                        if (ov::action_button("Remove", false, 0.f)) {
+                            st.install_roots.erase(st.install_roots.begin() + i);
+                            if (st.default_install_root_index >= static_cast<int>(st.install_roots.size()))
+                                st.default_install_root_index = std::max(0, static_cast<int>(st.install_roots.size()) - 1);
+                            else if (st.default_install_root_index > i)
+                                --st.default_install_root_index;
+                            st.dirty = true;
+                            removed = true;
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ov::action_button("Done", false, 0.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::EndPopup();
+                        if (removed) {
+                            ImGui::PopID();
+                            break;
+                        }
+                    }
+                }
+                ImGui::PopID();
+            }
+            if (ov::setting_row(m, "addroot", "Add an install location", "Add", "For example an external drive.")) {
+                hub.add_install_root_row();
+                st.dirty = true;
+            }
+        } else if (sec == "Folder names") {
+            ov::muted("Which folder under the library, BIOS and saves roots holds each platform "
+                      "(for example psx -> ps, ps1). Most setups can leave the defaults.");
+            for (int i = 0; i < static_cast<int>(st.platform_folders.size()); ++i) {
+                auto& row = st.platform_folders[static_cast<size_t>(i)];
+                ImGui::PushID(i);
+                const std::string label = row.platform[0] ? std::string(row.platform) : "(new platform)";
+                if (ov::setting_row(m, "row", label.c_str(), row.folders[0] ? std::string(row.folders) : std::string("not set"),
+                                    "Tap to edit the platform and its folder names, or remove it."))
+                    ImGui::OpenPopup("##pf");
+                if (ImGui::IsPopupOpen("##pf")) {
+                    const ImGuiViewport* vp = ImGui::GetMainViewport();
+                    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->Size.y * 0.25f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+                    ImGui::SetNextWindowSize(ImVec2(std::min(680.f, vp->Size.x * 0.94f), 0.f));
+                    ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(8, 10, 14, 250));
+                    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 150));
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.f, 14.f));
+                    const bool open = ImGui::BeginPopupModal("##pf", nullptr,
+                                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopStyleColor(2);
+                    if (open) {
+                        ImGui::TextUnformatted("Platform");
+                        ImGui::SetNextItemWidth(-1.f);
+                        if (hub_input_text("##plat", row.platform, sizeof row.platform)) st.dirty = true;
+                        ImGui::TextUnformatted("Folder names, separated by commas");
+                        ImGui::SetNextItemWidth(-1.f);
+                        if (hub_input_text("##folders", row.folders, sizeof row.folders)) st.dirty = true;
+                        ImGui::Dummy(ImVec2(0, 6));
+                        bool removed = false;
+                        if (ov::action_button("Remove", false, 0.f)) {
+                            st.platform_folders.erase(st.platform_folders.begin() + i);
+                            st.dirty = true;
+                            removed = true;
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ov::action_button("Done", true, 0.f) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::EndPopup();
+                        if (removed) {
+                            ImGui::PopID();
+                            break;
+                        }
+                    }
+                }
+                ImGui::PopID();
+            }
+            if (ov::setting_row(m, "addplat", "Add a platform", "Add", "A catalog platform and the folder name(s) it uses.")) {
+                hub.add_platform_folder_row();
+                st.dirty = true;
+            }
+        } else if (sec == "Behaviour") {
+            if (ov::toggle_row(m, "unowned", "Hide unowned catalog items", &st.filter_unsupported_titles,
+                               "Hide catalog titles that have no ROM available, locally or (when scanned) on RomM. "
+                               "Installed titles stay visible."))
+                st.dirty = true;
+            if (ov::toggle_row(m, "startup", "Check for updates on startup", &st.check_updates_on_startup,
+                               "Check for catalog, launcher and game updates after the launcher starts. Off skips the "
+                               "startup prompt; Updates still works."))
+                st.dirty = true;
+            if (ov::toggle_row(m, "autoscan", "Scan after a catalog update", &st.auto_scan_after_catalog_update,
+                               "When the catalog adds titles, bind them to ROMs you already have and scan only the "
+                               "affected platforms for anything still unmatched."))
+                st.dirty = true;
+            if (ov::toggle_row(m, "prelaunch", "Check for updates before a game starts", &st.check_updates_before_launch,
+                               "Play asks GitHub for that title and asks before launching if a newer release exists."))
+                st.dirty = true;
+            struct ScaleChoice {
+                const char* label;
+                float value;
+            };
+            static const ScaleChoice kScales[] = {{"Auto (follow the display)", 0.f}, {"100%", 1.f}, {"125%", 1.25f},
+                                                  {"150%", 1.5f}, {"175%", 1.75f}, {"200%", 2.f}, {"250%", 2.5f}, {"300%", 3.f}};
+            int cur = -1;
+            for (int i = 0; i < IM_ARRAYSIZE(kScales); ++i)
+                if (std::fabs(st.ui_scale - kScales[i].value) < 0.005f) cur = i;
+            char custom[32];
+            std::snprintf(custom, sizeof custom, "%d%%", static_cast<int>(st.ui_scale * 100.f + 0.5f));
+            if (ov::setting_row(m, "scale", "Interface scale", cur >= 0 ? kScales[cur].label : custom,
+                                "Size of the launcher's text and controls. Applies as soon as you pick it; Save keeps it."))
+                ov::open_picker("##scale");
+            std::vector<ov::PickerChoice> choices;
+            for (const ScaleChoice& c : kScales) choices.push_back({c.label, ""});
+            const int pick = ov::picker(m, "##scale", "Interface scale", choices, cur);
+            if (pick >= 0) {
+                st.ui_scale = kScales[pick].value;
+                st.dirty = true;
+            }
+            if (overlay_text_row(m, "token", "GitHub token", st.github_token, sizeof st.github_token, "ghp_...",
+                                 "Optional. A personal access token for api.github.com when downloading release assets; "
+                                 "version checks need none. GITHUB_TOKEN or GH_TOKEN in the environment overrides it.",
+                                 /*secret=*/true))
+                st.dirty = true;
+        } else if (sec == "Maintenance") {
+            if (overlay_action_row(m, "boxmiss", "Find missing boxart", "Run",
+                                   "Download covers only for titles with no cached art.", !busy))
+                hub.start_job(HubJob::FetchBoxart, {}, false);
+            if (overlay_action_row(m, "boxall", "Resync all boxart", "Run",
+                                   "Clear the cover cache and download every catalog title again (Libretro thumbnails, "
+                                   "or RomM when Sync Boxart is on).",
+                                   !busy))
+                hub.start_job(HubJob::FetchBoxart, {}, true);
+            if (overlay_action_row(m, "orphans", "Clean unlisted installs", "Review...",
+                                   "Remove installs in apps/ that are no longer in the catalog.", !busy)) {
+                const size_t n = hub.refresh_orphan_installs();
+                if (n == 0) {
+                    hub.set_status("No installs outside the catalog");
+                    hub.append_log("Orphan scan: none");
+                } else {
+                    hub.orphan_prompt_pending.store(true);
+                }
+            }
+            if (overlay_action_row(m, "oldrel", "Clean old update files", "Run",
+                                   "Promote saves and config into the current release, then delete leftover "
+                                   "releases/<old tag>/ folders.",
+                                   !busy))
+                hub.start_job(HubJob::CleanupOldReleases);
+#if !defined(__ANDROID__)
+        } else if (sec == "Builds and caches") {
+            if (ov::toggle_row(m, "cleanbuild", "Clean build folders after an install", &st.auto_clean_build_dirs,
+                               "Delete each title's src/current/build/ after a successful local build to free disk "
+                               "space. Off keeps incremental builds fast."))
+                st.dirty = true;
+            if (ov::toggle_row(m, "autogc", "Prune shared caches after builds", &st.auto_gc_caches,
+                               "Keep a few recent toolchain and SDK versions, drop unreferenced engine pins, old release "
+                               "downloads and idle build folders. ccache has a size cap."))
+                st.dirty = true;
+            auto stepper = [&](const char* id, const char* label, int* v, int lo, int hi, const char* desc) {
+                int x = *v;
+                if (ov::stepper_row(m, id, label, &x, lo, hi, 1, "", desc)) {
+                    *v = x;
+                    st.dirty = true;
+                }
+            };
+            stepper("kt", "Toolchain versions to keep", &st.keep_toolchain_versions, 1, 20, "Older ones are pruned.");
+            stepper("ks", "SDK versions to keep", &st.keep_sdk_versions, 1, 20, "Older ones are pruned.");
+            stepper("ke", "Orphan engine pins to keep", &st.keep_orphan_engine_pins, 0, 50, "Pins no title references.");
+            stepper("kd", "Days to keep idle build folders", &st.idle_build_keep_days, 0, 365, "Idle longer is pruned.");
+            stepper("kc", "ccache size limit (GiB)", &st.ccache_max_gb, 0, 200, "0 turns the cap off.");
+            if (overlay_action_row(m, "prune", "Prune shared caches now", "Run",
+                                   "The same pruning as after a build. Never deletes Play binaries or generated game C.", !busy))
+                hub.start_job(HubJob::CleanupSharedCaches);
+            if (overlay_action_row(m, "cmake", "Clean all build folders", "Run",
+                                   "Delete cmake build/ trees under every install's src/. The next update reconfigures from scratch.",
+                                   !busy))
+                hub.start_job(HubJob::CleanupCmakeBuildDirs);
+#endif
+        } else if (sec == "Danger zone") {
+            ov::banner("These cannot be undone.");
+            if (overlay_action_row(m, "delall", "Delete all apps and save data", "Delete...",
+                                   "Removes every installed game, managed saves, in-install saves and config, and platform "
+                                   "settings. Library ROMs and BIOS dumps are kept.",
+                                   !busy))
+                ImGui::OpenPopup("##delall");
+            if (overlay_action_row(m, "reset", "Hard reset library settings", "Reset...",
+                                   "Wipes library paths, scan databases and RomM sync settings, then restarts into the "
+                                   "first-time setup. Installed games, ROMs and BIOS dumps are not deleted.",
+                                   !busy))
+                ImGui::OpenPopup("##hardreset");
+            if (overlay_action_row(m, "uninstall", "Uninstall Retro", "Uninstall...",
+                                   "Removes Retro entirely: the data folder with every game, save, toolchain and cache, and "
+                                   "the launcher. Your ROM and BIOS folders are kept.",
+                                   !busy)) {
+                hub.refresh_uninstall_plan();
+                hub.uninstall_confirm[0] = '\0';
+                ImGui::OpenPopup("##uninstall");
+            }
+            if (overlay_confirm("##delall", "Delete everything?",
+                                "Delete all app installations and clean up save and config data?\n\n"
+                                "- Every title under the install locations\n"
+                                "- Managed files under the game saves folder\n"
+                                "- Preserved install saves and config, and platform settings\n\n"
+                                "ROM library and BIOS folders are not deleted.",
+                                "Yes, delete everything", !busy))
+                hub.start_job(HubJob::DeleteAllAppsAndSaves);
+            if (overlay_confirm("##hardreset", "Retro will restart into first-time setup",
+                                "- Deletes config.json (library, BIOS and saves folders, RomM sync)\n"
+                                "- Clears the library, BIOS and RomM indexes\n"
+                                "- Clears the setup-completed marker\n\n"
+                                "Installed apps, ROM files and BIOS dumps stay on disk.",
+                                "Yes, reset and restart", !busy))
+                hub.start_job(HubJob::HardResetLibrarySettings);
+            const bool typed = std::string(hub.uninstall_confirm) == "UNINSTALL";
+            if (overlay_confirm(
+                    "##uninstall", "This deletes Retro and everything it stores",
+                    "Deleted for good:\n- Every installed game, managed save, toolchain, engine and cache\n"
+                    "- Library, BIOS and RomM settings and every scan database\n- The launcher itself\n\n"
+                    "Kept: your ROM library folder and BIOS folder, and any install location outside the Retro data folder.",
+                    "Yes, uninstall Retro", !busy && typed, [&] {
+                        ImGui::Dummy(ImVec2(0, 4));
+                        ImGui::TextUnformatted("Folders that will be deleted:");
+                        for (const auto& p : hub.uninstall_plan.data_paths) ImGui::BulletText("%s", p.string().c_str());
+                        if (!hub.uninstall_plan.app_note.empty())
+                            ImGui::Text("The app: %s", hub.uninstall_plan.app_note.c_str());
+                        ImGui::Dummy(ImVec2(0, 6));
+                        ImGui::TextUnformatted("Type UNINSTALL to confirm:");
+                        ImGui::SetNextItemWidth(260.f);
+                        hub_input_text("##uninstall_confirm", hub.uninstall_confirm, sizeof hub.uninstall_confirm);
+                    }))
+                hub.start_job(HubJob::UninstallEverything);
+        }
+    });
+    ImGui::EndChild();
+}
+
+void draw_shell_romm_settings(HubModel& hub, const Theme& th, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    auto& rs = hub.romm_settings;
+    ImGui::BeginChild("##rommset", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (ImGui::IsWindowAppearing()) ov::row_info_reset();
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted("RomM sync");
+    ImGui::SetWindowFontScale(1.f);
+    ov::muted("Connect to a RomM instance. Use a Client API Token from RomM > Administration > Client API Tokens; "
+              "no username or password is needed here.");
+    ImGui::Dummy(ImVec2(0, 6));
+    const float info_h = 64.f;
+    ImGui::BeginChild("##rommrows", ImVec2(0, std::max(100.f, ImGui::GetContentRegionAvail().y - info_h)),
+                      ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+    if (overlay_text_row(m, "url", "Instance URL", rs.base_url, sizeof rs.base_url, "https://romm.example.com",
+                         "The address of your RomM server."))
+        rs.dirty = true;
+    if (overlay_text_row(m, "key", "Client API key", rs.api_token, sizeof rs.api_token, "rmm_...",
+                         "A Client API Token (Bearer rmm_...). Stored in the launcher's config.", /*secret=*/true))
+        rs.dirty = true;
+    if (ov::toggle_row(m, "boxart", "Sync boxart", &rs.sync_boxart,
+                       "On: every cover comes from RomM (needs the URL and key). Off: covers come from Libretro's "
+                       "Named_Boxarts."))
+        rs.dirty = true;
+    ov::value_row(m, "status", "Status",
+                  hub.cfg.romm.enabled() ? "Configured: " + hub.cfg.romm.base_url : std::string("Not configured"));
+    ov::muted("Matching happens on demand during Install. Turn on Sync boxart, then use Find missing boxart in Library "
+              "settings to refresh covers.");
+    ImGui::EndChild();
+    overlay_info_strip(info_h);
+    ImGui::EndChild();
+}
+
+void draw_shell_add_files(HubModel& hub, const Theme& th, SDL_Window* window, const retcomm::hub::overlay::Metrics& m) {
+    namespace ov = retcomm::hub::overlay;
+    (void)th;
+    const bool busy = hub.job_running.load();
+    bool file_busy = false;
+    {
+        std::lock_guard<std::mutex> lock(hub.file_pick_mu);
+        file_busy = hub.file_pick_busy;
+    }
+    std::vector<std::string> plats;
+    {
+        std::unordered_set<std::string> seen;
+        for (const auto& t : hub.catalog.titles) {
+            if (t.platform.empty() || !seen.insert(t.platform).second) continue;
+            plats.push_back(t.platform);
+        }
+        std::sort(plats.begin(), plats.end(), [](const std::string& a, const std::string& b) {
+            return std::string(platform_display_name(a)) < std::string(platform_display_name(b));
+        });
+    }
+    if (!hub.library_import_platform.empty() &&
+        std::find(plats.begin(), plats.end(), hub.library_import_platform) == plats.end())
+        hub.library_import_platform.clear();
+    if (!hub.scans_platform_filter.empty() &&
+        std::find(plats.begin(), plats.end(), hub.scans_platform_filter) == plats.end())
+        hub.scans_platform_filter.clear();
+
+    ImGui::BeginChild("##addfiles", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (ImGui::IsWindowAppearing()) ov::row_info_reset();
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextUnformatted("Add / scan files");
+    ImGui::SetWindowFontScale(1.f);
+    ImGui::Dummy(ImVec2(0, 6));
+    const float info_h = 64.f;
+    ImGui::BeginChild("##afrows", ImVec2(0, std::max(100.f, ImGui::GetContentRegionAvail().y - info_h)),
+                      ImGuiChildFlags_NavFlattened, page_wheel_flags(hub));
+
+    overlay_group_label("Add files");
+    {
+        const std::string shown = hub.library_import_platform.empty() ? std::string("choose a platform")
+                                                                       : std::string(platform_display_name(hub.library_import_platform));
+        if (ov::setting_row(m, "plat", "Platform", shown,
+                            "The platform the next import is for. Imports are copied into the library folders set "
+                            "in Library settings, then new files are scanned.",
+                            !(file_busy || busy)))
+            ov::open_picker("##implat");
+        std::vector<ov::PickerChoice> choices;
+        int cur = -1;
+        for (size_t i = 0; i < plats.size(); ++i) {
+            choices.push_back({platform_display_name(plats[i]), ""});
+            if (plats[i] == hub.library_import_platform) cur = static_cast<int>(i);
+        }
+        const int pick = ov::picker(m, "##implat", "Platform", choices, cur);
+        if (pick >= 0) hub.library_import_platform = plats[static_cast<size_t>(pick)];
+    }
+    const bool plat_ok = !hub.library_import_platform.empty();
+    if (ov::setting_row(m, "rom", "Import ROMs", "Choose files...",
+                        "Copies ROMs into your library. For multi-track discs, select the .cue and .bin tracks "
+                        "together.",
+                        plat_ok && !file_busy && !busy)) {
+        const auto exts = rom_exts_for_platform(hub.catalog, hub.library_import_platform);
+        begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportRom, hub.library_import_platform, "ROM files", exts,
+                        /*allow_many=*/true);
+    }
+    if (ov::setting_row(m, "save", "Import a save file", "Choose a file...",
+                        "Copies a save into the saves folder for this platform.", plat_ok && !file_busy && !busy)) {
+        const auto exts = save_exts_for_platform(hub.catalog, hub.library_import_platform);
+        begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportSave, hub.library_import_platform, "Save files", exts,
+                        /*allow_many=*/false);
+    }
+    if (ov::setting_row(m, "bios", "Import a BIOS", "Choose a file...", "Copies a BIOS dump into the BIOS folder.",
+                        plat_ok && !file_busy && !busy)) {
+        const auto exts = bios_exts_for_platform(hub.library_import_platform);
+        begin_file_pick(hub, window, retcomm::hub::FilePickKind::ImportBios, hub.library_import_platform, "BIOS files", exts,
+                        /*allow_many=*/false);
+    }
+    if (ov::setting_row(m, "title", "Install a title (.zip)", "Choose a file...",
+                        "A title bundle (title.json with its core and game package) installs a game that runs through a core. "
+                        "It does not depend on the platform above.",
+                        !file_busy && !busy))
+        begin_file_pick(hub, window, retcomm::hub::FilePickKind::InstallTitle, std::string(), "Title bundles", {"zip"},
+                        /*allow_many=*/false);
+
+    overlay_group_label("Scan");
+    {
+        const std::string& filt = hub.scans_platform_filter;
+        const std::string shown = filt.empty() ? std::string("All platforms") : std::string(platform_display_name(filt));
+        if (ov::setting_row(m, "scope", "Scan scope", shown,
+                            "For files you already placed in your folders, or to drop entries whose files are gone.",
+                            !file_busy))
+            ov::open_picker("##scanscope");
+        std::vector<ov::PickerChoice> choices{{"All platforms", ""}};
+        int cur = filt.empty() ? 0 : -1;
+        for (size_t i = 0; i < plats.size(); ++i) {
+            choices.push_back({platform_display_name(plats[i]), ""});
+            if (plats[i] == filt) cur = static_cast<int>(i) + 1;
+        }
+        const int pick = ov::picker(m, "##scanscope", "Scan scope", choices, cur);
+        if (pick == 0) hub.scans_platform_filter.clear();
+        else if (pick > 0) hub.scans_platform_filter = plats[static_cast<size_t>(pick - 1)];
+    }
+    const std::string& filt = hub.scans_platform_filter;
+    const bool any_queued = hub.has_queued_scan();
+    auto active = [&](HubJob j) { return busy && hub.job == j && hub.job_platform_filter == filt; };
+    auto label_of = [&](HubJob j, const char* idle) -> std::string {
+        if (active(j)) return "Working...";
+        if (hub.is_job_queued(j, {}, filt)) return "Queued";
+        return busy ? std::string("Queue") : std::string(idle);
+    };
+    if (ov::setting_row(m, "scan", "Scan new files", label_of(HubJob::ScanRoms, "Run"),
+                        "Hashes files you added and binds them to catalog titles.",
+                        !(file_busy || active(HubJob::ScanRoms) || any_queued))) {
+        hub.pending_scan_missing_rom_id.clear();
+        hub.start_job(HubJob::ScanRoms);
+    }
+    if (ov::setting_row(m, "purge", "Clean missing files", label_of(HubJob::PurgeMissingFiles, "Run"),
+                        "Drops library entries whose files no longer exist.",
+                        !(file_busy || active(HubJob::PurgeMissingFiles) || any_queued)))
+        hub.start_job(HubJob::PurgeMissingFiles);
+    if (ov::setting_row(m, "full", "Full rebuild of the index", label_of(HubJob::FullScanRoms, "Rebuild..."),
+                        "Re-hash every ROM and BIOS candidate and rebuild the index from scratch. On a large collection "
+                        "this takes many minutes.",
+                        !(file_busy || active(HubJob::FullScanRoms) || any_queued)))
+        ImGui::OpenPopup("##fullrebuild");
+    if (overlay_confirm("##fullrebuild", "Rebuild the index?",
+                        filt.empty()
+                            ? "Re-hash every ROM and BIOS candidate and rebuild the indexes from scratch. On a large "
+                              "collection this often takes many minutes and keeps the worker busy until it finishes."
+                            : "Re-hash every ROM and BIOS candidate for this platform and rebuild its index from scratch. "
+                              "Other platforms are left alone.",
+                        "Rebuild", !(active(HubJob::FullScanRoms) || any_queued))) {
+        hub.pending_scan_missing_rom_id.clear();
+        hub.start_job(HubJob::FullScanRoms);
+    }
+    ImGui::EndChild();
+    overlay_info_strip(info_h);
+    ImGui::EndChild();
 }
 
 // B (or Back) on the core page: out of the open scene, then out of the section,
