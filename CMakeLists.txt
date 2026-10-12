@@ -475,7 +475,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         )
     endif()
     # Picked files and title bundles into the hub's storage (content:// on Android).
-    target_sources(retro-hub PRIVATE src/hub/hub_import.cpp)
+    target_sources(retro-hub PRIVATE src/hub/hub_import.cpp src/hub/hub_overlay.cpp)
     target_include_directories(retro-hub PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
@@ -498,7 +498,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_picture.cpp
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_states.cpp src/hub/hub_picture.cpp
                    src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp
                    src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)
     # The VRU Microphone's recognizer, Vosk (third_party/vosk/NOTICE.md): never
@@ -532,7 +532,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # retro_overlay: the FPS / TURBO / volume / save-state overlay every core
     # gets (Retro-Runtime docs/OVERLAY.md).
-    target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay)
+    target_link_libraries(retro-hub PRIVATE retro_corelink retro_overlay retro_state)
     target_compile_definitions(retro-hub PRIVATE RETCOMM_HUB_HAVE_PLAY=1)
     # The pieces of it that need no window: --describe parsing, bindings and
     # option files, and the pad table they produce.

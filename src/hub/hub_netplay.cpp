@@ -1,4 +1,5 @@
 #include "hub/hub_netplay.hpp"
+#include "hub/hub_overlay.hpp"
 
 #include "hub/hub_model.hpp"
 #include "hub/hub_theme.hpp"
@@ -9,10 +10,12 @@
 #include "retcomm/netplay_handoff.hpp"
 #include "retcomm/netplay_lan.hpp"
 #include "retcomm/netplay_nat.hpp"
+#include "retcomm/paths.hpp"
 #include "retcomm/hash.hpp"
 #include "hub/hub_core_settings.hpp"
 
 #include "imgui.h"
+#include <SDL3/SDL_clipboard.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -214,7 +217,12 @@ public:
         start([this] {
             np::AccountInfo info;
             std::string err;
-            const bool ok = acct_->login(&info, &err, 300, true, {}, &cancel_);
+            const bool ok = acct_->login(&info, &err, 300, true,
+                                         [this](const std::string& u) {
+                                             std::lock_guard<std::mutex> lk(mu_);
+                                             login_url_ = u;
+                                         },
+                                         &cancel_);
             finish(ok, info, err);
         });
     }
@@ -253,6 +261,11 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return waiting_since_;
     }
+    // The page the sign-in opened (or tried to): shown so it can be opened by hand or copied.
+    std::string login_url() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return login_url_;
+    }
     // Discord is offered unless the server said otherwise (503 at start).
     bool offered() const { return acct_ && !acct_->unavailable(); }
 
@@ -263,6 +276,14 @@ public:
     void shutdown() {
         cancel_ = true;
         join();
+    }
+    // Stop waiting for the browser.
+    void cancel() {
+        cancel_ = true;
+        join();
+        std::lock_guard<std::mutex> lk(mu_);
+        state_ = State::Guest;
+        error_.clear();
     }
 
 private:
@@ -278,6 +299,7 @@ private:
             std::lock_guard<std::mutex> lk(mu_);
             state_ = State::Waiting;
             error_.clear();
+            login_url_.clear();
             waiting_since_ = now_s();
         }
         th_ = std::thread(std::move(f));
@@ -300,13 +322,14 @@ private:
     np::AccountInfo info_;
     std::string error_;
     double waiting_since_ = 0;
+    std::string login_url_;
     std::atomic<bool> cancel_{false};
     std::thread th_;
 };
 
 // ---- the page's state --------------------------------------------------------------------
 
-enum class View { Mode, SignIn, Online, Lan, Room };
+enum class View { Mode, SignIn, Online, Lan, Host, Room };
 
 struct Page {
     bool init = false;
@@ -334,6 +357,13 @@ struct Page {
     double decline_swaps_until = 0;
     double mode_entered_at = 0;
     bool asked_name = false;
+    // The overlay (draw_netplay_overlay): the open section of a view, a person or message a tap
+    // opened the actions of, and the seat likewise.
+    int sub = 0;
+    View sub_view = View::Mode, last_view = View::Mode;
+    std::string act_name, act_account, act_mid;
+    int seat_action_slot = -1;
+    bool seat_action_spec = false;
 
     // Modals
     bool open_host = false, open_name = false, open_net = false, open_join_pw = false;
@@ -666,7 +696,7 @@ bool mode_card(const char* id, const char* title, const char* body, bool accent,
     const float h = 150.f;
     ImGui::BeginDisabled(!enabled);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool pressed = retcomm::hub::overlay::nav_button(id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h),
@@ -1851,6 +1881,974 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
     }
 }
 
+// ---- the overlay's Netplay ---------------------------------------------------------------
+//
+// The same pages as above (mode, sign-in, online, LAN / Direct IP, host, room) as rows a
+// finger or a controller can reach: a header with where you are and Back, sections as a
+// row of buttons, every list entry a row, dialogs as modals in the overlay's look, and
+// the page's main actions pinned along the bottom. Used in the shell (no NetplayScope);
+// Direct mode keeps the older pages. The state and the lobby code are the older pages'.
+
+namespace ov = retcomm::hub::overlay;
+
+constexpr float kRowGap = 8.f;
+
+bool ov_item(const ov::Metrics& m, const char* id, const std::string& title, const std::string& sub,
+             const std::string& right, ImU32 right_col, bool enabled = true) {
+    return ov::item_row(m, id, title, sub, right, right_col, enabled);
+}
+
+using ov::kColMuted;
+using ov::kColGood;
+using ov::kColWarn;
+using ov::kColAccent;
+
+// A row of buttons choosing one of `names`; p.sub follows. Reset when the view changes.
+void ov_sections(const std::vector<std::string>& names, bool end_row = true) {
+    Page& p = page();
+    if (p.sub_view != p.view) {
+        p.sub_view = p.view;
+        p.sub = 0;
+    }
+    p.sub = std::clamp(p.sub, 0, static_cast<int>(names.size()) - 1);
+    for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+        if (i) ImGui::SameLine(0, 8.f);
+        if (ov::action_button(names[static_cast<size_t>(i)].c_str(), i == p.sub, 0.f) && i != p.sub) {
+            p.sub = i;
+            ov::row_info_reset();
+        }
+    }
+    if (end_row) ImGui::Dummy(ImVec2(0, 8));
+}
+
+// A short text kept in a std::string: a row, and its dialog. True when it changed.
+bool ov_text(const ov::Metrics& m, const char* id, const char* label, std::string& value, const char* hint,
+             const char* desc, bool secret = false, bool enabled = true, const char* shown_override = nullptr) {
+    bool changed = false;
+    ImGui::PushID(id);
+    const std::string shown = shown_override ? std::string(shown_override)
+                              : value.empty() ? std::string("not set")
+                              : secret        ? std::string("set")
+                                              : value;
+    if (ov::setting_row(m, "row", label, shown, desc, enabled)) ImGui::OpenPopup("##td");
+    std::string v = value;
+    const int r = ov::text_dialog("##td", label, v, hint, secret);
+    if (r == 1) {
+        value = v;
+        changed = true;
+    } else if (r == 2) {
+        value.clear();
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+void ov_status_line(const Theme& th) {
+    Page& p = page();
+    (void)th;
+    if (!p.status.empty()) ov::banner(p.status.c_str());
+}
+
+// The page frame: "Netplay > <where>", Back on the right (not in a room), and the
+// body. The caller draws the body between begin and end.
+void ov_begin(const char* where, bool back, View back_to) {
+    Page& p = page();
+    ImGui::BeginChild("##npov", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::TextColored(ImVec4(0.60f, 0.64f, 0.74f, 1.f), "Netplay");
+    if (where && *where) {
+        ImGui::SameLine(0, 8.f);
+        ImGui::TextColored(ImVec4(0.60f, 0.64f, 0.74f, 1.f), ">");
+        ImGui::SameLine(0, 8.f);
+        ImGui::TextUnformatted(where);
+    }
+    ImGui::SetWindowFontScale(1.f);
+    if (back) {
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 130.f);
+        ImGui::SetCursorPosY(0.f);
+        if (ov::action_button("< Back", false, 130.f)) {
+            p.view = back_to;
+            p.status.clear();
+            ov::row_info_reset();
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+}
+void ov_end() { ImGui::EndChild(); }
+
+// ---- mode ------------------------------------------------------------------------------
+
+bool ov_mode_card(const ov::Metrics& m, const char* id, const char* title, const char* body, bool accent,
+                  bool enabled, float w) {
+    const float h = m.compact ? 118.f : 150.f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ov::nav_button("##card", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    ImGui::EndDisabled();
+    const bool hot = enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    ov::card_frame(p0, p1, hot || accent, ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, 14.f);
+    ImGui::SetWindowFontScale(1.2f);
+    dl->AddText(ImVec2(p0.x + 20.f, p0.y + 16.f), IM_COL32(233, 237, 248, 255), title);
+    ImGui::SetWindowFontScale(1.f);
+    dl->PushClipRect(p0, p1, true);
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.92f, ImVec2(p0.x + 20.f, p0.y + 52.f),
+                enabled ? kColMuted : IM_COL32(153, 163, 188, 110), body, nullptr, w - 40.f);
+    dl->PopClipRect();
+    ImGui::PopID();
+    return pressed && enabled;
+}
+
+void ov_mode(HubModel& hub, const Theme& th, const ov::Metrics& m) {
+    Page& p = page();
+    ov_begin("", false, View::Mode);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float gap = 14.f;
+    const float w = (avail - gap) * 0.5f;
+    const Account::State st = p.account.state();
+    const bool offered = p.account.offered();
+    const double waited = st == Account::State::Waiting ? now_s() - p.account.waiting_since() : 0;
+    const bool holding = st == Account::State::Waiting && waited < 5.0;
+    const char* online_body = !offered ? "Find players on the lobby server. This server does not offer sign-in, so "
+                                         "you play as a guest."
+                              : holding ? "Checking your saved sign-in..."
+                                        : "Find players on the lobby server. Sign in with Discord so your name is "
+                                          "yours across sessions.";
+    ImGui::BeginChild("##npmodes", ImVec2(0, std::max(100.f, ImGui::GetContentRegionAvail().y)),
+                      ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+    {
+        const ImVec2 o = ImGui::GetCursorPos();
+        if (ov_mode_card(m, "lan", "LAN / Direct IP",
+                         "Play with someone on your network, or look up a host by address. No account, no lobby server.",
+                         false, true, w))
+            enter_lan(hub);
+        ImGui::SetCursorPos(ImVec2(o.x + w + gap, o.y));
+        if (ov_mode_card(m, "online", "Online Netplay", online_body, true, !holding, w)) {
+            if (!offered || st == Account::State::SignedIn || st == Account::State::Waiting) enter_online(hub);
+            else p.view = View::SignIn;
+        }
+        ImGui::SetCursorPos(ImVec2(o.x, o.y + (m.compact ? 118.f : 150.f) + 12.f));
+    }
+    ov_status_line(th);
+    ov::row_info_reset();
+    // Who you are here.
+    {
+        const std::string who = st == Account::State::SignedIn ? "Signed in as " + p.account.info().handle
+                                : holding                       ? std::string("Checking your saved sign-in...")
+                                : st == Account::State::Failed  ? "Not signed in: " + p.account.error()
+                                                                 : std::string("Guest");
+        if (ov::setting_row(m, "account", "Account", who,
+                            offered ? "Signing in with Discord gives you a name that is yours across sessions."
+                                    : "This lobby server does not offer sign-in.",
+                            offered && !holding)) {
+            if (st == Account::State::SignedIn) ImGui::OpenPopup("##signout");
+            else p.view = View::SignIn;
+        }
+        if (ov::confirm_dialog("##signout", "Sign out?", "You will play as a guest until you sign in again.", "Sign out")) {
+            p.account.sign_out();
+            if (p.client_started) connect(hub);
+        }
+    }
+    {
+        std::string name = hub.cfg.netplay.display_name;
+        const bool signed_in = st == Account::State::SignedIn;
+        if (ov_text(m, "name", "Player name", name, "Your name in lobbies",
+                    signed_in ? "Your name comes from your account." : "The name other players see.", false,
+                    !signed_in, signed_in ? p.account.info().handle.c_str() : nullptr)) {
+            const std::string n = trim(name);
+            p.name_error = name_problem(n, "name");
+            if (p.name_error.empty()) {
+                hub.cfg = load_app_config(hub.paths.config_path);
+                hub.cfg.netplay.display_name = n;
+                save_app_config(hub.paths.config_path, hub.cfg);
+                if (p.client_started) p.client.set_display_name(n);
+            } else {
+                p.status = p.name_error;
+            }
+        }
+    }
+    {
+        std::string url = lobby_url(hub);
+        if (ov_text(m, "server", "Lobby server", url, kDefaultNetplayLobbyUrl,
+                    "The lobby server's address. Empty goes back to the default.")) {
+            hub.cfg = load_app_config(hub.paths.config_path);
+            hub.cfg.netplay.lobby_url = trim(url);
+            if (hub.cfg.netplay.lobby_url.empty()) hub.cfg.netplay.lobby_url = kDefaultNetplayLobbyUrl;
+            save_app_config(hub.paths.config_path, hub.cfg);
+            p.account.shutdown();
+            p.account.configure(lobby_url(hub), hub.paths.data_dir / "netplay" / "account.key");
+            p.account.restore();
+            connect(hub);
+        }
+    }
+    {
+        if (ov::setting_row(m, "mods", "Ignored and blocked players", std::to_string(p.mod.by_account.size()),
+                            "Players whose chat you hide, and those you ask the matchmaker not to pair you with. "
+                            "Tap to remove one.",
+                            !p.mod.by_account.empty()))
+            ov::open_picker("##modlist");
+        std::vector<ov::PickerChoice> choices;
+        std::vector<std::string> accounts;
+        for (const auto& [acct, e] : p.mod.by_account) {
+            choices.push_back({(e.name.empty() ? acct : e.name) + (e.blocked ? "  (blocked)" : "  (ignored)"), "Tap to remove"});
+            accounts.push_back(acct);
+        }
+        const int pick = ov::picker(m, "##modlist", "Ignored and blocked", choices, -1);
+        if (pick >= 0) {
+            p.mod.by_account.erase(accounts[static_cast<size_t>(pick)]);
+            p.mod.save();
+        }
+    }
+    ImGui::EndChild();
+    ov_end();
+}
+
+// ---- sign in -------------------------------------------------------------------------------
+
+void ov_signin(HubModel& hub, const Theme& th, const ov::Metrics& m) {
+    Page& p = page();
+    const Account::State st = p.account.state();
+    if (st == Account::State::SignedIn) {
+        enter_online(hub);
+        return;
+    }
+    ov_begin("Sign in", true, View::Mode);
+    ov::muted("Signing in with Discord gives you a name that is yours across sessions and devices. Online play on this "
+              "server needs an account; LAN and Direct IP do not.");
+    ImGui::Dummy(ImVec2(0, 6));
+    if (st == Account::State::Waiting) {
+        const std::string url = p.account.login_url();
+        ov::banner("Waiting for Discord. Finish signing in in your browser, then come back to this app.");
+        ImGui::BeginChild("##sirows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        if (!url.empty()) {
+            if (ov::setting_row(m, "again", "Open the sign-in page again", "Browser",
+                                "Opens the page in your browser. It closes when you have signed in."))
+                open_url_in_browser(url, nullptr);
+            if (ov::setting_row(m, "copy", "Copy the sign-in link", "Copy",
+                                "For a browser on another device. The sign-in finishes here either way."))
+                SDL_SetClipboardText(url.c_str());
+        }
+        if (now_s() - p.account.waiting_since() > 5.0 &&
+            ov::setting_row(m, "again2", "Start over", "New sign-in",
+                            "If the page never opened, or you closed it: a fresh sign-in."))
+            p.account.relogin();
+        if (ov::setting_row(m, "cancel", "Cancel", "Stop waiting", "Go on as a guest.")) {
+            p.account.cancel();
+            p.view = View::Mode;
+        }
+        ImGui::EndChild();
+    } else {
+        ImGui::BeginChild("##sirows", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        if (st == Account::State::Failed) ov::banner(p.account.error().c_str());
+        if (ov::action_button("Sign in with Discord", true, 0.f)) p.account.login();
+        ImGui::Dummy(ImVec2(0, 8));
+        if (ov::setting_row(m, "guest", "Continue as a guest", "Browse lobbies",
+                            "Look at the lobbies without an account. The server may ask you to sign in to host or join."))
+            enter_online(hub);
+        ImGui::EndChild();
+    }
+    (void)th;
+    ov_end();
+}
+
+// ---- who / what a tap on a player or a message does ------------------------------------
+
+void open_person_actions(const std::string& name, const std::string& account, const std::string& mid) {
+    Page& p = page();
+    p.act_name = name;
+    p.act_account = account;
+    p.act_mid = mid;
+    ov::open_picker("##person");
+}
+
+void ov_person_dialogs(const ov::Metrics& m) {
+    Page& p = page();
+    {
+        std::vector<ov::PickerChoice> choices;
+        std::vector<int> kinds; // 0 ignore/unignore, 1 block/unblock, 2 report
+        const bool has_acct = !p.act_account.empty();
+        const bool hidden = has_acct && p.mod.hidden(p.act_account);
+        const bool blocked = has_acct && p.mod.blocked(p.act_account);
+        if (has_acct) {
+            if (!blocked) {
+                choices.push_back({hidden ? "Stop ignoring" : "Ignore player", "Hide their chat. They can still be in your lobby."});
+                kinds.push_back(0);
+            }
+            choices.push_back({blocked ? "Unblock player" : "Block player",
+                               "Hide their chat and ask the matchmaker not to pair you."});
+            kinds.push_back(1);
+        } else {
+            choices.push_back({"Signed-out players cannot be ignored", "There is no account to remember."});
+            kinds.push_back(-1);
+        }
+        if (!p.act_mid.empty()) {
+            choices.push_back({"Report this message", "The server keeps it and sends it to its moderators."});
+            kinds.push_back(2);
+        }
+        const int pick = ov::picker(m, "##person", p.act_name.c_str(), choices, -1);
+        if (pick >= 0) {
+            const int k = kinds[static_cast<size_t>(pick)];
+            if (k == 0) {
+                if (hidden) p.mod.by_account.erase(p.act_account);
+                else p.mod.by_account[p.act_account] = {p.act_name, false};
+                p.mod.save();
+            } else if (k == 1) {
+                if (blocked) p.mod.by_account.erase(p.act_account);
+                else p.mod.by_account[p.act_account] = {p.act_name, true};
+                p.mod.save();
+            } else if (k == 2) {
+                p.report_mid = p.act_mid;
+                p.report_name = p.act_name;
+                p.open_report = true;
+            }
+        }
+    }
+    if (p.open_report) {
+        p.open_report = false;
+        ov::open_picker("##reason");
+    }
+    {
+        static const char* kReasons[] = {"Harassment", "Hate speech", "Threats", "Sexual content",
+                                         "Spam",       "Cheating claim", "Something else"};
+        static const char* kCodes[] = {"harassment", "hate_speech", "threats", "sexual_content",
+                                       "spam",       "cheating_claim", "other"};
+        std::vector<ov::PickerChoice> choices;
+        for (const char* r : kReasons) choices.push_back({r, ""});
+        const int pick = ov::picker(m, "##reason", ("Report a message from " + p.report_name).c_str(), choices, -1);
+        if (pick >= 0) {
+            p.client.chat_report({p.report_mid}, kCodes[pick], "");
+            p.status = "Sending the report...";
+        }
+    }
+}
+
+// ---- chat -----------------------------------------------------------------------------------
+
+void ov_chat(const Theme& th, const ov::Metrics& m, const char* id, const std::deque<np::ChatLine>& lines,
+             std::uint64_t* seen, bool enabled, const char* empty_text, const char* disabled_text,
+             const std::function<void(const std::string&)>& send) {
+    Page& p = page();
+    (void)th;
+    const float input_h = m.item_h + 22.f;
+    ImGui::BeginChild(id, ImVec2(0, std::max(80.f, ImGui::GetContentRegionAvail().y - input_h)),
+                      ImGuiChildFlags_NavFlattened);
+    bool any = false;
+    std::uint64_t newest = 0;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (const np::ChatLine& l : lines) {
+        newest = l.seq;
+        if (!l.is_local && p.mod.hidden(l.from_account)) continue;
+        any = true;
+        ImGui::PushID(static_cast<int>(l.seq));
+        const float w = ImGui::GetContentRegionAvail().x;
+        if (l.is_system) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.64f, 0.74f, 1.f));
+            ImGui::TextWrapped("%s", l.text.c_str());
+            ImGui::PopStyleColor();
+        } else {
+            const std::string text = l.from + ":  " + l.text;
+            const ImVec2 ts = ImGui::CalcTextSize(text.c_str(), nullptr, false, w - 36.f);
+            const float h = ts.y + 22.f;
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            const bool pressed = !l.is_local && ov::nav_button("##ln", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+            if (l.is_local) ImGui::Dummy(ImVec2(w, h));
+            const ImVec2 p1(p0.x + w, p0.y + h);
+            ov::card_frame(p0, p1, !l.is_local && (ImGui::IsItemHovered() || ImGui::IsItemFocused()),
+                           !l.is_local && ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, 10.f);
+            const float nx = ImGui::CalcTextSize((l.from + ":").c_str()).x;
+            dl->AddText(ImVec2(p0.x + 14.f, p0.y + 11.f), l.is_local ? kColGood : kColAccent, (l.from + ":").c_str());
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p0.x + 14.f + nx + 8.f, p0.y + 11.f),
+                        IM_COL32(233, 237, 248, 255), l.text.c_str(), nullptr, std::max(40.f, w - 36.f - nx - 8.f));
+            if (pressed) open_person_actions(l.from, l.from_account, l.mid);
+            ImGui::Dummy(ImVec2(0, 4));
+        }
+        ImGui::PopID();
+    }
+    if (!any) ov::muted(enabled ? empty_text : disabled_text);
+    if (newest != *seen) {
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40.f) ImGui::SetScrollHereY(1.f);
+        *seen = newest;
+    }
+    ImGui::EndChild();
+    ImGui::PushID(id);
+    std::string msg;
+    if (ov::setting_row(m, "send", "Message", enabled ? "Write a message" : "unavailable", nullptr, enabled))
+        ImGui::OpenPopup("##msg");
+    const int r = ov::text_dialog("##msg", "Message", msg, "Say something");
+    if (r == 1 && !trim(msg).empty() && enabled) send(trim(msg));
+    ImGui::PopID();
+}
+
+// ---- online ------------------------------------------------------------------------------------
+
+void ov_online(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::vector<Game>& games) {
+    Page& p = page();
+    const np::Snapshot& s = p.snap;
+    const bool all = p.filter.empty();
+    {
+        std::string where = "Online";
+        if (s.state == np::ConnState::Connected)
+            where += std::string("  \xC2\xB7  ") + (s.signed_in ? "signed in as " : "guest ") + s.display_name +
+                     (s.rtt_ms >= 0 ? "  \xC2\xB7  " + std::to_string(s.rtt_ms) + " ms" : std::string());
+        else if (s.state == np::ConnState::Connecting) where += "  \xC2\xB7  connecting...";
+        else where += "  \xC2\xB7  can't reach the lobby server";
+        ov_begin(where.c_str(), true, View::Mode);
+    }
+
+    // The game filter.
+    {
+        const std::string label = all ? "All games" : title_for(hub, p.filter);
+        if (p.scope) {
+            ov::value_row(m, "game", "Game", p.scope->title + "  \xC2\xB7  " + p.scope->pin);
+        } else if (ov::setting_row(m, "game", "Game", label,
+                            "Show every game's lobbies, or one installed game's. Server chat and players online "
+                            "follow the game you pick."))
+            ov::open_picker("##gamefilter");
+        std::vector<ov::PickerChoice> choices{{"All games", ""}};
+        int cur = all ? 0 : -1;
+        for (size_t i = 0; i < games.size(); ++i) {
+            choices.push_back({games[i].title, games[i].pin});
+            if (games[i].game_name == p.filter) cur = static_cast<int>(i) + 1;
+        }
+        const int pick = ov::picker(m, "##gamefilter", "Game", choices, cur);
+        if (pick == 0) set_filter(hub, "", games);
+        else if (pick > 0) set_filter(hub, games[static_cast<size_t>(pick - 1)].game_name, games);
+    }
+    if (s.state == np::ConnState::Disconnected || s.state == np::ConnState::Failed)
+        if (!s.transport_error.empty()) ov::banner(s.transport_error.c_str());
+    ov_status_line(th);
+    ov_sections({"Lobbies  " + std::to_string(s.rooms.size()), "Players online", "Server chat"}, false);
+    ImGui::SameLine(0, 24.f);
+    if (ov::action_button("Host a lobby", true, 0.f)) {
+        open_host_modal(hub, games);
+        if (p.open_host) {
+            p.open_host = false;
+            p.view = View::Host;
+            ov::row_info_reset();
+        }
+    }
+    ImGui::SameLine(0, 8.f);
+    if (ov::action_button(s.state == np::ConnState::Connected ? "Refresh" : "Reconnect", false, 0.f)) {
+        if (s.state == np::ConnState::Connected) p.client.request_list();
+        else {
+            p.account.restore();
+            connect(hub);
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::BeginChild("##onbody", ImVec2(0, 0), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_None);
+    if (p.sub == 0) {
+        if (s.rooms.empty()) ov::muted("No lobbies yet. Host one.");
+        for (const np::LobbyRow& r : s.rooms) {
+            const std::string why = join_blocker(hub, games, r.game_name, r.game_version, nullptr);
+            std::string sub = title_for(hub, r.game_name);
+            if (r.allow_spectators) sub += "  \xC2\xB7  spectators " + std::to_string(r.spectator_count) + "/" + std::to_string(r.max_spectators);
+            if (!why.empty()) sub = why;
+            const std::string title = (r.host_country.empty() ? "" : r.host_country + "  ") +
+                                      (r.name.empty() ? "Unnamed lobby" : r.name) + (r.has_password ? "  [locked]" : "");
+            const std::string right = std::to_string(r.player_count) + "/" + std::to_string(r.max_slots) +
+                                      (why.empty() ? "  Join" : "");
+            if (ov_item(m, r.lobby_id.c_str(), title, sub, right, why.empty() ? kColGood : kColMuted, true))
+                join_room(hub, games, r);
+        }
+    } else if (p.sub == 1) {
+        int shown = 0;
+        for (const np::OnlinePlayer& o : p.snap.players) {
+            if (!o.is_local && p.mod.blocked(o.account)) continue;
+            ++shown;
+            const std::string game = o.game_name.empty() ? std::string() : title_for(hub, o.game_name);
+            std::string where = o.hosting ? "Hosting" : !o.lobby_id.empty() ? "In lobby" : "Browsing";
+            std::string sub = !o.lobby_name.empty() ? o.lobby_name : std::string();
+            if (!game.empty()) sub += (sub.empty() ? "" : "  \xC2\xB7  ") + game;
+            std::string title = (o.country.empty() ? "" : o.country + "  ") + o.display_name;
+            if (o.is_local) title += "  (you)";
+            else if (p.mod.hidden(o.account)) title += "  (ignored)";
+            if (ov_item(m, (o.display_name + std::to_string(shown)).c_str(), title, sub, where,
+                        o.hosting ? kColGood : kColMuted, !o.is_local))
+                open_person_actions(o.display_name, o.account, {});
+        }
+        if (shown == 0 || (shown == 1 && p.snap.players.size() <= 1))
+            ov::muted(all ? "Nobody else is online." : "Nobody else is online for this game.");
+    } else {
+        ov_chat(th, m, "server_chat", s.server_chat, &p.server_chat_seen, !all && s.state == np::ConnState::Connected,
+                "Everyone online for this game sees this. There is no history, only what is said while you are here.",
+                all ? "Server chat is per game: pick one in Game to talk with its players."
+                    : "Server chat is not available right now.",
+                [&](const std::string& t) { p.client.server_chat(t); });
+    }
+    ImGui::EndChild();
+    ov_person_dialogs(m);
+    ov_end();
+}
+
+// ---- host a lobby ------------------------------------------------------------------------------------
+
+void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::vector<Game>& games) {
+    Page& p = page();
+    ov_begin("Host a lobby", true, View::Online);
+    if (games.empty()) {
+        ov::muted("Install a game that supports netplay to host a lobby.");
+        ov_end();
+        return;
+    }
+    p.host_game = std::clamp(p.host_game, 0, static_cast<int>(games.size()) - 1);
+    const Game& g = games[static_cast<size_t>(p.host_game)];
+    ImGui::BeginChild("##hostrows", ImVec2(0, std::max(80.f, ImGui::GetContentRegionAvail().y - (m.item_h + 22.f))),
+                      ImGuiChildFlags_NavFlattened);
+    if (p.scope) ov::value_row(m, "game", "Game", g.title + "  \xC2\xB7  " + g.pin);
+    else if (ov::setting_row(m, "game", "Game", g.title, "The game the lobby is for. Guests need the same build.", games.size() > 1))
+        ov::open_picker("##hostgame");
+    {
+        std::vector<ov::PickerChoice> choices;
+        for (const Game& x : games) choices.push_back({x.title, "Version " + x.pin});
+        const int pick = ov::picker(m, "##hostgame", "Game", choices, p.host_game);
+        if (pick >= 0) p.host_game = pick;
+    }
+    {
+        std::string name = p.host_name;
+        if (ov_text(m, "lname", "Lobby name", name, "A name for the lobby", "What players see in the list.")) {
+            copy_to(p.host_name, sizeof(p.host_name), name);
+        }
+    }
+    {
+        const int top = std::min(8, g.max_slots);
+        p.host_max = std::clamp(p.host_max, 2, std::max(2, top));
+        if (top > 2) {
+            int mx = p.host_max;
+            if (ov::stepper_row(m, "max", "Max players", &mx, 2, top, 1, "", "How many players can sit in the match."))
+                p.host_max = mx;
+        } else {
+            ov::value_row(m, "max", "Max players", "2 (this game is 2-player)");
+        }
+    }
+    ov::toggle_row(m, "spec", "Allow spectators", &p.host_spectators, "Up to 4 watchers, on top of the players.");
+    if (p.scope && p.scope->tpak_supported)
+        ov::toggle_row(m, "tpak", "Transfer Paks", &p.host_tpak,
+                       "A Transfer Pak lobby needs all three Game Boy cartridges (Red, Blue, Yellow) set in Transfer Pak "
+                       "Support, on every player's machine.");
+    {
+        std::string pw = p.host_pw;
+        if (ov_text(m, "pw", "Password", pw, "optional", "Players need it to join. Empty means anyone can.", true))
+            copy_to(p.host_pw, sizeof(p.host_pw), pw);
+    }
+    if (!p.host_error.empty()) ov::banner(p.host_error.c_str());
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0, 4));
+    const bool connected = p.snap.state == np::ConnState::Connected;
+    ImGui::BeginDisabled(!connected);
+    if (ov::action_button("Create lobby", true, 0.f)) {
+        const std::string name = trim(p.host_name);
+        p.host_error = name_problem(name, "lobby name");
+        if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
+            p.host_error = p.scope->tpak_problem();
+        if (p.host_error.empty() && p.scope) {
+            json caps = json::object();
+            caps["tpak"] = p.host_tpak;
+            caps["relay"] = "host"; // the lobby server's relay only as a fallback
+            p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max, p.host_spectators, caps);
+            if (p.filter.empty()) p.scope_dirty = true;
+            p.status = "Creating lobby...";
+            p.view = View::Online;
+        } else if (p.host_error.empty()) {
+            Page::PendingSeat ps;
+            ps.create = true;
+            ps.game_name = g.game_name;
+            ps.version = g.pin;
+            ps.name = name;
+            ps.password = p.host_pw;
+            ps.max_slots = p.host_max;
+            ps.spectators = p.host_spectators;
+            begin_seat(hub, g, std::move(ps));
+            p.view = View::Online;
+        }
+    }
+    ImGui::EndDisabled();
+    if (!connected) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(th.warn, "Not connected to the lobby server.");
+    }
+    ov_end();
+}
+
+// ---- LAN / Direct IP ---------------------------------------------------------------------------------
+
+void ov_lan(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::vector<Game>& games) {
+    Page& p = page();
+    ov_begin("LAN / Direct IP", true, View::Mode);
+    ov_sections({"Rooms on your network", "Direct IP"});
+    ov_status_line(th);
+    const float footer_h = m.item_h + 22.f;
+    ImGui::BeginChild("##lanbody", ImVec2(0, std::max(80.f, ImGui::GetContentRegionAvail().y - footer_h)),
+                      ImGuiChildFlags_NavFlattened);
+    if (p.sub == 0) {
+        const std::string lerr = p.lan.listen_error();
+        if (!lerr.empty())
+            ov::banner(("Not listening for recomp-net rooms: " + lerr + ". PlayStation rooms are still found.").c_str());
+        const auto rooms = p.lan.rooms();
+        if (rooms.empty())
+            ov::muted("No LAN rooms found yet. Hosts on your network show up here while their waiting room is open.");
+        for (size_t i = 0; i < rooms.size(); ++i) {
+            const np::LanRoom& r = rooms[i];
+            const Game* g = game_by_wire_name(games, r.game_name);
+            const std::string title = (r.name.empty() ? std::string("Unnamed room") : r.name) +
+                                      (r.has_password ? "  [locked]" : "") + (r.direct ? "  [direct]" : "");
+            const std::string sub = (g ? g->title : title_for(hub, r.game_name)) + "  \xC2\xB7  " + r.endpoint +
+                                    (r.game_version.empty() ? "" : "  \xC2\xB7  " + r.game_version);
+            if (ov_item(m, ("lan" + std::to_string(i)).c_str(), title, sub,
+                        std::to_string(r.players) + "/" + std::to_string(r.max_slots), kColMuted)) {
+                p.status = "A LAN room is held by the host's game, and a seat is taken by yours. Join from " +
+                           (g ? g->title : std::string("the game")) +
+                           "'s own Netplay menu (LAN / Direct IP): Retro cannot hand a seat to a game yet.";
+            }
+        }
+    } else {
+        ov::muted("Look up a lobby by address: a host's LAN IP on your network, or their public IP with the game's UDP "
+                  "port forwarded. Retro finds the room; joining happens in the game's own Netplay menu with the same "
+                  "address.");
+        std::string ip = p.direct_ip, port = p.direct_port;
+        if (ov_text(m, "ip", "Host IP", ip, "192.168.1.20", "The address of the host's machine."))
+            copy_to(p.direct_ip, sizeof(p.direct_ip), trim(ip));
+        if (ov_text(m, "port", "Port", port, "7777", "The game's UDP port (7777 by default)."))
+            copy_to(p.direct_port, sizeof(p.direct_port), trim(port));
+        if (ov::setting_row(m, "look", "Look up", "Ask this address", "Sends a lookup and lists the room if it answers.")) {
+            std::string ip_s;
+            int port_n = 0;
+            const std::string ep = trim(p.direct_ip) + ":" + trim(p.direct_port);
+            if (np::split_endpoint(ep, &ip_s, &port_n)) {
+                p.lan.probe(ip_s, port_n);
+                p.direct_status = "asked";
+            } else {
+                p.direct_status.clear();
+                p.status = "Enter an IPv4 address and a port, like 192.168.1.20 and 7777.";
+            }
+        }
+        const auto probe = p.lan.last_probe();
+        if (!p.direct_status.empty()) {
+            if (probe.pending) ov::muted(("Asking " + probe.endpoint + "...").c_str());
+            else if (probe.answered)
+                ov::muted(("Found a lobby at " + probe.endpoint + ". It is in the list under Rooms on your network.").c_str());
+            else
+                ov::banner(("No answer from " + probe.endpoint +
+                            ". A PlayStation host answers while its LAN waiting room is open; other games' hosts only "
+                            "answer a join, which their own Netplay menu makes.")
+                               .c_str());
+        }
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0, 4));
+    if (ov::action_button("Refresh", false, 0.f)) p.lan.refresh();
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(th.text_muted, "Hosting from here needs the game's own Netplay menu: its game owns the lobby.");
+    ov_end();
+}
+
+// ---- the room ---------------------------------------------------------------------------------------------
+
+void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::vector<Game>& games) {
+    Page& p = page();
+    const np::Snapshot& s = p.snap;
+    (void)games;
+    std::string game_label, version;
+    for (const np::LobbyRow& r : s.rooms)
+        if (r.lobby_id == s.lobby_id) {
+            game_label = title_for(hub, r.game_name);
+            version = r.game_version;
+        }
+    const std::string where = (s.room_name.empty() ? std::string("Lobby") : s.room_name) +
+                              (game_label.empty() ? "" : "  \xC2\xB7  " + game_label + " " + version);
+    ov_begin(where.c_str(), false, View::Online);
+    const bool tpak_room = s.match_caps.is_object() && s.match_caps.value("tpak", false);
+    if (p.scope) {
+        ov::muted((std::string("Transfer Paks: ") + (tpak_room ? "on" : "off") +
+                   ". The host's Play starts the match here on every player's machine.")
+                      .c_str());
+        if (p.scope->match_problem)
+            if (const std::string mw = p.scope->match_problem(); !mw.empty()) ov::banner(mw.c_str());
+        if (tpak_room) {
+            std::string line = "Transfer Paks:";
+            for (const np::Member& mm : s.members) {
+                if (mm.is_spectator) continue;
+                const auto it = p.paks.find(mm.player_id);
+                line += "  P" + std::to_string(mm.slot + 1) + " ";
+                line += it == p.paks.end() ? std::string("...")
+                        : it->second.cart < 0 ? std::string("no pak")
+                                              : std::string(supported_gb_rom(it->second.cart).label);
+            }
+            ov::muted(line.c_str());
+            if (!p.pak_note.empty()) ov::banner(("Your pak: " + p.pak_note).c_str());
+        }
+        if (!p.relay_note.empty()) {
+            if (p.relay_note_bad) ov::banner(p.relay_note.c_str());
+            else ov::muted(p.relay_note.c_str());
+        }
+    } else if (p.lib && p.lib->capable)
+        ov::muted(("The host's PLAY starts " + p.lib->title.name + " on every player's machine, into this match.").c_str());
+    else
+        ov::banner((p.lib && !p.lib->why.empty()
+                        ? p.lib->why
+                        : std::string("Retro cannot start this game into a match: update the game, or start the match "
+                                      "from its own Netplay menu."))
+                       .c_str());
+    if (!p.room_status.empty()) ov::banner(p.room_status.c_str());
+
+    int seated = 0;
+    for (const np::Member& mm : s.members)
+        if (!mm.is_spectator) ++seated;
+    ov_sections({"Seats  " + std::to_string(seated) + "/" + std::to_string(s.max_slots), "Chat", "Info"}, false);
+    // Leave and Play ride the sections' row: the page is short.
+    std::string play_why;
+    ImGui::SameLine(0, 24.f);
+    if (ov::action_button("Leave lobby", false, 0.f)) {
+        if (s.is_host) p.client.close_room();
+        else p.client.leave();
+    }
+    if (s.is_host) {
+        const Page::LibGame* lib = p.scope ? nullptr : p.lib.get();
+        const std::string lib_why = p.scope ? std::string()
+                                    : !lib ? std::string("Retro cannot start this game into a match")
+                                    : !lib->capable ? lib->why
+                                    : !lib->identity.is_object() ? "Preparing " + lib->title.name + "..."
+                                    : lib->settle_f.valid() ? std::string("Settling the match...")
+                                                            : std::string();
+        const std::string match_why = p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
+        play_why = seated < 2 ? std::string("Waiting for another player to join")
+                   : !lib_why.empty() ? lib_why
+                   : !match_why.empty() ? match_why
+                   : tpak_room && p.scope && !paks_complete(s) ? std::string("Waiting for every player's Transfer Pak")
+                                                                : std::string();
+        ImGui::SameLine(0, 8.f);
+        ImGui::BeginDisabled(!play_why.empty());
+        const bool play_pressed = ov::action_button("Play", true, 0.f);
+        if (play_pressed && p.scope) {
+            p.client.start_match();
+            p.room_status = "Starting the match...";
+        } else if (play_pressed) {
+            const json req = np::handoff_settle_request(s);
+            p.lib->settle_f = std::async(std::launch::async,
+                                         [paths = hub.paths, title = p.lib->title, opts = p.lib->opts,
+                                          dir = p.lib->work_dir, req]() {
+                                             return np::run_handoff_query(paths, title, opts, req, dir);
+                                         });
+            p.room_status = "Settling the match...";
+        }
+        ImGui::EndDisabled();
+    } else {
+        play_why = "Waiting for the host to start...";
+    }
+    if (!play_why.empty()) ov::muted(play_why.c_str());
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::BeginChild("##roombody", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (p.sub == 0) {
+        auto seat = [&](int slot, const np::Member* mem, bool spectator) {
+            const bool mine = mem && mem->is_local;
+            std::string title = std::string(spectator ? "S" : "P") + std::to_string(slot + 1) + "   ";
+            std::string right, sub;
+            bool seated_me = false;
+            for (const np::Member& x : s.members)
+                if (x.is_local && !x.is_spectator) seated_me = true;
+            if (mem) {
+                title += (mem->country.empty() ? "" : mem->country + "  ") + mem->display_name + (mine ? "  (you)" : "");
+                right = spectator ? "Watching" : mem->is_host ? "Host" : mem->ready ? "Connected" : "Waiting";
+            } else {
+                title += "Open slot";
+                right = seated_me ? "Move here" : "";
+            }
+            if (ov_item(m, ((spectator ? "s" : "p") + std::to_string(slot)).c_str(), title, sub, right,
+                        mine ? kColGood : mem ? kColMuted : kColAccent, mem || seated_me)) {
+                p.seat_action_slot = slot;
+                p.seat_action_spec = spectator;
+                ov::open_picker("##seat");
+            }
+        };
+        const int seats = std::max(s.max_slots, seated);
+        for (int slot = 0; slot < seats; ++slot) {
+            const np::Member* mem = nullptr;
+            for (const np::Member& x : s.members)
+                if (!x.is_spectator && x.slot == slot) mem = &x;
+            seat(slot, mem, false);
+        }
+        for (const np::Member& x : s.members)
+            if (x.is_spectator) seat(x.slot, &x, true);
+    } else if (p.sub == 1) {
+        ov_chat(th, m, "room_chat", s.room_chat, &p.room_chat_seen, s.state == np::ConnState::Connected,
+                "Say hello. Everyone in the room sees this.", "Chat is not available in this room.",
+                [&](const std::string& t) { p.client.chat(t); });
+    } else {
+        ov::value_row(m, "srv", "Lobby server", p.client_url);
+        ov::value_row(m, "lid", "Lobby id", s.lobby_id);
+        if (s.match_caps.is_object() && !s.match_caps.empty())
+            for (auto it = s.match_caps.begin(); it != s.match_caps.end(); ++it) {
+                if (it.key() == "v" || it.key() == "mods") continue;
+                ov::value_row(m, it.key().c_str(), it.key().c_str(), it->dump());
+            }
+    }
+    ImGui::EndChild();
+
+    // The seat a tap opened: move there, swap, kick, ignore.
+    {
+        std::vector<ov::PickerChoice> choices;
+        std::vector<std::function<void()>> acts;
+        const int slot = p.seat_action_slot;
+        const np::Member* target = nullptr;
+        for (const np::Member& x : s.members)
+            if (x.is_spectator == p.seat_action_spec && x.slot == slot) target = &x;
+        const np::Member* me = nullptr;
+        for (const np::Member& x : s.members)
+            if (x.is_local) me = &x;
+        const std::string title = target ? target->display_name : std::string("Open seat");
+        if (!p.seat_action_spec) {
+            if (!target && me && !me->is_spectator) {
+                choices.push_back({"Move here", "Take this open seat"});
+                acts.push_back([&, slot] {
+                    if (s.is_host) p.client.move_slot(me->slot, slot);
+                    else p.client.seat_move(slot);
+                });
+            } else if (target && me && !me->is_spectator && !target->is_local && !s.is_host) {
+                choices.push_back({"Ask to swap seats", "They are asked to accept"});
+                acts.push_back([&, slot] {
+                    p.client.seat_swap_request(slot);
+                    p.room_status = "Waiting for the other player to accept the seat swap...";
+                });
+            } else if (target && target->is_local) {
+                // A host moves anyone; a guest moves themselves: to an open seat, or by asking.
+                for (int to = 0; to < std::max(s.max_slots, seated); ++to) {
+                    if (to == slot) continue;
+                    const np::Member* occ = nullptr;
+                    for (const np::Member& x : s.members)
+                        if (!x.is_spectator && x.slot == to) occ = &x;
+                    if (!occ) {
+                        choices.push_back({"Move to P" + std::to_string(to + 1), "Open"});
+                        acts.push_back([&, slot, to] { if (s.is_host) p.client.move_slot(slot, to); else p.client.seat_move(to); });
+                    } else if (!s.is_host) {
+                        choices.push_back({"Swap with " + occ->display_name + " (P" + std::to_string(to + 1) + ")", "They are asked to accept"});
+                        acts.push_back([&, to] {
+                            p.client.seat_swap_request(to);
+                            p.room_status = "Waiting for the other player to accept the seat swap...";
+                        });
+                    }
+                }
+            }
+            if (s.is_host && target && !target->is_local) {
+                for (int to = 0; to < std::max(s.max_slots, seated); ++to) {
+                    if (to == slot) continue;
+                    choices.push_back({"Move to P" + std::to_string(to + 1), "Swaps if someone is there"});
+                    acts.push_back([&, slot, to] { p.client.move_slot(slot, to); });
+                }
+            }
+        }
+        if (s.is_host && target && !target->is_local && !target->is_host) {
+            choices.push_back({"Kick", "Remove them from the lobby"});
+            acts.push_back([&, slot] { p.client.kick(slot); });
+        }
+        if (target && !target->is_local) {
+            choices.push_back({"Ignore or block...", "Chat and matchmaking"});
+            acts.push_back([&] {
+                if (target) open_person_actions(target->display_name, target->account, {});
+            });
+        }
+        if (choices.empty()) choices.push_back({"Nothing to do here", ""}), acts.push_back([] {});
+        const int pick = ov::picker(m, "##seat", title.c_str(), choices, -1);
+        if (pick >= 0) acts[static_cast<size_t>(pick)]();
+    }
+    ov_person_dialogs(m);
+
+    ov_end();
+}
+
+// Dialogs the older pages opened through flags (a password, the name prompt, a swap ask).
+void ov_flag_dialogs(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::vector<Game>& games) {
+    Page& p = page();
+    (void)th;
+    (void)m;
+    if (p.open_join_pw) {
+        p.open_join_pw = false;
+        ImGui::OpenPopup("##joinpw");
+    }
+    {
+        std::string pw;
+        const int r = ov::text_dialog("##joinpw", "Lobby password", pw, "password", true);
+        if (r == 1) {
+            Page::PendingSeat ps;
+            ps.lobby_id = p.join_pw_lobby;
+            ps.password = pw;
+            ps.game_name = p.join_pw_game;
+            ps.version = p.join_pw_version;
+            if (const Game* g = game_by_wire_name(games, p.join_pw_game)) begin_seat(hub, *g, std::move(ps));
+            else send_seat(ps, json::object());
+        }
+    }
+    if (p.open_name) {
+        p.open_name = false;
+        ImGui::OpenPopup("##npname");
+    }
+    {
+        std::string n = hub.cfg.netplay.display_name;
+        const int r = ov::text_dialog("##npname", "Player name", n, "Your name in lobbies");
+        if (r == 1) {
+            const std::string t = trim(n);
+            p.name_error = name_problem(t, "name");
+            if (p.name_error.empty()) {
+                hub.cfg = load_app_config(hub.paths.config_path);
+                hub.cfg.netplay.display_name = t;
+                save_app_config(hub.paths.config_path, hub.cfg);
+                if (p.client_started) p.client.set_display_name(t);
+            } else {
+                p.status = p.name_error;
+            }
+        }
+    }
+    if (p.open_swap) {
+        p.open_swap = false;
+        ImGui::OpenPopup("##swap");
+    }
+    {
+        static bool was_open = false, answered = false;
+        if (ov::confirm_dialog("##swap", "Swap seats?",
+                               (p.swap.asker_name + " wants to swap seats with you. They are in P" +
+                                std::to_string(p.swap.from_slot + 1) + "; you are in P" +
+                                std::to_string(p.swap.target_slot + 1) + ".")
+                                   .c_str(),
+                               "Swap")) {
+            p.client.seat_swap_answer(true, p.swap.asker_player_id);
+            answered = true;
+        }
+        // Closed any other way: keep the seat, and decline further asks for 30 s.
+        const bool open = ImGui::IsPopupOpen("##swap");
+        if (was_open && !open) {
+            if (!answered) {
+                p.client.seat_swap_answer(false, p.swap.asker_player_id);
+                p.decline_swaps_until = now_s() + 30.0;
+            }
+            answered = false;
+        }
+        was_open = open;
+    }
+}
+
+void draw_netplay_overlay(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
+    Page& p = page();
+    const ov::Metrics m = ov::metrics(ImGui::GetMainViewport()->Size);
+    if (p.view != p.last_view) {
+        ov::row_info_reset();
+        p.last_view = p.view;
+    }
+    switch (p.view) {
+    case View::Mode: ov_mode(hub, th, m); break;
+    case View::SignIn: ov_signin(hub, th, m); break;
+    case View::Online: ov_online(hub, th, m, games); break;
+    case View::Lan: ov_lan(hub, th, m, games); break;
+    case View::Host: ov_host(hub, th, m, games); break;
+    case View::Room: ov_room(hub, th, m, games); break;
+    }
+    ov_flag_dialogs(hub, th, m, games);
+}
+
 // Per frame: what the lobby said since last frame.
 void ingest(HubModel& hub) {
     Page& p = page();
@@ -2192,6 +3190,12 @@ void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/,
     ingest(hub);
     const std::vector<Game> games = installed_games(hub);
 
+    // In the shell (not one game's Direct mode) the page is the overlay's.
+    if (retcomm::hub::overlay::enabled()) {
+        draw_netplay_overlay(hub, th, games);
+        return;
+    }
+
     // Page header: title, the name button, and Back to the mode page.
     ImGui::Dummy(ImVec2(0, 4));
     const float header_x = ImGui::GetCursorPosX();
@@ -2227,6 +3231,7 @@ void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* /*window*/,
     ImGui::Dummy(ImVec2(0, 4));
 
     switch (p.view) {
+    case View::Host: p.view = View::Online; break;
     case View::Mode: draw_mode(hub, th); break;
     case View::SignIn: draw_signin(hub, th); break;
     case View::Online: draw_online(hub, th, games); break;
@@ -2271,6 +3276,20 @@ std::vector<std::string> netplay_runner_args(const NetplayLaunch& l, std::string
         return {};
     }
     return a;
+}
+
+bool netplay_step_back() {
+    Page& p = page();
+    if (p.view == View::Online || p.view == View::Lan || p.view == View::SignIn) {
+        p.view = View::Mode;
+        p.status.clear();
+        return true;
+    }
+    if (p.view == View::Host) {
+        p.view = View::Online;
+        return true;
+    }
+    return false;
 }
 
 void netplay_shutdown() {

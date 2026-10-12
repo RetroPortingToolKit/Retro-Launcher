@@ -1,4 +1,5 @@
 #include "hub/hub_play.hpp"
+#include "hub/hub_overlay.hpp"
 
 #include "imgui.h"
 
@@ -115,12 +116,6 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     picture_.set_style(args.picture);
     // A title's save states live with its saves: <save_dir>/states/slotNN.rstate.
     states_dir_ = save_dir / "states";
-    {
-        // The browser's header: how to open and close it, as bound.
-        std::string hint = shortcut_text(HostAction::SaveStates);
-        for (char& c : hint) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        states_.set_hint(hint);
-    }
     corelink::LaunchSpec spec;
     spec.runner = runner;
     spec.core = args.core;
@@ -178,7 +173,6 @@ bool PlaySession::handle_event(const SDL_Event& e) {
     if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) turbo_key_ = turbo_ = false;
     if (link_.state() != corelink::LinkState::Ready) return false;
     // The browser, while open, has the keyboard and the pads to itself.
-    if (states_.is_open()) return handle_states_event(e);
 
     // The keyboard shortcuts as bound (PlayPrefs::hotkeys, the settings
     // page's Hotkeys panel); F1 and keypad +/- always work too. Controller
@@ -252,13 +246,10 @@ void PlaySession::poll_host_combos() {
     };
     const bool menu = (l3r3 && !l3r3_prev_) || edge(HostAction::Menu);
     l3r3_prev_ = l3r3;
-    if (menu) {
-        if (states_.is_open()) states_.close();
-        else set_paused(!menu_open_);
-    }
+    if (menu) set_paused(!menu_open_);
     if (edge(HostAction::SaveStates)) {
-        if (states_.is_open()) states_.close();
-        else if (!menu_open_) open_states();
+        if (menu_open_ && menu_page_ == MenuPage::States) set_paused(false);
+        else open_states();
     }
     if (edge(HostAction::ShowFps)) set_show_fps(!prefs_.show_fps);
     if (edge(HostAction::VolumeUp)) set_volume(prefs_.volume + kVolumeStep);
@@ -268,29 +259,20 @@ void PlaySession::poll_host_combos() {
     combo_prev_ = held;
 }
 
-bool PlaySession::handle_states_event(const SDL_Event& e) {
-    using Key = retro::overlay::SavestateMenu::Key;
-    if (e.type == SDL_EVENT_KEY_DOWN) {
-        const SDL_Keycode k = e.key.key;
-        if (k == SDLK_UP || k == SDLK_LEFT) states_.key(Key::Up);
-        else if (k == SDLK_DOWN || k == SDLK_RIGHT) states_.key(Key::Down);
-        else if (e.key.repeat) {
-        } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) states_.key(Key::Load);
-        else if (k == SDLK_S) states_.key(Key::Save);
-        else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE || k == SDLK_F7) states_.key(Key::Back);
-        else if (k >= SDLK_1 && k <= SDLK_9) states_.jump(int(k - SDLK_1));
-        else if (k == SDLK_0) states_.jump(9);
-        else if (k == SDLK_MINUS) states_.jump(10);
-        else if (k == SDLK_EQUALS) states_.jump(11);
-        else if (k == SDLK_F3) set_show_fps(!prefs_.show_fps);
-        return true;
-    }
-    // Pads are read in tick(); none of it reaches ImGui behind the browser.
-    return e.type == SDL_EVENT_KEY_UP || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
-           e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
-}
-
 void PlaySession::set_paused(bool paused) {
+    if (paused && !menu_open_) {
+        menu_focus_ = true;
+        menu_page_ = MenuPage::Main;
+        states_view_ = -1;
+        states_confirm_ = -1;
+    }
+    if (!paused && menu_open_) {
+        // Closing: whatever is held now stays out of the game until released, so
+        // the press that chose Resume (or loaded a slot) is not also the game's.
+        rcore_pad pads[RCORE_MAX_SEATS];
+        fill_pads(pads);
+        guard_.arm(pads, kSeats);
+    }
     menu_open_ = paused;
     sync_pause();
 }
@@ -329,12 +311,11 @@ void PlaySession::save_prefs() {
     }
 }
 
-// The hotkey's way in; the pad chord opens it in poll_states_pad(). A core
-// without savestates, or a runner from before link 1.1, gets a toast instead.
+// The hotkey's way in: the quick menu, on its Save states page. A core without
+// savestates, or a runner from before link 1.1, gets a toast instead.
 void PlaySession::open_states() {
     if (netplay_) {
         osd_.toast("Save states are off during a netplay match", SDL_GetTicksNS(), 3000);
-        states_.close();
         return;
     }
     const corelink::CoreIdentity& id = link_.identity();
@@ -344,69 +325,46 @@ void PlaySession::open_states() {
                 ? "Save states need a newer retro-core-runner"
                                   : id.core_id + " has no save states";
         osd_.toast(why, SDL_GetTicksNS(), 3000);
-        states_.close();
         return;
     }
     if (!states_configured_) {
         states_.configure(states_dir_, id.core_id, id.sha256);
         states_configured_ = true;
     }
-    states_.open();
-}
-
-void PlaySession::poll_states_pad(std::uint64_t now) {
-    std::int16_t stick_y = 0;
-    // Select is Function's by default, and the browser's own Select + R1
-    // chord would open it behind poll_host_combos()'s back: keep it out.
-    const std::uint32_t buttons = physical_pads(stick_y) & ~std::uint32_t(RCORE_PAD_SELECT);
-    if (menu_open_) return; // the quick menu has the pads
-    if (states_.poll_pad(buttons, stick_y, now / 1000000ull)) {
-        states_.close();
-        open_states();
-    }
+    states_.refresh();
+    states_.clear_status();
+    if (!menu_open_) set_paused(true);
+    menu_page_ = MenuPage::States;
+    states_view_ = -1;
+    states_confirm_ = -1;
 }
 
 void PlaySession::service_states() {
     const std::uint64_t now = SDL_GetTicksNS();
-    // Closing: whatever is held now stays out of the game until released.
-    // Checked again after the state result below, which closes the menu on a
-    // load and asks for the next frame at once: armed only on the next call,
-    // that frame went out with the A that chose the slot still held, and the
-    // restored game -- whose RAM says it was not held -- took it as a press.
-    const auto guard_on_close = [&] {
-        const bool open = states_.is_open();
-        if (states_were_open_ && !open) {
-            rcore_pad pads[RCORE_MAX_SEATS];
-            fill_pads(pads);
-            guard_.arm(pads, kSeats);
-        }
-        states_were_open_ = open;
-    };
-    guard_on_close();
-    if (std::string t = states_.take_toast(); !t.empty()) osd_.toast(t, now);
-
-    using Req = retro::overlay::SavestateMenu::Request;
+    using Req = StatesBrowser::Request;
     if (state_request_.kind == Req::None) state_request_ = states_.take_request();
     if (state_request_.kind != Req::None && !link_.state_pending()) {
+        const bool save = state_request_.kind == Req::Save;
         // The frame in flight finishes first: a state is taken between frames.
         if (link_.state() != corelink::LinkState::Ready) {
-            states_.finish(false, "the game stopped");
+            states_.finish(false, save, "the game stopped");
             state_request_ = Req{};
         } else if (link_.can_request_state()) {
-            const bool sent = state_request_.kind == Req::Save
-                                  ? link_.request_save_state(state_request_.path)
-                                  : link_.request_load_state(state_request_.path);
-            if (!sent) states_.finish(false, "the link could not send the request");
+            const bool sent = save ? link_.request_save_state(state_request_.path)
+                                   : link_.request_load_state(state_request_.path);
+            if (!sent) states_.finish(false, save, "the link could not send the request");
             state_request_ = Req{};
         }
     }
     if (std::optional<corelink::StateResult> r = link_.take_state_result()) {
         SDL_Log("retro-hub: state %s %s: %s", r->save ? "save" : "load",
                 r->path.string().c_str(), r->ok ? "ok" : r->detail.c_str());
-        states_.finish(r->ok, r->detail);
-        guard_on_close();
+        states_.finish(r->ok, r->save, r->detail);
+        if (r->ok) osd_.toast(states_.status(), now);
         if (r->ok && !r->save) next_grant_ns_ = 0;
     }
+    // A load that worked puts the player back in the game.
+    if (states_.take_loaded()) set_paused(false);
 }
 
 void PlaySession::fill_pads(rcore_pad pads[RCORE_MAX_SEATS]) {
@@ -419,7 +377,7 @@ void PlaySession::grant(std::uint64_t) {
     fill_pads(pads);
     guard_.apply(pads, kSeats);
     // In a match, a player in the menu holds nothing (the game runs on).
-    if (netplay_ && (menu_open_ || states_.is_open())) {
+    if (netplay_ && menu_open_) {
         for (rcore_pad& p : pads) {
             const std::uint32_t connected = p.connected;
             p = rcore_pad{};
@@ -620,11 +578,10 @@ void PlaySession::tick() {
     osd_.set_turbo(turbo_);
     if (link_.state() == corelink::LinkState::Ended) {
         if (audio_) SDL_PauseAudioStreamDevice(audio_);
-        if (states_.pending()) states_.finish(false, "the game stopped");
+        if (states_.busy()) states_.finish(false, false, "the game stopped");
         return;
     }
     if (ready) {
-        poll_states_pad(SDL_GetTicksNS());
         service_states();
     }
     sync_pause();
@@ -647,7 +604,9 @@ void PlaySession::draw() {
     bg->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(0, 0, 0, 255));
     // Letterboxed to the core's stated aspect, scaled as the player chose
     // (hub_picture.hpp).
-    picture_.draw(bg, paused() ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE);
+    // The overlay's own flat layer dims the picture; the older menu greys it.
+    const bool grey = paused() && !overlay::enabled();
+    picture_.draw(bg, grey ? IM_COL32(110, 110, 110, 255) : IM_COL32_WHITE);
     switch (link_.state()) {
         case corelink::LinkState::Starting:
         case corelink::LinkState::Idle:
@@ -661,6 +620,9 @@ void PlaySession::draw() {
         case corelink::LinkState::Ready:
             draw_overlay();
             if (menu_open_) draw_menu();
+#if defined(__ANDROID__)
+            else draw_menu_handle();
+#endif
             break;
     }
 }
@@ -671,7 +633,6 @@ void PlaySession::draw() {
 void PlaySession::draw_overlay() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
-    if (const retro::overlay::Layer* panel = states_.layer()) layers.push_back(*panel);
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     for (const retro::overlay::Layer& l : layers) {
         const retro::overlay::Image& img = *l.image;
@@ -713,7 +674,313 @@ void PlaySession::draw_loading() {
     ImGui::End();
 }
 
+// The Save states page of the quick menu, in two steps: the twelve slots as
+// thumbnails, and, once one is picked, that slot alone with its Save, Load and
+// Delete. The hub's own page, so it looks like every other menu and a press in it
+// never reaches the game. The runner does the work (service_states).
+namespace {
+
+// "Oct 11  16:12", or "" for a time SDL cannot place.
+std::string state_time_text(std::int64_t saved_unix) {
+    SDL_DateTime dt{};
+    if (!SDL_TimeToDateTime(SDL_Time(saved_unix) * 1000000000ll, &dt, true)) return {};
+    static const char* kMon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%s %d  %d:%02d",
+                  kMon[(dt.month >= 1 && dt.month <= 12) ? dt.month - 1 : 0], dt.day, dt.hour,
+                  dt.minute);
+    return buf;
+}
+
+void state_status_line(const StatesBrowser& st, bool busy) {
+    const std::string& text = st.status();
+    if (!busy && text.empty()) return;
+    ImGui::TextColored(!busy && st.status_bad() ? ImVec4(1.f, 0.6f, 0.64f, 1.f)
+                                                : ImVec4(0.6f, 0.94f, 0.8f, 1.f),
+                       "%s", busy ? "Working..." : text.c_str());
+}
+
+// A thumbnail, or a placeholder saying why there is none, in [t0, t1].
+void draw_state_picture(ImDrawList* dl, const StatesBrowser::Slot& s, ImVec2 t0, ImVec2 t1,
+                        float rounding) {
+    if (s.tex) {
+        dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(s.tex)), t0, t1,
+                            ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, rounding);
+        return;
+    }
+    dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 14), rounding);
+    const char* none = !s.exists ? "Empty" : s.readable ? "No picture" : "Unreadable";
+    const ImVec2 ts = ImGui::CalcTextSize(none);
+    dl->AddText(ImVec2((t0.x + t1.x - ts.x) * 0.5f, (t0.y + t1.y - ts.y) * 0.5f),
+                IM_COL32(153, 163, 188, 255), none);
+}
+
+} // namespace
+
+void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
+    namespace hov = retcomm::hub::overlay;
+    const bool busy = states_.busy();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // ---- one slot, alone ---------------------------------------------------------
+    if (states_view_ >= 0) {
+        const int i = states_view_;
+        const StatesBrowser::Slot& s = states_.slot(i);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const bool wide = avail >= 520.f;
+        const float pic_w = wide ? std::min(avail * 0.46f, 380.f) : std::min(avail, 260.f);
+        const float pic_h = pic_w * 0.75f; // the thumbnails are 160 x 120
+        {
+            const ImVec2 t0 = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(pic_w, pic_h));
+            draw_state_picture(dl, s, t0, ImVec2(t0.x + pic_w, t0.y + pic_h), 10.f);
+        }
+        if (wide) ImGui::SameLine(0.f, 20.f);
+        else ImGui::Dummy(ImVec2(0.f, 10.f));
+
+        ImGui::BeginGroup();
+        ImGui::SetWindowFontScale(1.4f);
+        ImGui::Text("Slot %d", i + 1);
+        ImGui::SetWindowFontScale(1.f);
+        if (s.exists && s.readable) {
+            const std::string when = state_time_text(s.saved_unix);
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "Saved %s", when.c_str());
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "Frame %llu",
+                               static_cast<unsigned long long>(s.frame));
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.64f, 0.74f, 1.f), "%s",
+                               s.exists ? "This file cannot be read" : "Nothing saved here yet");
+        }
+        if (!s.mark.empty()) ImGui::TextColored(ImVec4(0.96f, 0.65f, 0.14f, 1.f), "%s", s.mark.c_str());
+        ImGui::Dummy(ImVec2(0.f, 8.f));
+        state_status_line(states_, busy);
+        ImGui::Dummy(ImVec2(0.f, 6.f));
+
+        if (states_confirm_ == i) {
+            // Asked first: overwriting or deleting cannot be undone.
+            ImGui::Text(states_confirm_delete_ ? "Delete this slot?" : "Overwrite this slot?");
+            if (hov::action_button(states_confirm_delete_ ? "Delete" : "Overwrite", true)) {
+                if (states_confirm_delete_) {
+                    states_.remove(i);
+                    states_view_ = -1;
+                } else {
+                    states_.ask(StatesBrowser::Request::Save, i);
+                }
+                states_confirm_ = -1;
+            }
+            ImGui::SameLine();
+            if (hov::action_button("Cancel", false)) states_confirm_ = -1;
+        } else {
+            ImGui::BeginDisabled(busy);
+            if (hov::action_button(s.exists ? "Save over this slot" : "Save here", true)) {
+                if (s.exists) {
+                    states_confirm_ = i;
+                    states_confirm_delete_ = false;
+                } else {
+                    states_.ask(StatesBrowser::Request::Save, i);
+                }
+            }
+            ImGui::BeginDisabled(!(s.exists && s.readable));
+            if (hov::action_button("Load", false)) states_.ask(StatesBrowser::Request::Load, i);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!s.exists);
+            if (hov::action_button("Delete", false)) {
+                states_confirm_ = i;
+                states_confirm_delete_ = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+        }
+        ImGui::EndGroup();
+        ImGui::Dummy(ImVec2(0.f, 12.f));
+        if (hov::action_button("All slots", false)) {
+            states_view_ = -1;
+            states_confirm_ = -1;
+        }
+        return;
+    }
+
+    // ---- the slots ---------------------------------------------------------------
+    state_status_line(states_, busy);
+    const float gap = 10.f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int cols = avail >= 520.f ? 4 : 3;
+    const float w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+    const float card_h = (w - 12.f) * 0.75f + (m.compact ? 40.f : 48.f);
+    const ImVec2 origin = ImGui::GetCursorPos();
+    int pick = -1;
+    for (int i = 0; i < StatesBrowser::kSlots; ++i) {
+        const StatesBrowser::Slot& s = states_.slot(i);
+        const int col = i % cols, row = i / cols;
+        ImGui::SetCursorPos(ImVec2(origin.x + static_cast<float>(col) * (w + gap),
+                                   origin.y + static_cast<float>(row) * (card_h + gap)));
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::PushID(i);
+        ImGui::BeginDisabled(busy);
+        if (retcomm::hub::overlay::nav_button("##slot", ImVec2(w, card_h), ImGuiButtonFlags_EnableNav))
+            pick = i;
+        ImGui::EndDisabled();
+        const bool focused = ImGui::IsItemFocused();
+        if (focused) states_.selected = i;
+        const ImVec2 p1(p0.x + w, p0.y + card_h);
+        hov::card_frame(p0, p1, ImGui::IsItemHovered() || focused,
+                        focused && ImGui::GetIO().NavVisible);
+        const ImVec2 t0(p0.x + 6.f, p0.y + 6.f), t1(p1.x - 6.f, p0.y + 6.f + (w - 12.f) * 0.75f);
+        draw_state_picture(dl, s, t0, t1, 8.f);
+        char label[32];
+        std::snprintf(label, sizeof label, "Slot %d", i + 1);
+        const float ty = t1.y + 5.f;
+        dl->AddText(ImVec2(p0.x + 10.f, ty), IM_COL32(233, 237, 248, 255), label);
+        if (s.exists && s.readable) {
+            const std::string when = state_time_text(s.saved_unix);
+            const ImVec2 ws = ImGui::CalcTextSize(when.c_str());
+            dl->AddText(ImVec2(p1.x - 10.f - ws.x, ty), IM_COL32(153, 163, 188, 255), when.c_str());
+        }
+        if (!s.mark.empty()) {
+            const ImVec2 ms = ImGui::CalcTextSize(s.mark.c_str());
+            dl->AddText(ImVec2(p1.x - 10.f - ms.x, t0.y + 4.f), IM_COL32(245, 165, 36, 255),
+                        s.mark.c_str());
+        }
+        ImGui::PopID();
+    }
+    const int rows = (StatesBrowser::kSlots + cols - 1) / cols;
+    ImGui::SetCursorPos(ImVec2(origin.x, origin.y + static_cast<float>(rows) * (card_h + gap)));
+    ImGui::Dummy(ImVec2(0.f, 0.f));
+    if (pick >= 0) {
+        states_.selected = pick;
+        states_view_ = pick;
+        states_confirm_ = -1;
+        states_.clear_status();
+    }
+}
+
+// The quick menu as the overlay (docs/OVERLAY_UI.md): a flat dark layer over
+// the picture, the choices on a rail, what the game is doing in cards beside it.
+void PlaySession::draw_menu_overlay() {
+    namespace hov = retcomm::hub::overlay;
+    const hov::Metrics m = hov::metrics(ImGui::GetMainViewport()->Size);
+    if (menu_focus_) ImGui::SetNextWindowFocus();
+    hov::begin("##quick_menu", 1.f);
+    const corelink::CoreIdentity& id = link_.identity();
+    const std::string core_label = id.core_id + (id.core_version.empty() ? "" : " " + id.core_version);
+    hov::top_bar(m, "Quick menu", args_.title_name.empty() ? core_label : args_.title_name,
+                 netplay_ ? "Live" : "Paused");
+
+    bool focus_first = menu_focus_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    std::vector<hov::RailItem> items;
+    items.push_back({"Resume", {}, false, true, false});
+    items.push_back({"Save states", {}, false, link_.states_supported() && !netplay_, false});
+    items.push_back({"Show FPS", prefs_.show_fps ? "On" : "Off", false, true, false});
+    items.push_back({"Close game", {}, true, true, true});
+    const int picked = hov::rail(m, "##qm_rail", items, &focus_first);
+    if (menu_focus_ && !focus_first) menu_focus_ = false;
+    switch (picked) {
+    case 0:
+        set_paused(false);
+        break;
+    case 1:
+        open_states();
+        break;
+    case 2:
+        set_show_fps(!prefs_.show_fps);
+        break;
+    case 3:
+        user_quit_ = true;
+        link_.stop();
+        break;
+    default:
+        break;
+    }
+
+    const float panel_x = m.pad + m.rail_w + 16.f;
+    if (hov::begin_panel(m, "##qm_panel", panel_x)) {
+        if (menu_page_ == MenuPage::States) {
+            draw_states_page(m);
+        } else {
+            if (netplay_) {
+                hov::banner("The game is not paused. It keeps running behind this menu, and your "
+                            "controller sends nothing until you close it.");
+            } else {
+                hov::begin_card("##qm_state", "State");
+                hov::muted("Paused. The game is stopped while this menu is open.");
+                hov::end_card();
+                ImGui::Dummy(ImVec2(0.f, 10.f));
+            }
+            hov::begin_card("##qm_core", "Core");
+            hov::kv("Core", core_label);
+            hov::kv("Frames run", std::to_string(link_.frames_done()));
+            if (id.engine_dirty) hov::kv("Build", "dev build");
+            hov::end_card();
+            ImGui::Dummy(ImVec2(0.f, 10.f));
+            hov::begin_card("##qm_sound", "Sound");
+            int vol = prefs_.volume;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, m.compact ? 8.f : 12.f));
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderInt("##volume", &vol, 0, 100, "Volume %d%%")) {
+                prefs_.volume = vol;
+                if (audio_) SDL_SetAudioStreamGain(audio_, float(vol) / 100.0f);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) save_prefs();
+            ImGui::PopStyleVar();
+            hov::end_card();
+        }
+        hov::end_panel();
+    }
+
+    const bool on_states = menu_page_ == MenuPage::States;
+    hov::legend(m, {{"A", "Select"}, {"B", on_states ? "Back" : "Resume"}},
+                {{"L3 + R3", "Open / close"}});
+    hov::end();
+
+    // B steps back, from wherever the focus is: off the Save states page, then
+    // out of the menu.
+    if (menu_open_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+        if (on_states && states_view_ >= 0) {
+            states_view_ = -1; // out of one slot, to the slots
+            states_confirm_ = -1;
+        } else if (on_states) {
+            menu_page_ = MenuPage::Main;
+        } else {
+            set_paused(false);
+        }
+    }
+}
+
+#if defined(__ANDROID__)
+// A phone has no L3 + R3 and no F1: a small, faint button in the corner opens the
+// menu (the left-edge swipe is the library's, and a game may use the screen).
+void PlaySession::draw_menu_handle() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    constexpr float kSize = 52.f;
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 12.f, vp->Pos.y + 12.f));
+    ImGui::SetNextWindowSize(ImVec2(kSize, kSize));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+    ImGui::Begin("##menu_handle", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::PopStyleVar();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const bool tapped = ImGui::InvisibleButton("##open", ImVec2(kSize, kSize));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = IM_COL32(255, 255, 255, ImGui::IsItemActive() ? 200 : 90);
+    const ImVec2 c(p0.x + kSize * 0.5f, p0.y + kSize * 0.5f);
+    dl->AddCircleFilled(c, kSize * 0.5f - 4.f, IM_COL32(0, 0, 0, 110));
+    for (int i = -1; i <= 1; ++i)
+        dl->AddLine(ImVec2(c.x - 10.f, c.y + 7.f * float(i)), ImVec2(c.x + 10.f, c.y + 7.f * float(i)),
+                    col, 2.f);
+    ImGui::End();
+    if (tapped) set_paused(true);
+}
+#endif
+
 void PlaySession::draw_menu() {
+    if (overlay::enabled()) {
+        draw_menu_overlay();
+        return;
+    }
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, disp.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
@@ -815,6 +1082,7 @@ void PlaySession::shutdown() {
     turbo_ = turbo_key_ = turbo_pad_ = false;
     if (turbo_running_) set_turbo_running(false);
     stop_vru();
+    states_.release();
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);

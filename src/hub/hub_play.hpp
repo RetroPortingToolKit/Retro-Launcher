@@ -27,6 +27,8 @@
 #include "hub/hub_vru.hpp"
 #include "hub/hub_vru_mic.hpp"
 #include "overlay.hpp"   // Retro-Runtime: retro_overlay
+#include "hub/hub_overlay.hpp"
+#include "hub/hub_states.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -50,6 +52,7 @@ struct PlayArgs {
     // other core.
     fs::path package;
     std::string rom;
+    std::string title_name; // for the quick menu's heading; empty = the core's name
     fs::path title_dir; // empty = the package's directory, else the core's
     // Seat N's Transfer Pak (index N-1): the Game Boy cartridge (runner
     // --tpakN-rom) and its battery save (region tpakN). Empty = no pak.
@@ -127,19 +130,21 @@ private:
     void upload_frame();
     void set_paused(bool paused);
     // A match never pauses: every peer runs on (recomp-ai-rules NETPLAY.md §6).
-    bool paused() const { return !netplay_ && (menu_open_ || states_.is_open()); }
+    bool paused() const { return !netplay_ && menu_open_; }
     void sync_pause();
     void set_volume(int percent);
     void set_show_fps(bool on);
     void save_prefs();
     void open_states();
-    bool handle_states_event(const SDL_Event& e);
-    void poll_states_pad(std::uint64_t now);
     void poll_host_combos();
     std::string shortcut_text(HostAction a) const; // "F7 or Function+R1"
     void service_states();
     void draw_overlay();
     void draw_menu();
+    void draw_menu_overlay(); // the overlay look (hub_overlay.hpp)
+#if defined(__ANDROID__)
+    void draw_menu_handle();  // the corner button that opens it on a phone
+#endif
     void draw_fault();
     void draw_match_ended();
     void draw_loading();
@@ -150,6 +155,7 @@ private:
     corelink::CoreLink link_;
     PlayArgs args_;
     bool menu_open_ = false;
+    bool menu_focus_ = false; // the menu just opened: put the nav ring on it
     bool netplay_ = false;
     bool finished_ = false;
     bool user_quit_ = false;
@@ -173,7 +179,7 @@ private:
 
     // The overlay (Retro-Runtime retro_overlay) and one texture per layer.
     retro::overlay::Osd osd_;
-    retro::overlay::SavestateMenu states_;
+    StatesBrowser states_;  // the quick menu's Save states page (hub_states.hpp)
     retro::overlay::InputGuard guard_;
     struct LayerTex {
         unsigned int tex = 0;
@@ -183,8 +189,14 @@ private:
     std::map<std::uint32_t, LayerTex> layer_tex_;
     fs::path states_dir_;
     bool states_configured_ = false;
-    bool states_were_open_ = false;
-    retro::overlay::SavestateMenu::Request state_request_; // waiting for a gap between frames
+    // The quick menu is two pages: the main one and the save-state browser.
+    enum class MenuPage { Main, States };
+    MenuPage menu_page_ = MenuPage::Main;
+    int states_view_ = -1;    // the slot shown alone, -1 = the twelve slots
+    int states_confirm_ = -1; // a slot waiting for "Overwrite?" / "Delete?"
+    bool states_confirm_delete_ = false;
+    void draw_states_page(const retcomm::hub::overlay::Metrics& m);
+    StatesBrowser::Request state_request_; // waiting for a gap between frames
 
     // The VRU Microphone, when a seat holds one: the title's vocabulary, the
     // companion's state machine, the microphone and the link's data channel.

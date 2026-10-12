@@ -11,6 +11,7 @@
     <!-- Back stays a key event (predictive back, the targetSdk 36 default, would
          bypass SDL and close the app); the hub reads it as Escape. -->
     <application android:label="${appLabel}" android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"
         android:enableOnBackInvokedCallback="false"
         android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".LauncherActivity" android:exported="true"

@@ -27,6 +27,10 @@ constexpr float kFlingMin = 120.f;
 constexpr float kFlingStop = 20.f;
 // Exponential decay of the fling speed, per second.
 constexpr float kFlingFriction = 5.f;
+// A press this close to the left edge (logical units) can be the overlay's
+// swipe; it has to travel this much to the right to count.
+constexpr float kEdgePx = 24.f;
+constexpr float kEdgeSwipe = 36.f;
 // Space kept between the edited text line and the top of the keyboard.
 constexpr float kImeMargin = 16.f;
 
@@ -50,9 +54,11 @@ struct DragScroll {
     float scroll = 0.f;       // last scroll position we asked for
     float velocity = 0.f;     // scroll units / s, smoothed
     bool flinging = false;
+    bool edge = false;  // the press began at the left edge
 };
 
 DragScroll g_drag;
+std::atomic<bool> g_edge_swipe{false};
 // Logical units the frame is slid up by for the keyboard (touch_before_render).
 float g_pan = 0.f;
 // On-screen keyboard height, logical units, for the frame being built.
@@ -109,6 +115,16 @@ void park_cursor(ImGuiIO& io) {
 
 void begin_scroll_if_dragged(ImGuiIO& io) {
     const ImVec2 d(g_drag.finger.x - g_drag.press.x, g_drag.finger.y - g_drag.press.y);
+    if (g_drag.edge && d.x >= kEdgeSwipe && std::fabs(d.x) > std::fabs(d.y)) {
+        // From the left edge inward: the overlay, not a press or a scroll.
+        g_edge_swipe.store(true);
+        g_drag.state = Gesture::Idle;
+        park_cursor(io);
+        return;
+    }
+    // Still travelling inward from the edge: wait to see whether it is the
+    // overlay's swipe before the slop turns it into a press.
+    if (g_drag.edge && d.x > 0.f && d.x < kEdgeSwipe && std::fabs(d.x) > std::fabs(d.y)) return;
     if (std::fabs(d.x) < kSlop && std::fabs(d.y) < kSlop) return;
     const ImGuiAxis axis = std::fabs(d.y) >= std::fabs(d.x) ? ImGuiAxis_Y : ImGuiAxis_X;
     ImGuiWindow* w = scrollable_ancestor(window_at(g_drag.press), axis);
@@ -205,6 +221,7 @@ bool touch_translate_event(SDL_Event& e, bool ui_has_pointer) {
         g_drag.state = Gesture::Pending;
         g_drag.press_ns = e.button.timestamp;
         g_drag.press = g_drag.finger = pos;
+        g_drag.edge = pos.x < kEdgePx;
         // Hover where the finger is, so the item about to be tapped lights up.
         io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
         io.AddMousePosEvent(pos.x, pos.y);
@@ -258,6 +275,8 @@ void touch_prepare_frame(SDL_Window* window, float coords) {
     g_ime_h = static_cast<float>(g_ime_px.load(std::memory_order_relaxed)) * logical_per_px;
 #endif
 }
+
+bool touch_take_edge_swipe() { return g_edge_swipe.exchange(false); }
 
 void touch_apply_style(ImGuiStyle& style) {
 #if defined(__ANDROID__)

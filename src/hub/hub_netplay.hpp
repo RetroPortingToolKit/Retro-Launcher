@@ -82,6 +82,9 @@ struct NetplayScope {
 // `scope` locks it to one game (Direct mode); null = every game (the library).
 void draw_netplay_page(HubModel& hub, const Theme& th, SDL_Window* window,
                        const NetplayScope* scope = nullptr);
+// B / Back on the overlay's page: out of Online, LAN, sign-in or the host form, to the one
+// before. False when there is nowhere to step (the mode page, a room).
+bool netplay_step_back();
 // Leaves any room and stops every netplay thread. Call before the hub exits.
 void netplay_shutdown();
 

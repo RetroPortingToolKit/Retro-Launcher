@@ -54,13 +54,19 @@ COMMON=(-G Ninja "-DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmak
 if [[ ! -f "$WORK/curl-8.21.0/CMakeLists.txt" ]]; then
   tar -xf "$WORK/downloads/curl-8.21.0.tar.xz" -C "$WORK"
 fi
+# HTTP(S) and WebSocket (the netplay lobby is a ws:// / wss:// connection), nothing else:
+# HTTP_ONLY would also switch WebSocket off.
 # No default CA path: Android names its CA files by OpenSSL's old subject hash,
 # which OpenSSL 3 never looks up. The launcher hands curl the system store
 # itself (http_apply_tls_trust).
 cmake -S "$WORK/curl-8.21.0" -B "$WORK/$ABI/curl-build" "${COMMON[@]}" \
   -DBUILD_SHARED_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
   -DCURL_USE_OPENSSL=ON "-DOPENSSL_ROOT_DIR=$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON \
-  -DHTTP_ONLY=ON -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF \
+  -DCURL_DISABLE_DICT=ON -DCURL_DISABLE_FILE=ON -DCURL_DISABLE_FTP=ON -DCURL_DISABLE_GOPHER=ON \
+  -DCURL_DISABLE_IMAP=ON -DCURL_DISABLE_IPFS=ON -DCURL_DISABLE_LDAP=ON -DCURL_DISABLE_LDAPS=ON \
+  -DCURL_DISABLE_MQTT=ON -DCURL_DISABLE_POP3=ON -DCURL_DISABLE_RTSP=ON -DCURL_DISABLE_SMTP=ON \
+  -DCURL_DISABLE_TELNET=ON -DCURL_DISABLE_TFTP=ON -DCURL_DISABLE_WEBSOCKETS=OFF \
+  -DHTTP_ONLY=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF \
   -DUSE_NGHTTP2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DCURL_ZLIB=OFF \
   -DCURL_CA_PATH=none -DCURL_CA_BUNDLE=none
 cmake --build "$WORK/$ABI/curl-build" -j"$JOBS"
@@ -92,6 +98,7 @@ cp "$SDL_SRC"/android-project/app/src/main/java/org/libsdl/app/*.java "$STAGE/ja
 for dir in fonts platforms controllers setup; do
   cp -a "$ROOT/assets/$dir" "$STAGE/assets/retcomm/"
 done
+cp "$ROOT/assets/retcomm.png" "$STAGE/assets/retcomm/retcomm.png"
 cp "$RUNTIME/LICENSE" "$STAGE/assets/retcomm/licenses/Retro-Runtime.txt"
 cp "$ROOT/LICENSE" "$STAGE/assets/retcomm/licenses/Retro-Launcher.txt"
 cp "$SDL_SRC/LICENSE.txt" "$STAGE/assets/retcomm/licenses/SDL3.txt"

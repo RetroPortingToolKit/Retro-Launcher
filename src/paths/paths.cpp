@@ -203,10 +203,21 @@ bool open_path_in_file_manager(const fs::path& path, std::string* error) {
 #endif
 }
 
+namespace {
+std::string (*g_url_opener)(const std::string&) = nullptr;
+}
+
+void set_url_opener(std::string (*opener)(const std::string& url)) { g_url_opener = opener; }
+
 bool open_url_in_browser(const std::string& url, std::string* error) {
     if (url.empty()) {
         if (error) *error = "empty url";
         return false;
+    }
+    if (g_url_opener) {
+        const std::string why = g_url_opener(url);
+        if (!why.empty() && error) *error = why;
+        return why.empty();
     }
 #if defined(_WIN32)
     const std::wstring w(url.begin(), url.end());

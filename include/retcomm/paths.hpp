@@ -61,6 +61,9 @@ bool open_path_in_file_manager(const fs::path& path, std::string* error = nullpt
 
 // Open an http(s) URL in the default browser (xdg-open / open / ShellExecute).
 bool open_url_in_browser(const std::string& url, std::string* error = nullptr);
+// A platform's own way to open a URL (Android has no xdg-open: the hub installs one that goes
+// through SDL_OpenURL). Returns "" on success, else why not. Null = the default.
+void set_url_opener(std::string (*opener)(const std::string& url));
 
 // Hub first-run wizard marker. Durable copy under data_dir (survives app
 // self-update); best-effort copy next to the binary.

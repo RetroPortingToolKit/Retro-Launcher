@@ -36,6 +36,10 @@ bool touch_translate_event(SDL_Event& e, bool ui_has_pointer);
 // coordinates per logical unit.
 void touch_prepare_frame(SDL_Window* window, float coords);
 
+// True once after a finger swiped in from the left edge (the overlay menu's
+// way in). The swipe is consumed: it never becomes a press or a scroll.
+bool touch_take_edge_swipe();
+
 // Larger reactive boxes on Android, where a fingertip is the pointer.
 void touch_apply_style(ImGuiStyle& style);
 

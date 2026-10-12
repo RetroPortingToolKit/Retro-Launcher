@@ -57,10 +57,28 @@ public final class LauncherActivity extends SDLActivity {
         // over the hub. Ask the insets controller instead; a swipe shows them
         // transiently.
         if (!hasFocus) return;
+        excludeLeftEdgeFromBackGesture();
         WindowInsetsController bars = getWindow().getInsetsController();
         if (bars == null) return;
         bars.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         bars.hide(WindowInsets.Type.systemBars());
+    }
+
+    /**
+     * Gesture navigation reads a swipe from the screen's edge as Back. The hub
+     * opens its menu with a swipe in from the left edge, so that strip, in the
+     * middle of the screen (Android caps the excluded height), is given to the app.
+     */
+    private void excludeLeftEdgeFromBackGesture() {
+        final View decor = getWindow().getDecorView();
+        decor.post(() -> {
+            float dp = getResources().getDisplayMetrics().density;
+            int width = (int) (40 * dp);
+            int height = Math.min((int) (200 * dp), decor.getHeight());
+            int top = Math.max(0, (decor.getHeight() - height) / 2);
+            decor.setSystemGestureExclusionRects(java.util.Collections.singletonList(
+                    new android.graphics.Rect(0, top, width, top + height)));
+        });
     }
 
     @Override protected SDLSurface createSDLSurface(Context context) {
