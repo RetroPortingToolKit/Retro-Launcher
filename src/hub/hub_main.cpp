@@ -9546,10 +9546,10 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                 ov::muted("No games for this device yet. Games run here through a core: install a "
                           "title bundle from Settings, Add / scan files, Install title (.zip).");
             }
-            const float target = m.compact ? 210.f : 250.f;
+            const float target = m.compact ? 250.f : 300.f;
             const int cols = std::max(1, static_cast<int>((avail + gap) / (target + gap)));
             const float w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-            const float h = m.compact ? 92.f : 116.f;
+            const float h = m.compact ? 124.f : 150.f;
             const ImVec2 origin = ImGui::GetCursorPos();
             int i = 0;
             for (const auto& [plat, count] : counts) {
@@ -9558,12 +9558,8 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                                            origin.y + static_cast<float>(row) * (h + gap)));
                 const ImVec2 p0 = ImGui::GetCursorScreenPos();
                 ImGui::PushID(plat.c_str());
-                if (i == 0 && hub.home_focus_pending &&
-                    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-                    hub.home_focus_pending = false;
-                    ImGui::SetKeyboardFocusHere();
-                    ImGui::SetNavCursorVisible(true);
-                }
+                // Choosing the Library tab leaves the ring on the tab, like every other tab.
+                hub.home_focus_pending = false;
                 if (retcomm::hub::overlay::nav_button("##plat", ImVec2(w, h), ImGuiButtonFlags_EnableNav))
                     enter_platform = plat;
                 const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
@@ -9581,20 +9577,19 @@ void draw_shell_library(HubModel& hub, BoxartCache& boxart, const Theme& th,
                                  ImVec2(p0.x + 16.f + iw, p0.y + (h + ih) * 0.5f));
                     text_x = p0.x + 16.f + iw + 16.f;
                 }
-                ImGui::SetWindowFontScale(1.2f);
-                dl->AddText(ImVec2(text_x, p0.y + h * 0.5f - 26.f),
+                ImGui::SetWindowFontScale(1.25f);
+                dl->AddText(ImVec2(text_x, p0.y + h * 0.5f - (count.second > 0 ? 44.f : 30.f)),
                             ImGui::ColorConvertFloat4ToU32(th.text), platform_display_name(plat));
                 ImGui::SetWindowFontScale(1.f);
-                char sub[64];
-                if (count.second > 0)
-                    std::snprintf(sub, sizeof sub, "%d %s - %d installed", count.first,
-                                  count.first == 1 ? "game" : "games", count.second);
-                else
-                    std::snprintf(sub, sizeof sub, "%d %s", count.first,
-                                  count.first == 1 ? "game" : "games");
+                char games[48], inst[48];
+                std::snprintf(games, sizeof games, "%d %s", count.first, count.first == 1 ? "game" : "games");
+                std::snprintf(inst, sizeof inst, "%d installed", count.second);
                 dl->PushClipRect(p0, p1, true); // never past the card's edge
-                dl->AddText(ImVec2(text_x, p0.y + h * 0.5f + 6.f),
-                            ImGui::ColorConvertFloat4ToU32(th.text_muted), sub);
+                const float line = ImGui::GetTextLineHeight() + 4.f;
+                float ty = p0.y + h * 0.5f - (count.second > 0 ? 8.f : -2.f);
+                dl->AddText(ImVec2(text_x, ty), ImGui::ColorConvertFloat4ToU32(th.text_muted), games);
+                if (count.second > 0)
+                    dl->AddText(ImVec2(text_x, ty + line), ImGui::ColorConvertFloat4ToU32(th.good), inst);
                 dl->PopClipRect();
                 ImGui::PopID();
                 ++i;

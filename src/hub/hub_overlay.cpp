@@ -694,34 +694,34 @@ void nav_frame_begin() {
             }
         }
     } else {
-        // The neighbour in the same column: the nearest control below (or above) that
-        // overlaps this one's width; failing that, the nearest in that direction. Controls
-        // scrolled out of sight count, so Down walks a long list rather than skipping it.
+        // Row by row: Down goes to the NEXT row below (the nearest band of controls), and of
+        // that row to the control nearest across, so a row of filter chips is always passed
+        // on the way to what is under it, and back. A control scrolled out of sight still
+        // counts, so a long list is walked, not skipped.
         const float dir = d == ImGuiDir_Down ? 1.f : -1.f;
-        const NavItem* best2 = nullptr;
-        float score2 = FLT_MAX;
-        for (const NavItem& n : g_nav_prev) {
-            if (n.id == cur->id || n.root != cur->root) continue;
-            if (dir * (n.r.GetCenter().y - cur->r.GetCenter().y) <= 1.f) continue;
+        auto gap_of = [&](const NavItem& n) {
+            return std::max(0.f, dir > 0.f ? n.r.Min.y - cur->r.Max.y : cur->r.Min.y - n.r.Max.y);
+        };
+        auto below = [&](const NavItem& n) {
+            if (n.id == cur->id || n.root != cur->root) return false;
+            if (dir * (n.r.GetCenter().y - cur->r.GetCenter().y) <= 1.f) return false;
             const float overlap_y = std::min(n.r.Max.y, cur->r.Max.y) - std::max(n.r.Min.y, cur->r.Min.y);
-            if (overlap_y >= 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue; // the same row
-            const float gap = std::max(0.f, dir > 0.f ? n.r.Min.y - cur->r.Max.y : cur->r.Min.y - n.r.Max.y);
-            const float dcx = std::fabs(n.r.GetCenter().x - cur->r.GetCenter().x);
-            const float overlap_x = std::min(n.r.Max.x, cur->r.Max.x) - std::max(n.r.Min.x, cur->r.Min.x);
-            if (overlap_x >= 0.2f * std::min(n.r.GetWidth(), cur->r.GetWidth())) {
-                const float score = gap + 0.25f * dcx;
+            return overlap_y < 0.35f * std::min(n.r.GetHeight(), cur->r.GetHeight()); // not the same row
+        };
+        float min_gap = FLT_MAX;
+        for (const NavItem& n : g_nav_prev)
+            if (below(n)) min_gap = std::min(min_gap, gap_of(n));
+        if (min_gap < FLT_MAX)
+            for (const NavItem& n : g_nav_prev) {
+                if (!below(n) || gap_of(n) > min_gap + 0.6f * std::min(n.r.GetHeight(), cur->r.GetHeight())) continue;
+                const float overlap_x = std::min(n.r.Max.x, cur->r.Max.x) - std::max(n.r.Min.x, cur->r.Min.x);
+                float score = std::fabs(n.r.GetCenter().x - cur->r.GetCenter().x);
+                if (overlap_x > 0.f) score -= 100000.f; // straight below beats off to the side
                 if (score < best_score) {
                     best_score = score;
                     best = &n;
                 }
             }
-            const float s2 = gap + dcx;
-            if (s2 < score2) {
-                score2 = s2;
-                best2 = &n;
-            }
-        }
-        if (!best) best = best2;
     }
     // The four directions on these controls are ours, found or not: ImGui's would pick a
     // control on another row, or skip the page.
