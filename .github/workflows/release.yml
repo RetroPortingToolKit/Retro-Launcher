@@ -402,12 +402,39 @@ jobs:
             if (-not (Test-Path $p)) { throw "Missing release artifact: $n" }
           }
 
+      # The bare hub archive (docs/RELEASES.md): the flat hub prefix
+      # scripts/build-local.ps1 writes, built as THIS release, then archived and
+      # gated by scripts/package_bare_hub.py (the archived hub must run and report
+      # this version). A second build of the hub, in its own tree, so the
+      # installer above is untouched.
+      - name: Package bare hub archive
+        shell: pwsh
+        run: |
+          ./scripts/build-local.ps1 -ReleaseVersion "${{ needs.version.outputs.version }}" `
+            -Out (Join-Path $PWD "out\flat") -Build (Join-Path $PWD "build-flat")
+          if ($LASTEXITCODE -ne 0) { throw "build-local.ps1 failed" }
+          python scripts/package_bare_hub.py `
+            --version "${{ needs.version.outputs.version }}" `
+            --platform windows-x86_64 `
+            --commit "$env:GITHUB_SHA" `
+            --prefix (Join-Path $PWD "out\flat") `
+            --out dist-hub
+          if ($LASTEXITCODE -ne 0) { throw "package_bare_hub.py failed" }
+          Get-ChildItem dist-hub
+
       - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: |
             dist/Retro-Launcher-portable-windows.zip
             dist/Retro-Launcher-windows-x64-setup.exe
+          retention-days: 5
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x86_64-hub
+          path: dist-hub/*
+          if-no-files-found: error
           retention-days: 5
 
   macos:
@@ -501,11 +528,33 @@ jobs:
             exit 1
           fi
 
+      # The bare hub archive (docs/RELEASES.md): the flat hub prefix
+      # scripts/build-local.sh writes, built as THIS release, archived and gated
+      # by scripts/package_bare_hub.py.
+      - name: Package bare hub archive
+        run: |
+          ./scripts/build-local.sh --release-version "${{ needs.version.outputs.version }}" \
+            --out "$PWD/out/flat" --build "$PWD/build-flat"
+          python3 scripts/package_bare_hub.py \
+            --version "${{ needs.version.outputs.version }}" \
+            --platform "macos-${{ matrix.arch }}" \
+            --commit "${GITHUB_SHA}" \
+            --prefix "$PWD/out/flat" \
+            --out dist-hub
+          ls -lah dist-hub/
+
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: |
             dist/Retro-Launcher-macos-${{ matrix.arch }}.dmg
+          retention-days: 5
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}-hub
+          path: dist-hub/*
+          if-no-files-found: error
           retention-days: 5
 
   android:
@@ -550,18 +599,31 @@ jobs:
       - name: Bare hub archive + manifest
         run: |
           set -euo pipefail
-          HUB=artifacts/linux-x86_64-hub
-          cp -v "${HUB}"/retro-hub-*.tar.gz "${HUB}"/retro-hub-*.tar.gz.sha256 dist/
+          # One bare archive per platform: linux-x86_64, windows-x86_64 and
+          # macos-{arm64,x86_64}. hub_manifest.py refuses a release in which they
+          # disagree on version, commit or the Direct-mode contract.
+          PLATFORMS="linux-x86_64 windows-x86_64 macos-arm64 macos-x86_64"
+          ENTRIES=()
+          for p in ${PLATFORMS}; do
+            HUB="artifacts/${p}-hub"
+            test -d "${HUB}" || { echo "::error::no bare hub archive artifact for ${p}" >&2; exit 1; }
+            cp -v "${HUB}"/retro-hub-*.tar.gz "${HUB}"/retro-hub-*.zip dist/ 2>/dev/null || true
+            cp -v "${HUB}"/retro-hub-*.sha256 dist/
+            ENTRIES+=("${HUB}"/retro-hub-*.json)
+          done
           python3 scripts/hub_manifest.py \
             --version "${{ needs.version.outputs.version }}" \
             --tag "${{ needs.version.outputs.tag }}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --expect linux-x86_64 \
+            --expect "${PLATFORMS// /,}" \
             --out dist \
-            "${HUB}"/retro-hub-*.json
+            "${ENTRIES[@]}"
           # Every archive must still match the hash its build recorded.
           (cd dist && sha256sum -c SHA256SUMS)
           test -f "dist/retro-hub-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz"
+          test -f "dist/retro-hub-${{ needs.version.outputs.version }}-windows-x86_64.zip"
+          test -f "dist/retro-hub-${{ needs.version.outputs.version }}-macos-arm64.tar.gz"
+          test -f "dist/retro-hub-${{ needs.version.outputs.version }}-macos-x86_64.tar.gz"
           test -f dist/hub-manifest.json
 
       - name: Ensure release tag exists

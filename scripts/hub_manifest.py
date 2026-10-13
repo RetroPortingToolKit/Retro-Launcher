@@ -29,13 +29,10 @@ SCHEMA = 1
 
 # Platforms a tool may ask for that this release cannot serve, and why. A tool
 # reads the reason instead of finding the platform silently absent.
-_INSTALLER_ONLY = ("no bare archive is built for this platform yet; the installer and DMG "
-                   "assets carry retro-hub with Direct mode")
+# (Windows and macOS had only the installer and DMG until their bare archives,
+# scripts/package_bare_hub.py; an older release's manifest still says so.)
 UNAVAILABLE = {
     "linux-arm64": "not built yet",
-    "windows-x86_64": _INSTALLER_ONLY,
-    "macos-arm64": _INSTALLER_ONLY,
-    "macos-x86_64": _INSTALLER_ONLY,
 }
 
 # Fields every platform of one release must agree on.

@@ -339,7 +339,7 @@ module ABI, or a package that records none, is not second-guessed.
 | Game | the newest release of title.json `update.github` | nothing: the game package is generated from the player's ROM and is never published. A newer release is reported with a link to it, to rebuild the app from. | -- |
 | Core | n64lle's `n64lle-release-manifest.json` ([n64lle docs/RELEASES.md](https://github.com/RetroPortingToolKit/n64lle/blob/main/docs/RELEASES.md) §5), for a title whose core is n64lle's generic core | `<data dir>/core/<version>/`: the core library, its `.rcore.toml` and `installed.json` (module ABI), taken from the release prefix | after a restart |
 | Runner | Retro-Runtime's `runtime-manifest.json` (the runtime updater, unchanged rules) | `<data dir>/runtime/<version>/` | from the next Play |
-| Hub | this repo's `hub-manifest.json` (below), Linux only for now | `<data dir>/hub/<version>/`, the bare hub archive | after a restart |
+| Hub | this repo's `hub-manifest.json` (below) | `<data dir>/hub/<version>/`, the bare hub archive | after a restart |
 
 Every manifest is the **newest release's, pre-releases included**, found from
 `https://github.com/<repo>/releases.atom` (n64lle docs/RELEASES.md §2), with the
@@ -385,9 +385,21 @@ which picks the newest of everything once more.
 
 ## The bare hub archive
 
-For a tool that runs the hub in Direct mode, such as n64lle's new-project
-scaffolder in "release" mode. So far only the Linux job packages one; on
-Windows and macOS the hub (with Direct mode) ships inside the installers.
+For a tool that runs the hub in Direct mode, or makes a title app, such as
+n64lle's new-project scaffolder in "release" mode and its `tools/build_app.sh
+--platform`. One archive per platform: `retro-hub-<version>-linux-x86_64.tar.gz`,
+`-windows-x86_64.zip`, `-macos-arm64.tar.gz` and `-macos-x86_64.tar.gz`; each has
+an entry in `hub-manifest.json`. The Linux one is built by
+`scripts/package_hub_archive.sh`; Windows and macOS by `scripts/package_bare_hub.py`
+from the flat hub prefix `scripts/build-local.{sh,ps1} --release-version <v>`
+writes, with the same gates in spirit (the archived hub is extracted to a clean
+directory and must run and report this release). The tables below describe the
+Linux archive; on Windows the hub's DLLs (SDL3, curl, zlib) and
+`retcomm-portable.exe` (the kit's stub) sit beside `retro-hub.exe`, and on macOS
+the hub keeps its dylib install names (the title-app kit's `bundle_dylibs.sh`
+copies them into the app). `requires` and `system_libraries` are empty off
+Linux. **Windows and macOS archives: written 2026-10-13, run only on Linux
+against a stand-in prefix; the first release is their first real test.**
 
 Everything is flat at the archive root, so it extracts straight into one
 directory:
@@ -467,9 +479,9 @@ Its shape follows Retro-Runtime's `runtime-manifest.json`:
       "system_libraries": ["libGLX.so.0", "libOpenGL.so.0", "libc.so.6", "libcurl.so.4", "…"]
     },
     "linux-arm64":    { "unavailable": "not built yet" },
-    "windows-x86_64": { "unavailable": "no bare archive is built for this platform yet; …" },
-    "macos-arm64":    { "unavailable": "no bare archive is built for this platform yet; …" },
-    "macos-x86_64":   { "unavailable": "no bare archive is built for this platform yet; …" }
+    "windows-x86_64": { "archive": "retro-hub-<v>-windows-x86_64.zip", "executable": "retro-hub.exe", "…": "…" },
+    "macos-arm64":    { "archive": "retro-hub-<v>-macos-arm64.tar.gz", "…": "…" },
+    "macos-x86_64":   { "archive": "retro-hub-<v>-macos-x86_64.tar.gz", "…": "…" }
   }
 }
 ```

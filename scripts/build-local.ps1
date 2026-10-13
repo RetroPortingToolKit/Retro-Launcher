@@ -18,13 +18,14 @@
 #   RETRO_HUB=<absolute path to retro-hub.exe>
 #
 # usage: scripts/build-local.ps1 [-Debug] [-Out DIR] [-Build DIR]
-#          [-Runtime <Retro-Runtime checkout>] [-Jobs N] [-Help]
+#          [-Runtime <Retro-Runtime checkout>] [-Jobs N] [-ReleaseVersion V] [-Help]
 param(
     [switch]$Debug,
     [string]$Out = "",
     [string]$Build = "",
     [string]$Runtime = "",
     [int]$Jobs = 0,
+    [string]$ReleaseVersion = "",
     [switch]$Help
 )
 
@@ -48,6 +49,10 @@ this machine, and print its path last, as RETRO_HUB=<absolute path>.
                   scripts\build-local.ps1 when it has one) instead of the
                   submodule's
   -Jobs N         parallel build jobs (default: all CPUs)
+  -ReleaseVersion V
+                  build as release V (-DRETCOMM_VERSION, -DRETCOMM_RELEASE_BUILD):
+                  the hub's --version says V. What scripts/package_bare_hub.py
+                  archives in the release workflow.
   -Help           this text
 "@ | Write-Output
     exit 0
@@ -114,6 +119,7 @@ $cmakeArgs = @("-S", $Root, "-B", $Build, "-G", $generator,
     "-DVCPKG_TARGET_TRIPLET=$Triplet",
     "-DCMAKE_BUILD_TYPE=$Config",
     "-DRETCOMM_COMMIT=$commit")
+if ($ReleaseVersion) { $cmakeArgs += @("-DRETCOMM_VERSION=$ReleaseVersion", "-DRETCOMM_RELEASE_BUILD=ON") }
 if ($generator -like "Visual Studio*") { $cmakeArgs += @("-A", $(if ($Arch -eq "arm64") { "ARM64" } else { "x64" })) }
 Say "$Platform, $Config, build $Build"
 Invoke-Checked cmake $cmakeArgs
