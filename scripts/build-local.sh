@@ -44,6 +44,10 @@ machine, and print its path last, as RETRO_HUB=<absolute path>.
                    scripts/build-local.sh when it has one) instead of the
                    submodule's
   --jobs N         parallel build jobs (default: all CPUs)
+  --release-version V
+                   build as release V (-DRETCOMM_VERSION, -DRETCOMM_RELEASE_BUILD):
+                   the hub's --version says V. What scripts/package_bare_hub.py
+                   archives in the release workflow.
   --help           this text
 
 <platform> is linux-x86_64, linux-arm64, macos-x86_64 or macos-arm64.
@@ -51,7 +55,7 @@ Relative paths are taken against the current directory.
 EOF
 }
 
-CONFIG=Release OUT="" BUILD="" RUNTIME="" JOBS=""
+CONFIG=Release OUT="" BUILD="" RUNTIME="" JOBS="" RELEASE_VERSION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --debug)   CONFIG=Debug; shift ;;
@@ -59,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --build)   [[ $# -ge 2 ]] || die "--build needs a directory"; BUILD="$2"; shift 2 ;;
     --runtime) [[ $# -ge 2 ]] || die "--runtime needs a directory"; RUNTIME="$2"; shift 2 ;;
     --jobs)    [[ $# -ge 2 ]] || die "--jobs needs a number"; JOBS="$2"; shift 2 ;;
+    --release-version) [[ $# -ge 2 ]] || die "--release-version needs a version"; RELEASE_VERSION="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument '$1' (see --help)" ;;
   esac
@@ -131,6 +136,7 @@ cmake_args=(
   "-DCMAKE_BUILD_TYPE=${CONFIG}"
   "-DRETCOMM_COMMIT=${COMMIT}"
 )
+[[ -z "${RELEASE_VERSION}" ]] || cmake_args+=("-DRETCOMM_VERSION=${RELEASE_VERSION}" -DRETCOMM_RELEASE_BUILD=ON)
 command -v ninja >/dev/null && cmake_args+=(-G Ninja)
 [[ -z "${CMAKE_PREFIX_PATH:-}" ]] || cmake_args+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
 # The runner finds SDL3 beside itself in the flat prefix (the hub already
