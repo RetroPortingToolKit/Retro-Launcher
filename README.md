@@ -203,7 +203,7 @@ scripts/build-local.ps1 [-Debug] [-Out DIR] [-Build DIR] [-Runtime DIR] [-Jobs N
 ```
 
 Builds `retro-hub` and a `retro-core-runner` (the submodule's, or one built
-from `--runtime`) into a flat prefix, `out/local/<platform>/`, laid out like the
+from `--runtime`, for both shared link and runner) into a flat prefix, `out/local/<platform>/`, laid out like the
 bare hub archive plus the runner and the title-app kit (`packaging/title/`;
 on Windows also the portable stub). SDL3 is found, or built from source into
 `.cache/sdl3` (Homebrew on macOS, vcpkg on Windows). It checks the result

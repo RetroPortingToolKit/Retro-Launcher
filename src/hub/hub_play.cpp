@@ -385,7 +385,11 @@ void PlaySession::grant(std::uint64_t) {
             p.connected = connected;
         }
     }
+#if defined(RETCOMM_LINK_PRESENTATION_SIZE)
+    link_.grant(pads, presentation_width_, presentation_height_);
+#else
     link_.grant(pads);
+#endif
 }
 
 // Turbo: grant again as soon as a frame is done, for most of a hub frame, and
@@ -565,7 +569,14 @@ void PlaySession::upload_frame() {
     picture_.upload(link_.frame_pixels(), f->width, f->height, f->aspect_num, f->aspect_den);
 }
 
-void PlaySession::tick() {
+void PlaySession::tick(SDL_Window* window) {
+    // Physical drawable pixels before Picture's aspect letterbox. Sample after
+    // events, before any grant (including turbo), rather than last frame's UI.
+    int width = 0, height = 0;
+    if (window && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED))
+        SDL_GetWindowSizeInPixels(window, &width, &height);
+    presentation_width_ = width > 0 && height > 0 ? static_cast<std::uint32_t>(width) : 0;
+    presentation_height_ = width > 0 && height > 0 ? static_cast<std::uint32_t>(height) : 0;
     link_.pump(0);
     const bool ready = link_.state() == corelink::LinkState::Ready;
     if (ready) poll_host_combos();

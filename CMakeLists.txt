@@ -353,6 +353,12 @@ else()
     set(RETCOMM_LINK_ACCESSORY_DATA FALSE)
     message(STATUS "retro-hub: Retro-Runtime link predates accessory data; the VRU is off")
 endif()
+# Older Runtime checkouts still build; newer ones negotiate the wire tail.
+file(STRINGS "${RETCOMM_RUNTIME_DIR}/corelink/link_protocol.hpp" _rr_presentation
+     REGEX "link_has_presentation_size")
+if(_rr_presentation)
+    target_compile_definitions(retcomm_core PUBLIC RETCOMM_LINK_PRESENTATION_SIZE=1)
+endif()
 # The hub starts the runner from its own directory, so in the build tree the
 # runner must land there too, not under third_party/ (where, until this line, a
 # stale pre-split copy beside the hub was being run instead).

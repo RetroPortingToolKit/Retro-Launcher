@@ -45,9 +45,8 @@ this machine, and print its path last, as RETRO_HUB=<absolute path>.
   -Debug          Debug build (default: Release)
   -Out DIR        the flat prefix (default: <repo>\out\local\windows-<arch>\)
   -Build DIR      CMake build directory (default: <repo>\build-local[-debug])
-  -Runtime DIR    build the runner from this Retro-Runtime checkout (its
-                  scripts\build-local.ps1 when it has one) instead of the
-                  submodule's
+  -Runtime DIR    build the shared link and runner from this Retro-Runtime
+                  checkout instead of the submodule's
   -Jobs N         parallel build jobs (default: all CPUs)
   -ReleaseVersion V
                   build as release V (-DRETCOMM_VERSION, -DRETCOMM_RELEASE_BUILD):
@@ -119,6 +118,7 @@ $cmakeArgs = @("-S", $Root, "-B", $Build, "-G", $generator,
     "-DVCPKG_TARGET_TRIPLET=$Triplet",
     "-DCMAKE_BUILD_TYPE=$Config",
     "-DRETCOMM_COMMIT=$commit")
+if ($Runtime) { $cmakeArgs += "-DRETCOMM_RUNTIME_DIR=$Runtime" }
 if ($ReleaseVersion) { $cmakeArgs += @("-DRETCOMM_VERSION=$ReleaseVersion", "-DRETCOMM_RELEASE_BUILD=ON") }
 if ($generator -like "Visual Studio*") { $cmakeArgs += @("-A", $(if ($Arch -eq "arm64") { "ARM64" } else { "x64" })) }
 Say "$Platform, $Config, build $Build"
@@ -133,31 +133,10 @@ if (-not (Test-Path (Join-Path $StageBin "retro-hub.exe"))) { Fail "retro-hub.ex
 # ---- the runner: the submodule's, or -Runtime's --------------------------------------
 $RunnerSrc = Join-Path $StageBin "retro-core-runner.exe"
 $RunnerFrom = "the Retro-Runtime submodule"
-if ($Runtime) {
-    $rtOut = Join-Path $Build "runtime-out"
-    $rtBuild = Join-Path $Build "runtime-build"
-    $rtScript = Join-Path $Runtime "scripts\build-local.ps1"
-    if (Test-Path $rtScript) {
-        Say "building the runner with $rtScript"
-        $rtArgs = @("-Out", $rtOut, "-Build", $rtBuild, "-Jobs", "$Jobs")
-        if ($Debug) { $rtArgs += "-Debug" }
-        $lines = @(& $rtScript @rtArgs)
-        if ($LASTEXITCODE -ne 0) { Fail "$rtScript failed" }
-        $last = [string]($lines | Select-Object -Last 1)
-        if (-not $last.StartsWith("RETRO_CORE_RUNNER=")) { Fail "$rtScript printed no RETRO_CORE_RUNNER= line" }
-        $RunnerSrc = $last.Substring("RETRO_CORE_RUNNER=".Length)
-    } else {
-        Say "building the runner from $Runtime with cmake (it has no scripts\build-local.ps1)"
-        Invoke-Checked cmake @("-S", $Runtime, "-B", $rtBuild, "-G", $generator,
-            "-DCMAKE_TOOLCHAIN_FILE=$Vcpkg\scripts\buildsystems\vcpkg.cmake",
-            "-DVCPKG_TARGET_TRIPLET=$Triplet", "-DCMAKE_BUILD_TYPE=$Config")
-        Invoke-Checked cmake @("--build", $rtBuild, "--config", $Config, "--parallel", "$Jobs", "--target", "retro-core-runner")
-        if (Test-Path $rtOut) { Remove-Item -Recurse -Force $rtOut }
-        Invoke-Checked cmake @("--install", $rtBuild, "--config", $Config, "--prefix", $rtOut)
-        $RunnerSrc = Join-Path $rtOut "bin\retro-core-runner.exe"
-    }
-    $RunnerFrom = $Runtime
-}
+# CMake built the runner and shared link from the same selected checkout,
+# using the hub's SDL3 target. A separate runner build could silently lose GL.
+if ($Runtime) { $RunnerFrom = $Runtime }
+
 if (-not (Test-Path $RunnerSrc)) { Fail "no retro-core-runner.exe at $RunnerSrc" }
 
 # ---- the flat prefix ----------------------------------------------------------------

@@ -52,6 +52,14 @@ ROM file names, and saved as `<data dir>/boxart/libretro/<title key>.png`;
 later launches reuse it. `--boot` skips the page, plays at
 once and exits when the player closes the game (what every revision before 3
 did).
+The bundled Runtime now speaks CoreLink 2.3 / rcore draft 9. Each frame grant
+carries the window's available drawable width and height in physical pixels,
+before aspect letterboxing. Cores may use the optional `presentation_size`
+callback for adaptive projection; fixed-aspect cores keep their own policy.
+Resize and display-density changes reach the next grant; minimized windows
+report unavailable dimensions. An older 2.x runner receives the original
+grant prefix, so it still plays without the new presentation information.
+
 The session itself (menu, input, fault screen) is described in Retro-Runtime's
 [`docs/CORE_LINK.md`](https://github.com/RetroPortingToolKit/Retro-Runtime/blob/main/docs/CORE_LINK.md), "Direct mode".
 
