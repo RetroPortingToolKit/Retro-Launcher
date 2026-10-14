@@ -105,7 +105,7 @@ public:
     // the session's own (menu toggle) and should not reach ImGui.
     bool handle_event(const SDL_Event& e);
     // Once per hub frame: link messages, pacing and grants, audio, saves.
-    void tick();
+    void tick(SDL_Window* window);
     // Inside an ImGui frame: the picture behind everything, then whichever
     // overlay applies (loading, quick menu, fault).
     void draw();
@@ -154,6 +154,7 @@ private:
 
     corelink::CoreLink link_;
     PlayArgs args_;
+    std::uint32_t presentation_width_ = 0, presentation_height_ = 0;
     bool menu_open_ = false;
     bool menu_focus_ = false; // the menu just opened: put the nav ring on it
     bool netplay_ = false;

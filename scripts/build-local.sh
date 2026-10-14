@@ -40,9 +40,8 @@ machine, and print its path last, as RETRO_HUB=<absolute path>.
   --debug          Debug build (default: Release)
   --out DIR        the flat prefix (default: <repo>/out/local/<platform>/)
   --build DIR      CMake build directory (default: <repo>/build-local[-debug])
-  --runtime DIR    build the runner from this Retro-Runtime checkout (its
-                   scripts/build-local.sh when it has one) instead of the
-                   submodule's
+  --runtime DIR    build the shared link and runner from this Retro-Runtime
+                   checkout instead of the submodule's
   --jobs N         parallel build jobs (default: all CPUs)
   --release-version V
                    build as release V (-DRETCOMM_VERSION, -DRETCOMM_RELEASE_BUILD):
@@ -136,6 +135,7 @@ cmake_args=(
   "-DCMAKE_BUILD_TYPE=${CONFIG}"
   "-DRETCOMM_COMMIT=${COMMIT}"
 )
+[[ -z "${RUNTIME}" ]] || cmake_args+=("-DRETCOMM_RUNTIME_DIR=${RUNTIME}")
 [[ -z "${RELEASE_VERSION}" ]] || cmake_args+=("-DRETCOMM_VERSION=${RELEASE_VERSION}" -DRETCOMM_RELEASE_BUILD=ON)
 command -v ninja >/dev/null && cmake_args+=(-G Ninja)
 [[ -z "${CMAKE_PREFIX_PATH:-}" ]] || cmake_args+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
@@ -166,33 +166,8 @@ cmake --install "${BUILD}" --prefix "${STAGE}" >/dev/null
 RUNNER_SRC="${STAGE}/bin/retro-core-runner"
 RUNNER_FROM="the Retro-Runtime submodule ($(git -C "${ROOT}/third_party/Retro-Runtime" rev-parse --short HEAD 2>/dev/null || echo '?'))"
 RUNNER_LIBS=()
+# CMake built both the link and runner against the same SDL3 target.
 if [[ -n "${RUNTIME}" ]]; then
-  RT_OUT="${BUILD}/runtime-out" RT_BUILD="${BUILD}/runtime-build"
-  if [[ -x "${RUNTIME}/scripts/build-local.sh" ]]; then
-    say "building the runner with ${RUNTIME}/scripts/build-local.sh"
-    rt_args=(--out "${RT_OUT}" --build "${RT_BUILD}" --jobs "${JOBS}")
-    [[ "${CONFIG}" == Debug ]] && rt_args+=(--debug)
-    rt_report="$("${RUNTIME}/scripts/build-local.sh" "${rt_args[@]}")" || die "${RUNTIME}/scripts/build-local.sh failed"
-    RUNNER_SRC="$(tail -1 <<<"${rt_report}" | sed -n 's/^RETRO_CORE_RUNNER=//p')"
-    [[ -x "${RUNNER_SRC}" ]] || die "${RUNTIME}/scripts/build-local.sh printed no RETRO_CORE_RUNNER= line"
-    shopt -s nullglob
-    RUNNER_LIBS=("$(dirname "${RUNNER_SRC}")"/libSDL3*)
-    shopt -u nullglob
-  else
-    say "building the runner from ${RUNTIME} with cmake (it has no scripts/build-local.sh)"
-    rt_cmake=(-S "${RUNTIME}" -B "${RT_BUILD}" "-DCMAKE_BUILD_TYPE=${CONFIG}")
-    command -v ninja >/dev/null && rt_cmake+=(-G Ninja)
-    [[ -z "${CMAKE_PREFIX_PATH:-}" ]] || rt_cmake+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
-    case "${OS}" in
-      linux) rt_cmake+=("-DCMAKE_INSTALL_RPATH=\$ORIGIN") ;;
-      macos) rt_cmake+=("-DCMAKE_INSTALL_RPATH=@loader_path") ;;
-    esac
-    cmake "${rt_cmake[@]}" >&2
-    cmake --build "${RT_BUILD}" --parallel "${JOBS}" --target retro-core-runner >&2
-    rm -rf "${RT_OUT}"
-    cmake --install "${RT_BUILD}" --prefix "${RT_OUT}" >/dev/null
-    RUNNER_SRC="${RT_OUT}/bin/retro-core-runner"
-  fi
   RUNNER_FROM="${RUNTIME} ($(git -C "${RUNTIME}" rev-parse --short HEAD 2>/dev/null || echo '?'))"
 fi
 [[ -x "${RUNNER_SRC}" ]] || die "no retro-core-runner at ${RUNNER_SRC}"

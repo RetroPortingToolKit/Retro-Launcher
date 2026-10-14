@@ -18457,7 +18457,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (core_settings_capture_event(hub, e)) continue;
             ImGui_ImplSDL3_ProcessEvent(&e);
         }
-        if (play) play->tick();
+        if (play) play->tick(window);
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
@@ -18608,7 +18608,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
                 SDL_SetWindowFullscreen(window, !fs_now);
             }
         }
-        play.tick();
+        play.tick(window);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
@@ -19226,7 +19226,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (play) play->tick();
+        if (play) play->tick(window);
 #endif
         if (!play_title_id.empty()) {
             if (!play_requested && !setup_pending) {
