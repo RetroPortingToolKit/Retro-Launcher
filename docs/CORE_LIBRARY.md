@@ -91,20 +91,21 @@ The main loop then:
   caller that waits on `retcomm launch`, such as a Steam shortcut, therefore
   still waits for the game.
 
-## Romhack bases (2026-10-08)
+## Legacy romhack bases (updated 2026-10-14)
 
-An n64lle game can run as the game itself or as exactly one installed romhack,
+Players install ROMhacks as standalone games. Neither the desktop title home
+nor the controller overlay exposes a Base picker. With n64lle 0.449.0, the
+legacy `system.romhack`, `system.startup`, and `system.pif_rom` declarations are
+developer-only; ordinary settings require no ROMhack or PIF setup.
+
+The backend still supports an explicitly configured legacy base so existing
+saves and mod compatibility checks remain valid. An n64lle game can run as the
+game itself or as exactly one installed romhack,
 its **base** (n64lle `docs/ROMHACK-PLAN.md`). A romhack is installed beside the game
 package as `romhacks/<id>/`, holding `base.toml`, the patch and a delta package
 (n64lle `tools/n64romhack.py install`). The core picks the base from its option
 `system.romhack`; empty means the game itself.
 
-- **Picker.** In Direct and title-app mode the home page shows a **Base** picker
-  when anything is installed (`src/core/romhacks.cpp` `scan_romhacks`). It writes
-  the title's `system.romhack` to `options/<key>.ini`, the same file the System
-  tab writes, so a session gets it like any other option.
-  - A base the core would refuse is listed but disabled, with the reason as its
-    tooltip: an id that is not its directory's name, or a missing delta.
 - **Saves.** A base keeps its own saves, `saves/<key>@<id>`, apart from the game's
   `saves/<key>` (`base_save_dir`). The exception is a `base.toml` that says
   `saves = "shared-with-stock"`, which is the hack author's word that the layout is
@@ -122,10 +123,11 @@ package as `romhacks/<id>/`, holding `base.toml`, the patch and a delta package
   "Last session" shows the core's `base:` and romhack lines with its `mods:` ones.
 
 Checked by `hub_romhack` (ctest): the scan and its refusals, the save dirs, and the
-standings, through the Mods page's own manifest reader. The picker and the Files
-row were checked by screenshot against the n64lle fixture package with three bases
-installed. Clicking an entry in the open picker was not driven: synthetic clicks did
-not reach the window, so that interaction is unexercised.
+standings, through the Mods page's own manifest reader. The removal passed a
+Windows Release build and the `hub_core_settings`, `hub_romhack`, and `hub_title`
+tests. The rebuilt n64lle core's `--describe` output marks all three controls
+`restart,netplay,developer`; existing settings grouping excludes those declarations
+from ordinary sections. No live game was interrupted for this cleanup.
 
 ## How it was checked (2026-09-25)
 

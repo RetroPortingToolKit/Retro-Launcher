@@ -16498,8 +16498,8 @@ struct DirectHome {
     bool focus_pending = true;
 
     retcomm::ModScanResult mods;
-    // Romhack bases installed beside the package (romhacks.hpp); the Base
-    // picker lists them and writes the title's system.romhack.
+    // Legacy/developer romhack selections still need their save and mod
+    // compatibility metadata; ordinary titles are installed independently.
     std::vector<retcomm::InstalledRomhack> romhacks;
     std::string status;                     // the last thing that happened
     bool status_bad = false;
@@ -17303,53 +17303,6 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
     }
     ImGui::Dummy(ImVec2(0, 6));
 
-    // THE BASE (n64lle docs/ROMHACK-PLAN.md R5): the game itself, or one
-    // installed romhack. It is the title's system.romhack core option, so a
-    // session, its saves and its netplay match key all follow it.
-    if (!h.romhacks.empty()) {
-        const std::string cur = direct_base_id(h, hub);
-        const retcomm::InstalledRomhack* sel = retcomm::find_romhack(h.romhacks, cur);
-        const std::string preview =
-            cur.empty() ? std::string("The game") : (sel ? sel->title : cur + " (not installed)");
-        ImGui::TextColored(th.text_muted, "Base");
-        ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo("##base", preview.c_str())) {
-            auto choose = [&](const std::string& id) {
-                auto title = retcomm::hub::load_core_options(hub.paths.data_dir, h.platform,
-                                                             h.title_key);
-                if (id.empty()) title.erase(retcomm::kRomhackOption);
-                else title[retcomm::kRomhackOption] = id;
-                std::string err;
-                if (!retcomm::hub::save_core_options(hub.paths.data_dir, h.platform, h.title_key,
-                                                     title, &err)) {
-                    h.status = "Cannot save the base: " + err;
-                    h.status_bad = true;
-                }
-            };
-            if (ImGui::Selectable("The game", cur.empty())) choose({});
-            for (const retcomm::InstalledRomhack& r : h.romhacks) {
-                const std::string label = r.title + (r.version.empty() ? "" : " " + r.version) +
-                                          (r.error.empty() ? "" : "  (unusable)");
-                ImGui::BeginDisabled(!r.error.empty());
-                if (ImGui::Selectable((label + "##" + r.id).c_str(), r.id == cur)) choose(r.id);
-                ImGui::EndDisabled();
-                if (!r.error.empty() &&
-                    ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("%s", r.error.c_str());
-            }
-            ImGui::EndCombo();
-        }
-        if (sel) {
-            ImGui::PushStyleColor(ImGuiCol_Text, th.text_muted);
-            ImGui::TextWrapped("%s", sel->saves_shared
-                                         ? "Shares the game's saves (its author says the save "
-                                           "layout is unchanged)."
-                                         : "Keeps its own saves, apart from the game's.");
-            ImGui::PopStyleColor();
-        }
-        ImGui::Dummy(ImVec2(0, 4));
-    }
-
     if (ImGui::Button("Mods", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Mods);
     ImGui::BeginDisabled(!have_rom);
     if (ImGui::Button("Netplay", ImVec2(w, 0))) open_direct_page(h, hub, DirectPage::Netplay);
@@ -17902,39 +17855,6 @@ DirectAction draw_direct_home_overlay(DirectHome& h, HubModel& hub, const Theme&
     ImGui::Dummy(ImVec2(0, 6));
     if (h.d.title_mode && have_rom && ov::setting_row(m, "rom", "ROM", "Choose another...", nullptr))
         begin_title_rom_pick(h);
-
-    // THE BASE: the game itself, or one installed romhack (it is the title's system.romhack
-    // option, so a session, its saves and its netplay match key all follow it).
-    if (!h.romhacks.empty()) {
-        const std::string cur = direct_base_id(h, hub);
-        const retcomm::InstalledRomhack* sel = retcomm::find_romhack(h.romhacks, cur);
-        const std::string preview = cur.empty() ? std::string("The game") : (sel ? sel->title : cur + " (not installed)");
-        if (ov::setting_row(m, "base", "Base", preview,
-                            sel ? (sel->saves_shared ? "Shares the game's saves (its author says the save layout is "
-                                                        "unchanged)."
-                                                      : "Keeps its own saves, apart from the game's.")
-                                : nullptr))
-            ov::open_picker("##base");
-        std::vector<ov::PickerChoice> choices{{"The game", ""}};
-        int current = cur.empty() ? 0 : -1;
-        for (size_t i = 0; i < h.romhacks.size(); ++i) {
-            const retcomm::InstalledRomhack& r = h.romhacks[i];
-            choices.push_back({r.title + (r.version.empty() ? "" : " " + r.version),
-                               r.error.empty() ? std::string() : "Unusable: " + r.error});
-            if (r.id == cur) current = static_cast<int>(i) + 1;
-        }
-        const int pick = ov::picker(m, "##base", "Base", choices, current);
-        if (pick >= 0 && (pick == 0 || h.romhacks[static_cast<size_t>(pick - 1)].error.empty())) {
-            auto title = retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, h.title_key);
-            if (pick == 0) title.erase(retcomm::kRomhackOption);
-            else title[retcomm::kRomhackOption] = h.romhacks[static_cast<size_t>(pick - 1)].id;
-            std::string err;
-            if (!retcomm::hub::save_core_options(hub.paths.data_dir, h.platform, h.title_key, title, &err)) {
-                h.status = "Cannot save the base: " + err;
-                h.status_bad = true;
-            }
-        }
-    }
 
     if (ov::setting_row(m, "settings", "Settings", "Core options, video, accessories")) open_direct_core_settings(h, hub, "");
     if (ov::setting_row(m, "controls", "Controls", "Players, buttons")) open_direct_core_settings(h, hub, "Controls");
