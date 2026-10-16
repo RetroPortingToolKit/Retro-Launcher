@@ -613,6 +613,17 @@ int main(int argc, char** argv) {
     test_display(dir);
     test_n64lle_mods(dir);
     test_n64lle_options(dir);
+    check(player_core_option_value("n64", "video.internal_resolution", "4x") == "3x",
+          "N64 stored or explicit 4x launches at 3x");
+    check(player_core_option_value("n64", "video.internal_resolution", "6x") == "3x",
+          "N64 higher diagnostic scales are not player choices");
+    for (const std::string& value : {"1x", "2x", "3x", "title", "bad", "99999999999999999x"})
+        check(player_core_option_value("n64", "video.internal_resolution", value) == value,
+              "N64 lower scales and non-scale values pass through");
+    check(player_core_option_value("psx", "video.internal_resolution", "4x") == "4x",
+          "other platforms retain their own scales");
+    check(player_core_option_value("n64", "video.supersampling", "4x") == "4x",
+          "unrelated options retain their own choices");
     test_transfer_pak(dir);
     test_tpak_library(dir);
     {

@@ -1,5 +1,10 @@
 # Core titles in the library
 
+The N64 internal-resolution menu offers 1x, 2x and 3x for every title, in both
+platform and title settings. A previously saved or explicit higher numeric
+scale is resolved to 3x when the hub launches N64. This shared player policy
+does not change other systems' scales or the core's developer diagnostics.
+
 A **core title** plays inside the hub's own window through an rcore core
 (Retro-Runtime `docs/CORE_LINK.md`), instead of being spawned as its own program. This page covers
 how such a title gets into the library and how Play reaches it. Linux only,
