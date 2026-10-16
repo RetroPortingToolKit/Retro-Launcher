@@ -11120,6 +11120,8 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         drop(title, "this title's");
     }
     args.options = retcomm::hub::layer_core_options(plat, title, args.options);
+    for (auto& [key, value] : args.options)
+        value = retcomm::hub::player_core_option_value(platform, key, value);
 }
 
 // A runner from before seats 2-4 took a Transfer Pak (no transfer_pak_seats
@@ -11617,7 +11619,8 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
     std::string inherited = o.has_default ? o.default_value : std::string();
     if (p.title_scope)
         if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) inherited = it->second;
-    const std::string cur = set ? own->second : inherited;
+    const std::string requested = set ? own->second : inherited;
+    const std::string cur = retcomm::hub::player_core_option_value(p.platform, o.key, requested);
     const std::string label = o.label.empty() ? o.key : o.label;
     const char* inherit_word = p.title_scope ? "All titles" : "Default";
 
@@ -11635,6 +11638,8 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
                 layer.erase(o.key);
             for (const std::string& v : o.values) {
                 if (p.title_scope && v == kTitleDeclaredValue) continue;
+                if (retcomm::hub::player_core_option_value(p.platform, o.key, v) != v)
+                    continue;
                 const bool chosen = (set || p.title_scope) && v == cur;
                 if (ImGui::Selectable(v.c_str(), chosen)) layer[o.key] = v;
                 if (chosen) ImGui::SetItemDefaultFocus();
