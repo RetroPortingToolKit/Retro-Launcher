@@ -33,6 +33,7 @@
 #include "imgui.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace retcomm::hub {
 
@@ -65,6 +66,11 @@ public:
     // current.
     void upload(const void* rgba, std::uint32_t w, std::uint32_t h, std::uint32_t aspect_num,
                 std::uint32_t aspect_den);
+    // GPU copy from a same-context RGBA8 texture. No host pixel transfer.
+    bool copy_texture(unsigned int texture, std::uint32_t w, std::uint32_t h,
+                      std::uint32_t aspect_num, std::uint32_t aspect_den);
+    // Explicit screenshot/thumbnail observer; never called by steady presentation.
+    std::vector<std::uint8_t> snapshot(std::uint32_t& width, std::uint32_t& height);
     bool empty() const { return tex_ == 0; }
 
     // Into `dl` (inside an ImGui frame), letterboxed on the display, tinted.
