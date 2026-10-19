@@ -217,6 +217,15 @@ void test_options(const fs::path& dir) {
     std::string err;
     check(save_core_options(dir, "n64", "pokemonstadiumtest_game", v, &err), "options save");
     check(load_core_options(dir, "n64", "pokemonstadiumtest_game") == v, "options round-trip");
+    const std::map<std::string, std::string> four_x{{"video.internal_resolution", "4x"}};
+    check(save_core_options(dir, "n64", "resolution-test", four_x, &err), "4x options save");
+    const auto stored = load_core_options(dir, "n64", "resolution-test");
+    check(stored == four_x && layer_core_options({}, stored, {}).at("video.internal_resolution") == "4x",
+          "stored N64 4x remains 4x at launch");
+    check(layer_core_options({{"video.internal_resolution", "2x"}},
+                             {{"video.internal_resolution", "3x"}}, four_x)
+                  .at("video.internal_resolution") == "4x",
+          "explicit N64 4x wins over platform and title scales");
     check(!save_core_options(dir, "n64", "t", {{"k", "a\nb"}}, &err),
           "a value with a newline refused");
 }
@@ -613,17 +622,6 @@ int main(int argc, char** argv) {
     test_display(dir);
     test_n64lle_mods(dir);
     test_n64lle_options(dir);
-    check(player_core_option_value("n64", "video.internal_resolution", "4x") == "3x",
-          "N64 stored or explicit 4x launches at 3x");
-    check(player_core_option_value("n64", "video.internal_resolution", "6x") == "3x",
-          "N64 higher diagnostic scales are not player choices");
-    for (const std::string& value : {"1x", "2x", "3x", "title", "bad", "99999999999999999x"})
-        check(player_core_option_value("n64", "video.internal_resolution", value) == value,
-              "N64 lower scales and non-scale values pass through");
-    check(player_core_option_value("psx", "video.internal_resolution", "4x") == "4x",
-          "other platforms retain their own scales");
-    check(player_core_option_value("n64", "video.supersampling", "4x") == "4x",
-          "unrelated options retain their own choices");
     test_transfer_pak(dir);
     test_tpak_library(dir);
     {
