@@ -50,12 +50,6 @@ struct CoreOptionDecl {
     std::string description;
 };
 
-// Shared player-facing limits apply to both the menu and launch options.
-// N64 currently offers at most 3x; the core's diagnostic scales remain available
-// to developer tools. Other platforms/options and non-scale values pass through.
-std::string player_core_option_value(const std::string& platform, const std::string& key,
-                                     const std::string& value);
-
 struct CoreInputDecl {
     std::uint32_t button = 0; // one RCORE_PAD_* bit, or 0
     std::uint32_t axis = 0;   // RCORE_AXIS_* + 1, or 0

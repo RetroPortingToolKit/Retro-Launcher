@@ -1,9 +1,11 @@
 # Core titles in the library
 
-The N64 internal-resolution menu offers 1x, 2x and 3x for every title, in both
-platform and title settings. A previously saved or explicit higher numeric
-scale is resolved to 3x when the hub launches N64. This shared player policy
-does not change other systems' scales or the core's developer diagnostics.
+The internal-resolution menu uses the values declared by the selected core,
+in both platform and title settings. Current n64lle cores offer 1x, 2x, 3x
+and 4x. The launcher preserves the selected scale, including an explicit
+`--opt video.internal_resolution=4x`; it does not silently lower resolution
+for performance. Stored values no longer declared by the core are omitted
+with a warning; explicit invalid values remain the core's validation error.
 
 A **core title** plays inside the hub's own window through an rcore core
 (Retro-Runtime `docs/CORE_LINK.md`), instead of being spawned as its own program. This page covers

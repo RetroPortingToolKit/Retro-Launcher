@@ -12,22 +12,6 @@
 
 namespace retcomm::hub {
 
-std::string player_core_option_value(const std::string& platform, const std::string& key,
-                                     const std::string& value) {
-    if (platform != "n64" || key != "video.internal_resolution") return value;
-    const auto scale = [](const std::string& text) -> unsigned {
-        if (text.size() < 2 || text.back() != 'x') return 0;
-        unsigned result = 0;
-        for (std::size_t i = 0; i + 1 < text.size(); ++i) {
-            if (text[i] < '0' || text[i] > '9') return 0;
-            result = result * 10 + static_cast<unsigned>(text[i] - '0');
-            if (result > 64) return 0;
-        }
-        return result;
-    };
-    return scale(value) > 3 ? "3x" : value;
-}
-
 namespace {
 
 namespace corelink = ::retro::corelink;
