@@ -129,6 +129,62 @@ void Picture::set_minified(bool on) {
     mipmapped_ = on;
 }
 
+bool Picture::copy_texture(unsigned int texture, std::uint32_t w, std::uint32_t h,
+                           std::uint32_t aspect_num, std::uint32_t aspect_den) {
+    const auto& g = gl3();
+    if (!g.blit || !texture || !w || !h) return false;
+    if (!tex_ || w != w_ || h != h_) upload(nullptr, w, h, aspect_num, aspect_den);
+    if (!read_fb_) g.GenFramebuffers(1, &read_fb_);
+    if (!draw_fb_) g.GenFramebuffers(1, &draw_fb_);
+    GLint read = 0, draw = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+    const bool scissor = glIsEnabled(GL_SCISSOR_TEST);
+    if (scissor) glDisable(GL_SCISSOR_TEST);
+    g.BindFramebuffer(GL_READ_FRAMEBUFFER, read_fb_);
+    g.FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    g.BindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fb_);
+    g.FramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_, 0);
+    const bool ok = g.CheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
+                    g.CheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (ok) g.BlitFramebuffer(0, 0, GLint(w), GLint(h), 0, 0, GLint(w), GLint(h),
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    g.BindFramebuffer(GL_READ_FRAMEBUFFER, GLuint(read));
+    g.BindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(draw));
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    if (!ok) return false;
+    aspect_num_ = aspect_num;
+    aspect_den_ = aspect_den;
+    ++rev_;
+    if (mipmapped_) {
+        glBindTexture(GL_TEXTURE_2D, tex_);
+        g.GenerateMipmap(GL_TEXTURE_2D);
+    }
+    return true;
+}
+
+std::vector<std::uint8_t> Picture::snapshot(std::uint32_t& width, std::uint32_t& height) {
+    width = height = 0;
+    const auto& g = gl3();
+    if (!tex_ || !g.blit) return {};
+    if (!read_fb_) g.GenFramebuffers(1, &read_fb_);
+    GLint read = 0, alignment = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
+    g.BindFramebuffer(GL_READ_FRAMEBUFFER, read_fb_);
+    g.FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_, 0);
+    std::vector<std::uint8_t> pixels;
+    if (g.CheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        pixels.resize(std::size_t(w_) * h_ * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(0, 0, GLsizei(w_), GLsizei(h_), GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        width = w_; height = h_;
+    }
+    g.BindFramebuffer(GL_READ_FRAMEBUFFER, GLuint(read));
+    glPixelStorei(GL_PACK_ALIGNMENT, alignment);
+    return pixels;
+}
+
 // tex_ blown up kx by ky with nearest, into pre_: redone per new frame or size.
 // 0 when it cannot be (the caller draws tex_ instead).
 unsigned int Picture::prescaled(std::uint32_t kx, std::uint32_t ky) {
@@ -142,8 +198,8 @@ unsigned int Picture::prescaled(std::uint32_t kx, std::uint32_t ky) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        g.GenFramebuffers(1, &read_fb_);
-        g.GenFramebuffers(1, &draw_fb_);
+        if (!read_fb_) g.GenFramebuffers(1, &read_fb_);
+        if (!draw_fb_) g.GenFramebuffers(1, &draw_fb_);
     }
     if (pw != pre_w_ || ph != pre_h_) {
         glBindTexture(GL_TEXTURE_2D, pre_);

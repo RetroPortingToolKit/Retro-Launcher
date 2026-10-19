@@ -5,6 +5,7 @@
 
 #include "hub/hub_gl.hpp"
 #include "runner_probe.hpp" // Retro-Runtime: probe_runner
+#include "state_envelope.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -111,6 +112,7 @@ PlaySession::~PlaySession() { shutdown(); }
 bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::path& session_dir,
                         const fs::path& save_dir, std::string* error) {
     args_ = args;
+    picture_frame_ = 0;
     prefs_ = args.prefs;
     osd_.set_fps_visible(prefs_.show_fps);
     picture_.set_style(args.picture);
@@ -126,6 +128,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     const fs::path& owner = args.package.empty() ? args.core : args.package;
     spec.title_dir = args.title_dir.empty() ? owner.parent_path() : args.title_dir;
     spec.session_dir = session_dir;
+    spec.gpu_capabilities = gpu_frames_.capabilities();
     spec.save_dir = save_dir;
     spec.gl = args.gl && runner_lends_gl(runner);
     if (args.gl && !spec.gl)
@@ -350,7 +353,16 @@ void PlaySession::service_states() {
             states_.finish(false, save, "the game stopped");
             state_request_ = Req{};
         } else if (link_.can_request_state()) {
-            const bool sent = save ? link_.request_save_state(state_request_.path)
+            std::vector<std::uint8_t> thumbnail;
+            if (save && corelink::link_has_gpu_frames(link_.identity().protocol_minor)) {
+                upload_frame();
+                if (gpu_frames_.stats().pictures) {
+                    std::uint32_t w = 0, h = 0;
+                    const auto pixels = picture_.snapshot(w, h);
+                    if (!pixels.empty()) thumbnail = retro::state::make_thumbnail(pixels.data(), w, h, w * 4);
+                }
+            }
+            const bool sent = save ? link_.request_save_state(state_request_.path, thumbnail)
                                    : link_.request_load_state(state_request_.path);
             if (!sent) states_.finish(false, save, "the link could not send the request");
             state_request_ = Req{};
@@ -563,10 +575,16 @@ void PlaySession::end_turbo_stretch() {
 }
 
 void PlaySession::upload_frame() {
-    if (!link_.take_frame()) return;
-    const corelink::FrameInfo* f = link_.frame_info();
-    if (!f || !f->width || !f->height) return;
-    picture_.upload(link_.frame_pixels(), f->width, f->height, f->aspect_num, f->aspect_den);
+    const bool cpu = link_.take_frame();
+    const auto* f = cpu ? link_.frame_info() : nullptr;
+    // The two transports share the monotonically increasing grant number.
+    // Consume and release every GPU picture, but never replace a newer one.
+    const auto cutoff = f ? std::max(picture_frame_, f->frame_number) : picture_frame_;
+    picture_frame_ = gpu_frames_.pump(link_, picture_, cutoff);
+    if (f && f->width && f->height && f->frame_number >= picture_frame_) {
+        picture_.upload(link_.frame_pixels(), f->width, f->height, f->aspect_num, f->aspect_den);
+        picture_frame_ = f->frame_number;
+    }
 }
 
 void PlaySession::tick(SDL_Window* window) {
@@ -1094,6 +1112,14 @@ void PlaySession::shutdown() {
     if (turbo_running_) set_turbo_running(false);
     stop_vru();
     states_.release();
+    gpu_frames_.release(link_);
+    const auto gpu_stats = gpu_frames_.stats();
+    if (gpu_stats.imports || gpu_stats.refused)
+        SDL_Log("retro-hub: GPU presentation imports=%llu pictures=%llu releases=%llu refused=%llu",
+                static_cast<unsigned long long>(gpu_stats.imports),
+                static_cast<unsigned long long>(gpu_stats.pictures),
+                static_cast<unsigned long long>(gpu_stats.releases),
+                static_cast<unsigned long long>(gpu_stats.refused));
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);

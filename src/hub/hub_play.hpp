@@ -24,6 +24,7 @@
 #include "hub/hub_accessory_link.hpp"
 #include "hub/hub_core_settings.hpp"
 #include "hub/hub_picture.hpp"
+#include "hub/hub_gpu_frames.hpp"
 #include "hub/hub_vru.hpp"
 #include "hub/hub_vru_mic.hpp"
 #include "overlay.hpp"   // Retro-Runtime: retro_overlay
@@ -163,6 +164,8 @@ private:
 
     // The core's frame, scaled as args_.picture says.
     Picture picture_;
+    GpuFrames gpu_frames_;
+    std::uint64_t picture_frame_ = 0;
 
     // Audio: an SDL stream fed from the link's ring; its fill level paces
     // grants (the core states no frame rate; its audio clock stands in).
