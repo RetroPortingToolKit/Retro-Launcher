@@ -555,7 +555,8 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             ${CMAKE_CURRENT_BINARY_DIR}/hub_core_settings_test.d)
         add_executable(retro-hub-netplay-options-test tests/netplay_options_test.cpp)
         target_include_directories(retro-hub-netplay-options-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(retro-hub-netplay-options-test PRIVATE retcomm_core retro_corelink)
+        target_link_libraries(retro-hub-netplay-options-test PRIVATE retcomm_core retro_corelink
+            ${RETCOMM_HUB_SDL_TARGET})
         add_test(NAME netplay_options COMMAND retro-hub-netplay-options-test)
         # Romhack bases (romhacks.hpp): what the Base picker lists, a base's save
         # dir, and a mod's standing on a base.
