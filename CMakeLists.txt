@@ -215,7 +215,9 @@ if(WIN32)
     if(MINGW)
         target_compile_options(retcomm-portable PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:-municode>)
-        target_link_options(retcomm-portable PRIVATE -municode)
+        # The stub starts before its payload DLLs have been extracted. Keep
+        # the compiler runtimes inside it as well as miniz.
+        target_link_options(retcomm-portable PRIVATE -municode -static)
     endif()
     target_link_libraries(retcomm-portable PRIVATE shell32 retcomm_miniz)
     install(TARGETS retcomm-portable RUNTIME DESTINATION bin)

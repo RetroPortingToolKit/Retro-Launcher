@@ -18191,8 +18191,8 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     std::string err;
     retcomm::hub::PlayArgs args = h.d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
-    // NETPLAY-flagged options join the match key: each peer's own choice
-    // would only get the match refused, so every peer takes the core's default.
+    // NETPLAY-flagged options join the match key. Every peer adopts the room's
+    // validated host choices; other shared options take the core's defaults.
     // Except the BASE (system.romhack): the stock game in a romhack player's
     // place would be a silent substitution. It stays, so the match key admits
     // peers on the same base and refuses peers on another.

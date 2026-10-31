@@ -173,15 +173,13 @@ bool holds_only_runtime(const fs::path& dir) {
 }
 
 fs::path local_app_data() {
-    wchar_t* raw = nullptr;
-    size_t len = 0;
-    if (_wdupenv_s(&raw, &len, L"LOCALAPPDATA") == 0 && raw && len > 1) {
-        fs::path p(raw);
-        free(raw);
-        return p;
-    }
-    if (raw) free(raw);
-    return {};
+    const DWORD capacity = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+    if (!capacity) return {};
+    std::wstring value(capacity, L'\0');
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), capacity);
+    if (!length || length >= capacity) return {};
+    value.resize(length);
+    return fs::path(value);
 }
 
 // A title app's payload: its title.json id, and a fingerprint of the whole
