@@ -13,10 +13,20 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace retcomm::hub {
 
 namespace fs = std::filesystem;
+
+enum class PlayMenuPage { Main, States, Replays };
+constexpr const char* play_menu_page_title(PlayMenuPage page) {
+    return page==PlayMenuPage::States ? "Save states" : page==PlayMenuPage::Replays ? "Replays" : "Quick menu";
+}
+constexpr PlayMenuPage toggle_browser_page(PlayMenuPage page) {
+    return page==PlayMenuPage::States ? PlayMenuPage::Replays : page==PlayMenuPage::Replays ? PlayMenuPage::States : page;
+}
+unsigned upload_save_thumbnail(const std::vector<std::uint8_t>& pixels);
 
 class StatesBrowser {
 public:

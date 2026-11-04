@@ -8,6 +8,7 @@
 #include "state_envelope.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
@@ -197,7 +198,7 @@ bool PlaySession::handle_event(const SDL_Event& e) {
     }
     if (menu_open_ && e.type==SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key==SDLK_TAB &&
         (menu_page_==MenuPage::States || menu_page_==MenuPage::Replays)) {
-        menu_page_=menu_page_==MenuPage::States ? MenuPage::Replays : MenuPage::States;
+        if (toggle_browser_page(menu_page_)==MenuPage::Replays) open_replays(); else open_states();
         return true;
     }
     if (e.type != SDL_EVENT_KEY_DOWN && e.type != SDL_EVENT_KEY_UP) return false;
@@ -690,11 +691,12 @@ void PlaySession::toggle_recording() {
 }
 
 void PlaySession::service_replays() {
+    if (replays_refresh_) { replays_refresh_=false; refresh_replays(); }
     const auto& status=link_.replay_status();
     if (status.state!=replay_seen_) {
         replay_seen_=status.state;
-        if (status.state==corelink::ReplayState::Saved) replay_message_="Replay saved";
-        else if (status.state==corelink::ReplayState::Failed) replay_message_=status.detail;
+        if (status.state==corelink::ReplayState::Saved) { replay_message_="Replay saved"; finish_replay_preview(); refresh_replays(); }
+        else if (status.state==corelink::ReplayState::Failed) { replay_message_=status.detail; replay_preview_.reset(); }
         else if (status.state==corelink::ReplayState::TakenOver) replay_message_="Live input took over";
         else if (status.state==corelink::ReplayState::Recording) replay_message_="Recording replay";
         else replay_message_.clear();
@@ -705,10 +707,22 @@ void PlaySession::service_replays() {
         std::error_code ec;
         fs::create_directories(replays_dir_,ec);
         const auto path=replays_dir_/("replay-"+std::to_string(SDL_GetTicksNS())+".route");
+        std::optional<ReplayInfo> preview;
+        if (record && !ec) {
+            ReplayInfo info; info.path=path;
+            info.title=args_.title_name.empty() ? corelink::utf8_path(args_.rom).stem().u8string() : args_.title_name;
+            info.saved_unix=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            link_.frame_rate(info.rate_num,info.rate_den);
+            upload_frame(); // same latest completed frame as presentation, before the anchor request
+            std::uint32_t w=0,h=0; const auto pixels=picture_.snapshot(w,h);
+            if (!pixels.empty()) info.pixels=retro::state::make_thumbnail(pixels.data(),w,h,w*4);
+            info.aspect=picture_.aspect(); preview=std::move(info);
+        }
         if (ec || !link_.request_recording(record,path)) {
             replay_message_=ec ? ec.message() : "The replay request could not be sent";
             osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
         }
+        else if (record) replay_preview_=std::move(preview);
         recording_request_.reset();
     }
     if (!replay_play_.empty() && link_.can_grant()) {
@@ -733,42 +747,39 @@ void PlaySession::service_replays() {
     }
 }
 
-void PlaySession::draw_replays_page() {
-    if (ImGui::Button("Save states")) menu_page_=MenuPage::States;
-    ImGui::SameLine(); ImGui::TextDisabled("Replays (Tab switches pages)");
-    if (!replay_message_.empty()) ImGui::TextWrapped("%s",replay_message_.c_str());
-    ImGui::BeginDisabled(!link_.replays_supported() || netplay_ || link_.replay_pending());
-    if (ImGui::Button(link_.replay_status().state==corelink::ReplayState::Recording ? "Stop recording (F11)" : "Record from here (F11)")) toggle_recording();
-    ImGui::EndDisabled();
-    ImGui::TextWrapped("Playback starts a fresh game process. Release controls, then press a button or move a stick to take over. Playback saves stay private.");
-    std::error_code ec;
-    std::vector<fs::path> paths;
-    for (fs::directory_iterator it(replays_dir_,ec),end; !ec && it!=end; it.increment(ec))
-        if (it->is_regular_file(ec) && it->path().extension()==".route") paths.push_back(it->path());
-    std::sort(paths.rbegin(),paths.rend());
-    if (paths.empty()) ImGui::TextDisabled("No saved replays");
-    for (const auto& path:paths) {
-        ImGui::PushID(path.filename().string().c_str());
-        ImGui::Separator(); ImGui::TextUnformatted(path.filename().string().c_str());
-        ImGui::BeginDisabled(!link_.replays_supported() || link_.replay_status().state==corelink::ReplayState::Recording);
-        if (ImGui::Button("Play")) replay_play_=path;
-        ImGui::EndDisabled(); ImGui::SameLine();
-        if (ImGui::Button("Export copy")) {
-            const auto dir=replays_dir_/"exports";
-            fs::create_directories(dir,ec);
-            const auto target=dir/(path.stem().string()+"-"+std::to_string(SDL_GetTicksNS())+".route");
-            if (!ec) fs::copy_file(path,target,fs::copy_options::none,ec);
-            replay_message_=ec ? ec.message() : "Exported copy to replays/exports";
-        }
-        ImGui::SameLine();
-        if (replay_delete_==path) {
-            if (ImGui::Button("Confirm delete")) {
-                fs::remove(path,ec); replay_message_=ec ? ec.message() : "Replay deleted"; replay_delete_.clear();
-            }
-            ImGui::SameLine(); if (ImGui::Button("Cancel")) replay_delete_.clear();
-        } else if (ImGui::Button("Delete")) replay_delete_=path;
-        ImGui::PopID();
+void PlaySession::finish_replay_preview() {
+    if (!replay_preview_) return;
+    const auto movie=read_replay_info(replay_preview_->path);
+    if (!movie.sealed) return;
+    std::string error;
+    if (!write_replay_preview(*replay_preview_,error)) replay_message_="Replay saved; "+error;
+    replay_preview_.reset();
+}
+void PlaySession::refresh_replays() {
+    for (auto& card:replay_cards_) if (card.picture.tex) glDeleteTextures(1,&card.picture.tex);
+    replay_cards_.clear();
+    for (auto& info:list_replays(replays_dir_)) {
+        ReplayCard card; card.picture.exists=true; card.picture.readable=info.sealed;
+        card.picture.tex=upload_save_thumbnail(info.pixels);
+        card.picture.saved_unix=info.saved_unix;
+        card.info=std::move(info); replay_cards_.push_back(std::move(card));
     }
+    if (replay_view_>=static_cast<int>(replay_cards_.size())) replay_view_=-1;
+}
+void PlaySession::open_replays() {
+    if (!menu_open_) set_paused(true);
+    menu_page_=MenuPage::Replays; replay_view_=-1; replay_delete_.clear(); refresh_replays();
+}
+void PlaySession::draw_browser_tabs() {
+    namespace hov=retcomm::hub::overlay;
+    const float width=(ImGui::GetContentRegionAvail().x-10.f)*.5f;
+    if (hov::action_button("Save states",menu_page_==MenuPage::States,width)) open_states();
+    ImGui::SameLine(0.f,10.f);
+    if (hov::action_button("Replays",menu_page_==MenuPage::Replays,width)) open_replays();
+    ImGui::Dummy(ImVec2(0.f,8.f));
+    ImGui::TextUnformatted(play_menu_page_title(menu_page_));
+    ImGui::SameLine(); ImGui::TextDisabled("(Tab: switch page)");
+    ImGui::Separator();
 }
 
 void PlaySession::draw_overlay() {
@@ -848,20 +859,119 @@ void state_status_line(const StatesBrowser& st, bool busy) {
 
 // A thumbnail, or a placeholder saying why there is none, in [t0, t1].
 void draw_state_picture(ImDrawList* dl, const StatesBrowser::Slot& s, ImVec2 t0, ImVec2 t1,
-                        float rounding) {
+                        float rounding, float aspect = 4.f/3.f, const char* missing = nullptr) {
     if (s.tex) {
+        dl->AddRectFilled(t0,t1,IM_COL32(0,0,0,255),rounding);
+        const float w=t1.x-t0.x,h=t1.y-t0.y;
+        const float pw=std::min(w,h*aspect),ph=pw/aspect;
+        t0=ImVec2(t0.x+(w-pw)*.5f,t0.y+(h-ph)*.5f); t1=ImVec2(t0.x+pw,t0.y+ph);
         dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(s.tex)), t0, t1,
                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, rounding);
         return;
     }
     dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 14), rounding);
-    const char* none = !s.exists ? "Empty" : s.readable ? "No picture" : "Unreadable";
+    const char* none = missing ? missing : !s.exists ? "Empty" : s.readable ? "No picture" : "Unreadable";
     const ImVec2 ts = ImGui::CalcTextSize(none);
     dl->AddText(ImVec2((t0.x + t1.x - ts.x) * 0.5f, (t0.y + t1.y - ts.y) * 0.5f),
                 IM_COL32(153, 163, 188, 255), none);
 }
 
+// Both browsers use the same card and thumbnail treatment.
+bool draw_save_card(int id,const StatesBrowser::Slot& picture,ImVec2 size,
+                    const std::string& label,const std::string& when,const std::string& detail,
+                    float aspect=4.f/3.f,const char* missing=nullptr) {
+    namespace hov=retcomm::hub::overlay;
+    const ImVec2 p0=ImGui::GetCursorScreenPos(),p1(p0.x+size.x,p0.y+size.y);
+    ImGui::PushID(id);
+    const bool pressed=hov::nav_button("##slot",size,ImGuiButtonFlags_EnableNav);
+    const bool focused=ImGui::IsItemFocused();
+    auto* dl=ImGui::GetWindowDrawList();
+    hov::card_frame(p0,p1,ImGui::IsItemHovered() || focused,focused && ImGui::GetIO().NavVisible);
+    const ImVec2 t0(p0.x+6.f,p0.y+6.f),t1(p1.x-6.f,p0.y+6.f+(size.x-12.f)*.75f);
+    draw_state_picture(dl,picture,t0,t1,8.f,aspect,missing);
+    const float y=t1.y+5.f;
+    const auto ws=ImGui::CalcTextSize(when.c_str());
+    const ImVec4 clip(p0.x+10.f,y,p1.x-16.f-ws.x,y+ImGui::GetFontSize()+2.f);
+    dl->AddText(nullptr,0.f,ImVec2(p0.x+10.f,y),IM_COL32(233,237,248,255),label.c_str(),nullptr,0.f,&clip);
+    dl->AddText(ImVec2(p1.x-10.f-ws.x,y),IM_COL32(153,163,188,255),when.c_str());
+    const ImVec4 subclip(p0.x+10.f,y+ImGui::GetTextLineHeightWithSpacing(),p1.x-10.f,p1.y-3.f);
+    dl->AddText(nullptr,0.f,ImVec2(subclip.x,subclip.y),IM_COL32(153,163,188,255),detail.c_str(),nullptr,0.f,&subclip);
+    if (!picture.mark.empty()) dl->AddText(ImVec2(t0.x+4.f,t0.y+4.f),IM_COL32(245,165,36,255),picture.mark.c_str());
+    if (ImGui::IsItemHovered() && !detail.empty()) ImGui::SetTooltip("%s",detail.c_str());
+    ImGui::PopID(); return pressed;
+}
+
 } // namespace
+
+void PlaySession::draw_replays_page() {
+    namespace hov=retcomm::hub::overlay;
+    const auto state=link_.replay_status().state;
+    if (!replay_message_.empty()) ImGui::TextWrapped("%s",replay_message_.c_str());
+    ImGui::BeginDisabled(!link_.replays_supported() || netplay_ || link_.replay_pending());
+    if (hov::action_button(state==corelink::ReplayState::Recording ? "Stop recording (F11)" : "Record from here (F11)",true)) toggle_recording();
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(0.f,8.f));
+    const auto m=hov::metrics(ImGui::GetMainViewport()->Size);
+    if (replay_view_>=0 && replay_view_<static_cast<int>(replay_cards_.size())) {
+        const auto& card=replay_cards_[replay_view_];
+        const auto& info=card.info;
+        const float w=std::min(ImGui::GetContentRegionAvail().x,380.f);
+        const auto p0=ImGui::GetCursorScreenPos(); ImGui::Dummy(ImVec2(w,w*.75f));
+        draw_state_picture(ImGui::GetWindowDrawList(),card.picture,p0,ImVec2(p0.x+w,p0.y+w*.75f),10.f,info.aspect,info.preview_status.c_str());
+        ImGui::TextWrapped("%s",info.title.c_str());
+        ImGui::TextDisabled("%s  |  %s",state_time_text(info.saved_unix).c_str(),replay_duration(info).c_str());
+        ImGui::TextWrapped("%s",info.path.filename().u8string().c_str());
+        ImGui::TextWrapped("Play starts a fresh process. Release controls once, then use a button or stick to take over. Playback saves stay private.");
+        ImGui::BeginDisabled(!link_.replays_supported() || state==corelink::ReplayState::Recording || !info.sealed);
+        if (hov::action_button("Play",true)) replay_play_=info.path;
+        ImGui::EndDisabled(); ImGui::SameLine();
+        if (hov::action_button("Export copy",false)) {
+            std::error_code ec; const auto dir=replays_dir_/"exports"; fs::create_directories(dir,ec);
+            const auto target=dir/(info.path.stem().u8string()+"-"+std::to_string(SDL_GetTicksNS())+".route");
+            if (!ec) fs::copy_file(info.path,target,fs::copy_options::none,ec);
+            if (!ec && fs::exists(replay_preview_path(info.path)))
+                fs::copy_file(replay_preview_path(info.path),replay_preview_path(target),fs::copy_options::none,ec);
+            replay_message_=ec ? ec.message() : "Exported copy to replays/exports";
+        }
+        ImGui::SameLine();
+        if (replay_delete_==info.path) {
+            if (hov::action_button("Confirm delete",false)) {
+                std::error_code ec; fs::remove(info.path,ec);
+                if (!ec) fs::remove(replay_preview_path(info.path),ec);
+                replay_message_=ec ? ec.message() : "Replay deleted";
+                replay_delete_.clear(); replay_view_=-1; replays_refresh_=true;
+            }
+            ImGui::SameLine(); if (hov::action_button("Cancel",false)) replay_delete_.clear();
+        } else if (hov::action_button("Delete",false)) replay_delete_=info.path;
+        if (hov::action_button("All replays",false)) { replay_view_=-1; replay_delete_.clear(); }
+        return;
+    }
+    const float gap=10.f,avail=ImGui::GetContentRegionAvail().x;
+    const int cols=avail>=520.f ? 4 : 3;
+    const float w=(avail-gap*(cols-1))/cols;
+    const float h=(w-12.f)*.75f+(m.compact ? 64.f : 72.f);
+    const auto origin=ImGui::GetCursorPos();
+    const int count=std::max(12,((static_cast<int>(replay_cards_.size())+cols-1)/cols)*cols);
+    for (int i=0;i<count;++i) {
+        ImGui::SetCursorPos(ImVec2(origin.x+(i%cols)*(w+gap),origin.y+(i/cols)*(h+gap)));
+        const bool exists=i<static_cast<int>(replay_cards_.size());
+        const StatesBrowser::Slot empty;
+        const auto* card=exists ? &replay_cards_[i] : nullptr;
+        const bool enabled=exists || (link_.replays_supported() && !netplay_ && state!=corelink::ReplayState::Recording);
+        ImGui::BeginDisabled(!enabled);
+        const bool picked=draw_save_card(i,card ? card->picture : empty,ImVec2(w,h),
+            "Replay "+std::to_string(i+1),card ? state_time_text(card->info.saved_unix) : "",
+            card ? replay_duration(card->info)+" - "+card->info.title : "Record new (F11)",
+            card ? card->info.aspect : 4.f/3.f,card ? card->info.preview_status.c_str() : nullptr);
+        ImGui::EndDisabled();
+        if (picked) {
+            if (exists) { replay_view_=i; replay_delete_.clear(); }
+            else { toggle_recording(); set_paused(false); }
+        }
+    }
+    ImGui::SetCursorPos(ImVec2(origin.x,origin.y+((count+cols-1)/cols)*(h+gap)));
+    ImGui::Dummy(ImVec2(0.f,0.f));
+}
 
 void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
     namespace hov = retcomm::hub::overlay;
@@ -953,7 +1063,7 @@ void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
     const float avail = ImGui::GetContentRegionAvail().x;
     const int cols = avail >= 520.f ? 4 : 3;
     const float w = (avail - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-    const float card_h = (w - 12.f) * 0.75f + (m.compact ? 40.f : 48.f);
+    const float card_h = (w - 12.f) * 0.75f + (m.compact ? 64.f : 72.f);
     const ImVec2 origin = ImGui::GetCursorPos();
     int pick = -1;
     for (int i = 0; i < StatesBrowser::kSlots; ++i) {
@@ -961,34 +1071,13 @@ void PlaySession::draw_states_page(const retcomm::hub::overlay::Metrics& m) {
         const int col = i % cols, row = i / cols;
         ImGui::SetCursorPos(ImVec2(origin.x + static_cast<float>(col) * (w + gap),
                                    origin.y + static_cast<float>(row) * (card_h + gap)));
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        ImGui::PushID(i);
         ImGui::BeginDisabled(busy);
-        if (retcomm::hub::overlay::nav_button("##slot", ImVec2(w, card_h), ImGuiButtonFlags_EnableNav))
-            pick = i;
+        const bool pressed=draw_save_card(i,s,ImVec2(w,card_h),"Slot "+std::to_string(i+1),
+            s.exists && s.readable ? state_time_text(s.saved_unix) : "",
+            s.exists && s.readable ? "Frame "+std::to_string(s.frame) : "");
+        if (ImGui::IsItemFocused()) states_.selected=i;
+        if (pressed) pick=i;
         ImGui::EndDisabled();
-        const bool focused = ImGui::IsItemFocused();
-        if (focused) states_.selected = i;
-        const ImVec2 p1(p0.x + w, p0.y + card_h);
-        hov::card_frame(p0, p1, ImGui::IsItemHovered() || focused,
-                        focused && ImGui::GetIO().NavVisible);
-        const ImVec2 t0(p0.x + 6.f, p0.y + 6.f), t1(p1.x - 6.f, p0.y + 6.f + (w - 12.f) * 0.75f);
-        draw_state_picture(dl, s, t0, t1, 8.f);
-        char label[32];
-        std::snprintf(label, sizeof label, "Slot %d", i + 1);
-        const float ty = t1.y + 5.f;
-        dl->AddText(ImVec2(p0.x + 10.f, ty), IM_COL32(233, 237, 248, 255), label);
-        if (s.exists && s.readable) {
-            const std::string when = state_time_text(s.saved_unix);
-            const ImVec2 ws = ImGui::CalcTextSize(when.c_str());
-            dl->AddText(ImVec2(p1.x - 10.f - ws.x, ty), IM_COL32(153, 163, 188, 255), when.c_str());
-        }
-        if (!s.mark.empty()) {
-            const ImVec2 ms = ImGui::CalcTextSize(s.mark.c_str());
-            dl->AddText(ImVec2(p1.x - 10.f - ms.x, t0.y + 4.f), IM_COL32(245, 165, 36, 255),
-                        s.mark.c_str());
-        }
-        ImGui::PopID();
     }
     const int rows = (StatesBrowser::kSlots + cols - 1) / cols;
     ImGui::SetCursorPos(ImVec2(origin.x, origin.y + static_cast<float>(rows) * (card_h + gap)));
@@ -1010,15 +1099,15 @@ void PlaySession::draw_menu_overlay() {
     hov::begin("##quick_menu", 1.f);
     const corelink::CoreIdentity& id = link_.identity();
     const std::string core_label = id.core_id + (id.core_version.empty() ? "" : " " + id.core_version);
-    hov::top_bar(m, "Quick menu", args_.title_name.empty() ? core_label : args_.title_name,
+    hov::top_bar(m, menu_page_==MenuPage::Main ? "Quick menu" : std::string("Quick menu / ")+play_menu_page_title(menu_page_), args_.title_name.empty() ? core_label : args_.title_name,
                  netplay_ ? "Live" : "Paused");
 
     bool focus_first = menu_focus_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     std::vector<hov::RailItem> items;
     items.push_back({"Resume", {}, false, true, false});
-    items.push_back({"Save states", {}, false, link_.states_supported() && !netplay_, false});
+    items.push_back({"Save states", {}, false, link_.states_supported() && !netplay_, false, menu_page_==MenuPage::States});
     items.push_back({"Show FPS", prefs_.show_fps ? "On" : "Off", false, true, false});
-    items.push_back({"Replays", {}, false, link_.replays_supported() && !netplay_, false});
+    items.push_back({"Replays", {}, false, link_.replays_supported() && !netplay_, false, menu_page_==MenuPage::Replays});
     items.push_back({"Close game", {}, true, true, true});
     const int picked = hov::rail(m, "##qm_rail", items, &focus_first);
     if (menu_focus_ && !focus_first) menu_focus_ = false;
@@ -1033,7 +1122,7 @@ void PlaySession::draw_menu_overlay() {
         set_show_fps(!prefs_.show_fps);
         break;
     case 3:
-        menu_page_=MenuPage::Replays;
+        open_replays();
         break;
     case 4:
         user_quit_ = true;
@@ -1045,12 +1134,10 @@ void PlaySession::draw_menu_overlay() {
 
     const float panel_x = m.pad + m.rail_w + 16.f;
     if (hov::begin_panel(m, "##qm_panel", panel_x)) {
-        if (menu_page_ == MenuPage::Replays) {
-            draw_replays_page();
-        } else if (menu_page_ == MenuPage::States) {
-            if (ImGui::Button("Replays")) menu_page_=MenuPage::Replays;
-            ImGui::SameLine(); ImGui::TextDisabled("Tab switches pages");
-            draw_states_page(m);
+        if (menu_page_ != MenuPage::Main) {
+            draw_browser_tabs();
+            if (menu_page_==MenuPage::Replays) draw_replays_page();
+            else draw_states_page(m);
         } else {
             if (netplay_) {
                 hov::banner("The game is not paused. It keeps running behind this menu, and your "
@@ -1093,6 +1180,8 @@ void PlaySession::draw_menu_overlay() {
         if (menu_page_==MenuPage::States && states_view_ >= 0) {
             states_view_ = -1; // out of one slot, to the slots
             states_confirm_ = -1;
+        } else if (menu_page_==MenuPage::Replays && replay_view_>=0) {
+            replay_view_=-1; replay_delete_.clear();
         } else if (on_states) {
             menu_page_ = MenuPage::Main;
         } else {
@@ -1146,16 +1235,16 @@ void PlaySession::draw_menu() {
     ImGui::TextDisabled("frame %llu", static_cast<unsigned long long>(link_.frames_done()));
     ImGui::Separator();
     if (menu_page_==MenuPage::Replays || menu_page_==MenuPage::States) {
+        draw_browser_tabs();
         if (menu_page_==MenuPage::Replays) draw_replays_page();
         else {
-            if (ImGui::Button("Replays")) menu_page_=MenuPage::Replays;
             draw_states_page(overlay::metrics(ImGui::GetMainViewport()->Size));
         }
         if (ImGui::Button("Back")) menu_page_=MenuPage::Main;
         ImGui::End(); return;
     }
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-    if (ImGui::Button("Replays", ImVec2(220,0))) menu_page_=MenuPage::Replays;
+    if (ImGui::Button("Replays", ImVec2(220,0))) open_replays();
     if (ImGui::Button("Resume", ImVec2(220, 0))) set_paused(false);
     ImGui::BeginDisabled(!link_.states_supported());
     if (ImGui::Button("Save states", ImVec2(220, 0))) {
@@ -1255,6 +1344,8 @@ void PlaySession::shutdown() {
     turbo_ = turbo_key_ = turbo_pad_ = false;
     if (turbo_running_) set_turbo_running(false);
     stop_vru();
+    for (auto& card:replay_cards_) if (card.picture.tex) glDeleteTextures(1,&card.picture.tex);
+    replay_cards_.clear();
     states_.release();
     gpu_frames_.release(link_);
     const auto gpu_stats = gpu_frames_.stats();
@@ -1265,6 +1356,7 @@ void PlaySession::shutdown() {
                 static_cast<unsigned long long>(gpu_stats.releases),
                 static_cast<unsigned long long>(gpu_stats.refused));
     if (link_.state() != corelink::LinkState::Idle) link_.stop();
+    finish_replay_preview();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);
         audio_ = nullptr;

@@ -43,6 +43,7 @@ struct RailItem {
     bool danger = false;      // Close game, Leave room
     bool enabled = true;
     bool divider_before = false;
+    bool selected = false; // current page, independent of keyboard/controller focus
 };
 
 struct Hint {
