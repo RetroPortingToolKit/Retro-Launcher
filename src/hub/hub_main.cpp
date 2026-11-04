@@ -3101,7 +3101,7 @@ void draw_nav_drawer(HubModel& hub, const Theme& th, float t) {
                     tc_line = "Toolchain " + hub.toolchain_current_version;
             }
             if (!tc_line.empty()) lines.emplace_back(tc_line, tc_upd);
-            lines.emplace_back("F11 fullscreen", false);
+            lines.emplace_back("Alt+Enter fullscreen", false);
             lines.emplace_back("` (tilde) console", false);
         }
         const float line_h = ImGui::GetTextLineHeightWithSpacing();
@@ -18365,7 +18365,7 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                 e.window.windowID == SDL_GetWindowID(window))
                 running = false;
-            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                 const bool fs_now = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
                 SDL_SetWindowFullscreen(window, !fs_now);
                 continue;
@@ -18523,7 +18523,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                 e.window.windowID == SDL_GetWindowID(window))
                 running = false;
-            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                 const bool fs_now = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
                 SDL_SetWindowFullscreen(window, !fs_now);
             }
@@ -18843,7 +18843,7 @@ int main(int argc, char** argv) {
         ui = want;
         fit_window_to_display(window, ui);
         // Borderless fullscreen when the user last left it on; fit first so
-        // Restore (F11 again) lands on a sane windowed size.
+        // Restore (Alt+Enter again) lands on a sane windowed size.
         if (hub.cfg.fullscreen) SDL_SetWindowFullscreen(window, true);
         std::fprintf(stderr, "retro-hub: UI scale %.2f (window coords x%.2f, %s)\n",
                      static_cast<double>(ui.px), static_cast<double>(ui.coords),
@@ -18973,7 +18973,7 @@ int main(int argc, char** argv) {
                 if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                     e.window.windowID == SDL_GetWindowID(window))
                     running = false;
-                if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+                if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                     hub.cfg.fullscreen = !hub.cfg.fullscreen;
                     SDL_SetWindowFullscreen(window, hub.cfg.fullscreen);
                     retcomm::save_app_config(hub.paths.config_path, hub.cfg);
@@ -18999,7 +18999,7 @@ int main(int argc, char** argv) {
             // header item; a controller expects the ring on the content instead.
             if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED && !hub.drawer_open)
                 request_page_focus(hub);
-            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                 hub.cfg.fullscreen = !hub.cfg.fullscreen;
                 SDL_SetWindowFullscreen(window, hub.cfg.fullscreen);
                 retcomm::save_app_config(hub.paths.config_path, hub.cfg);

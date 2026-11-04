@@ -140,6 +140,17 @@ private:
     void poll_host_combos();
     std::string shortcut_text(HostAction a) const; // "F7 or Function+R1"
     void service_states();
+    void toggle_recording();
+    void service_replays();
+    void draw_replays_page();
+    void draw_replay_ended();
+    corelink::LaunchSpec launch_spec_;
+    fs::path replays_dir_, replay_play_;
+    std::optional<bool> recording_request_;
+    corelink::ReplayState replay_seen_ = corelink::ReplayState::Idle;
+    std::string replay_message_;
+    fs::path replay_delete_;
+
     void draw_overlay();
     void draw_menu();
     void draw_menu_overlay(); // the overlay look (hub_overlay.hpp)
@@ -194,7 +205,7 @@ private:
     fs::path states_dir_;
     bool states_configured_ = false;
     // The quick menu is two pages: the main one and the save-state browser.
-    enum class MenuPage { Main, States };
+    enum class MenuPage { Main, States, Replays };
     MenuPage menu_page_ = MenuPage::Main;
     int states_view_ = -1;    // the slot shown alone, -1 = the twelve slots
     int states_confirm_ = -1; // a slot waiting for "Overwrite?" / "Delete?"

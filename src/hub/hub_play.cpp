@@ -118,6 +118,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     picture_.set_style(args.picture);
     // A title's save states live with its saves: <save_dir>/states/slotNN.rstate.
     states_dir_ = save_dir / "states";
+    replays_dir_ = save_dir / "replays";
     corelink::LaunchSpec spec;
     spec.runner = runner;
     spec.core = args.core;
@@ -168,6 +169,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
         // No audio device is not fatal: pacing falls back to 60 Hz.
         SDL_Log("retro-hub: no audio (%s); the game runs silent", SDL_GetError());
     }
+    launch_spec_=spec;
     return link_.start(spec, error);
 }
 
@@ -193,6 +195,11 @@ bool PlaySession::handle_event(const SDL_Event& e) {
         set_paused(!menu_open_);
         return true;
     }
+    if (menu_open_ && e.type==SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key==SDLK_TAB &&
+        (menu_page_==MenuPage::States || menu_page_==MenuPage::Replays)) {
+        menu_page_=menu_page_==MenuPage::States ? MenuPage::Replays : MenuPage::States;
+        return true;
+    }
     if (e.type != SDL_EVENT_KEY_DOWN && e.type != SDL_EVENT_KEY_UP) return false;
     const bool down = e.type == SDL_EVENT_KEY_DOWN;
     if (is(HostAction::ShowFps)) {
@@ -200,7 +207,14 @@ bool PlaySession::handle_event(const SDL_Event& e) {
         return true;
     }
     if (is(HostAction::SaveStates)) {
-        if (down && !e.key.repeat && !menu_open_) open_states();
+        if (down && !e.key.repeat) {
+            if (menu_open_ && menu_page_!=MenuPage::Main) set_paused(false);
+            else open_states();
+        }
+        return true;
+    }
+    if (is(HostAction::ReplayRecord)) {
+        if (down && !e.key.repeat) toggle_recording();
         return true;
     }
     if (is(HostAction::Turbo)) { // held
@@ -251,9 +265,10 @@ void PlaySession::poll_host_combos() {
     l3r3_prev_ = l3r3;
     if (menu) set_paused(!menu_open_);
     if (edge(HostAction::SaveStates)) {
-        if (menu_open_ && menu_page_ == MenuPage::States) set_paused(false);
+        if (menu_open_ && menu_page_ != MenuPage::Main) set_paused(false);
         else open_states();
     }
+    if (edge(HostAction::ReplayRecord)) toggle_recording();
     if (edge(HostAction::ShowFps)) set_show_fps(!prefs_.show_fps);
     if (edge(HostAction::VolumeUp)) set_volume(prefs_.volume + kVolumeStep);
     if (edge(HostAction::VolumeDown)) set_volume(prefs_.volume - kVolumeStep);
@@ -611,6 +626,7 @@ void PlaySession::tick(SDL_Window* window) {
         return;
     }
     if (ready) {
+        service_replays();
         service_states();
     }
     sync_pause();
@@ -643,6 +659,7 @@ void PlaySession::draw() {
             break;
         case corelink::LinkState::Ended:
             if (user_quit_) finished_ = true;
+            else if (!link_.exit_code() && link_.replay_status().state==corelink::ReplayState::Complete) draw_replay_ended();
             else if (netplay_ && link_.exit_code() == 4) draw_match_ended();
             else draw_fault();
             break;
@@ -659,10 +676,109 @@ void PlaySession::draw() {
 // Retro-Runtime's overlay, as it hands it over: one texture per layer,
 // re-uploaded when the layer's pixels change, drawn where place() says, over
 // the picture and under the hub's own windows.
+void PlaySession::toggle_recording() {
+    if (netplay_ || !link_.replays_supported()) {
+        osd_.toast("Replay recording needs a compatible runner and core save states",SDL_GetTicksNS());
+        return;
+    }
+    if (link_.replay_pending() || recording_request_) return;
+    const auto state=link_.replay_status().state;
+    if (state==corelink::ReplayState::Playing) {
+        osd_.toast("Recording is off during replay playback",SDL_GetTicksNS()); return;
+    }
+    recording_request_=state!=corelink::ReplayState::Recording;
+}
+
+void PlaySession::service_replays() {
+    const auto& status=link_.replay_status();
+    if (status.state!=replay_seen_) {
+        replay_seen_=status.state;
+        if (status.state==corelink::ReplayState::Saved) replay_message_="Replay saved";
+        else if (status.state==corelink::ReplayState::Failed) replay_message_=status.detail;
+        else if (status.state==corelink::ReplayState::TakenOver) replay_message_="Live input took over";
+        else if (status.state==corelink::ReplayState::Recording) replay_message_="Recording replay";
+        else replay_message_.clear();
+        if (!replay_message_.empty()) osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
+    }
+    if (recording_request_ && link_.can_grant()) {
+        const bool record=*recording_request_;
+        std::error_code ec;
+        fs::create_directories(replays_dir_,ec);
+        const auto path=replays_dir_/("replay-"+std::to_string(SDL_GetTicksNS())+".route");
+        if (ec || !link_.request_recording(record,path)) {
+            replay_message_=ec ? ec.message() : "The replay request could not be sent";
+            osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
+        }
+        recording_request_.reset();
+    }
+    if (!replay_play_.empty() && link_.can_grant()) {
+        const auto path=replay_play_; replay_play_.clear();
+        if (status.state==corelink::ReplayState::Recording) {
+            replay_message_="Stop recording before playing a replay"; return;
+        }
+        auto spec=launch_spec_;
+        // Fresh process: a replay never inherits unrecorded core globals.
+        for (auto it=spec.env.begin();it!=spec.env.end();) {
+            if (it->rfind("RETRO_RECORD_ROUTE=",0)==0 || it->rfind("RETRO_PLAY_ROUTE=",0)==0 ||
+                it->rfind("RETRO_ROUTE_",0)==0) it=spec.env.erase(it); else ++it;
+        }
+        spec.env.push_back("RETRO_PLAY_ROUTE="+corelink::path_utf8(path));
+        spec.env.push_back("RETRO_ROUTE_TAKEOVER=1");
+        spec.env.push_back("RETRO_ROUTE_VERDICT="+corelink::path_utf8(path)+".play-verdict.json");
+        gpu_frames_.release(link_);
+        if (audio_) SDL_ClearAudioStream(audio_);
+        std::string error;
+        if (!link_.restart(spec,&error)) replay_message_=error;
+        else { picture_frame_=0; next_grant_ns_=0; replay_seen_=corelink::ReplayState::Idle; set_paused(false); }
+    }
+}
+
+void PlaySession::draw_replays_page() {
+    if (ImGui::Button("Save states")) menu_page_=MenuPage::States;
+    ImGui::SameLine(); ImGui::TextDisabled("Replays (Tab switches pages)");
+    if (!replay_message_.empty()) ImGui::TextWrapped("%s",replay_message_.c_str());
+    ImGui::BeginDisabled(!link_.replays_supported() || netplay_ || link_.replay_pending());
+    if (ImGui::Button(link_.replay_status().state==corelink::ReplayState::Recording ? "Stop recording (F11)" : "Record from here (F11)")) toggle_recording();
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Playback starts a fresh game process. Release controls, then press a button or move a stick to take over. Playback saves stay private.");
+    std::error_code ec;
+    std::vector<fs::path> paths;
+    for (fs::directory_iterator it(replays_dir_,ec),end; !ec && it!=end; it.increment(ec))
+        if (it->is_regular_file(ec) && it->path().extension()==".route") paths.push_back(it->path());
+    std::sort(paths.rbegin(),paths.rend());
+    if (paths.empty()) ImGui::TextDisabled("No saved replays");
+    for (const auto& path:paths) {
+        ImGui::PushID(path.filename().string().c_str());
+        ImGui::Separator(); ImGui::TextUnformatted(path.filename().string().c_str());
+        ImGui::BeginDisabled(!link_.replays_supported() || link_.replay_status().state==corelink::ReplayState::Recording);
+        if (ImGui::Button("Play")) replay_play_=path;
+        ImGui::EndDisabled(); ImGui::SameLine();
+        if (ImGui::Button("Export copy")) {
+            const auto dir=replays_dir_/"exports";
+            fs::create_directories(dir,ec);
+            const auto target=dir/(path.stem().string()+"-"+std::to_string(SDL_GetTicksNS())+".route");
+            if (!ec) fs::copy_file(path,target,fs::copy_options::none,ec);
+            replay_message_=ec ? ec.message() : "Exported copy to replays/exports";
+        }
+        ImGui::SameLine();
+        if (replay_delete_==path) {
+            if (ImGui::Button("Confirm delete")) {
+                fs::remove(path,ec); replay_message_=ec ? ec.message() : "Replay deleted"; replay_delete_.clear();
+            }
+            ImGui::SameLine(); if (ImGui::Button("Cancel")) replay_delete_.clear();
+        } else if (ImGui::Button("Delete")) replay_delete_=path;
+        ImGui::PopID();
+    }
+}
+
 void PlaySession::draw_overlay() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (link_.replay_status().state==corelink::ReplayState::Recording) {
+        dl->AddCircleFilled(ImVec2(disp.x-88.f,26.f),6.f,IM_COL32(240,48,48,255));
+        dl->AddText(ImVec2(disp.x-74.f,18.f),IM_COL32(255,255,255,255),"REC");
+    }
     for (const retro::overlay::Layer& l : layers) {
         const retro::overlay::Image& img = *l.image;
         LayerTex& t = layer_tex_[l.id];
@@ -902,6 +1018,7 @@ void PlaySession::draw_menu_overlay() {
     items.push_back({"Resume", {}, false, true, false});
     items.push_back({"Save states", {}, false, link_.states_supported() && !netplay_, false});
     items.push_back({"Show FPS", prefs_.show_fps ? "On" : "Off", false, true, false});
+    items.push_back({"Replays", {}, false, link_.replays_supported() && !netplay_, false});
     items.push_back({"Close game", {}, true, true, true});
     const int picked = hov::rail(m, "##qm_rail", items, &focus_first);
     if (menu_focus_ && !focus_first) menu_focus_ = false;
@@ -916,6 +1033,9 @@ void PlaySession::draw_menu_overlay() {
         set_show_fps(!prefs_.show_fps);
         break;
     case 3:
+        menu_page_=MenuPage::Replays;
+        break;
+    case 4:
         user_quit_ = true;
         link_.stop();
         break;
@@ -925,7 +1045,11 @@ void PlaySession::draw_menu_overlay() {
 
     const float panel_x = m.pad + m.rail_w + 16.f;
     if (hov::begin_panel(m, "##qm_panel", panel_x)) {
-        if (menu_page_ == MenuPage::States) {
+        if (menu_page_ == MenuPage::Replays) {
+            draw_replays_page();
+        } else if (menu_page_ == MenuPage::States) {
+            if (ImGui::Button("Replays")) menu_page_=MenuPage::Replays;
+            ImGui::SameLine(); ImGui::TextDisabled("Tab switches pages");
             draw_states_page(m);
         } else {
             if (netplay_) {
@@ -958,7 +1082,7 @@ void PlaySession::draw_menu_overlay() {
         hov::end_panel();
     }
 
-    const bool on_states = menu_page_ == MenuPage::States;
+    const bool on_states = menu_page_ != MenuPage::Main;
     hov::legend(m, {{"A", "Select"}, {"B", on_states ? "Back" : "Resume"}},
                 {{"L3 + R3", "Open / close"}});
     hov::end();
@@ -966,7 +1090,7 @@ void PlaySession::draw_menu_overlay() {
     // B steps back, from wherever the focus is: off the Save states page, then
     // out of the menu.
     if (menu_open_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-        if (on_states && states_view_ >= 0) {
+        if (menu_page_==MenuPage::States && states_view_ >= 0) {
             states_view_ = -1; // out of one slot, to the slots
             states_confirm_ = -1;
         } else if (on_states) {
@@ -1021,7 +1145,17 @@ void PlaySession::draw_menu() {
                 id.engine_dirty ? "  (dev build)" : "");
     ImGui::TextDisabled("frame %llu", static_cast<unsigned long long>(link_.frames_done()));
     ImGui::Separator();
+    if (menu_page_==MenuPage::Replays || menu_page_==MenuPage::States) {
+        if (menu_page_==MenuPage::Replays) draw_replays_page();
+        else {
+            if (ImGui::Button("Replays")) menu_page_=MenuPage::Replays;
+            draw_states_page(overlay::metrics(ImGui::GetMainViewport()->Size));
+        }
+        if (ImGui::Button("Back")) menu_page_=MenuPage::Main;
+        ImGui::End(); return;
+    }
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    if (ImGui::Button("Replays", ImVec2(220,0))) menu_page_=MenuPage::Replays;
     if (ImGui::Button("Resume", ImVec2(220, 0))) set_paused(false);
     ImGui::BeginDisabled(!link_.states_supported());
     if (ImGui::Button("Save states", ImVec2(220, 0))) {
@@ -1049,6 +1183,16 @@ void PlaySession::draw_menu() {
                         shortcut_text(HostAction::VolumeDown).c_str());
     ImGui::TextDisabled("%s: save states", shortcut_text(HostAction::SaveStates).c_str());
     ImGui::TextDisabled("%s or L3+R3: this menu", shortcut_text(HostAction::Menu).c_str());
+    ImGui::End();
+}
+
+void PlaySession::draw_replay_ended() {
+    const auto size=ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(size.x*.5f,size.y*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));
+    ImGui::Begin("Replay complete",nullptr,ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::Text("All %llu recorded fields matched.",static_cast<unsigned long long>(link_.replay_status().fields));
+    ImGui::TextUnformatted("Playback saves stayed private.");
+    if (ImGui::Button("Close")) finished_=true;
     ImGui::End();
 }
 

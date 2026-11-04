@@ -995,13 +995,13 @@ std::array<SeatPadState, kInputSeats> seat_pad_states(const PlatformInput& in) {
 // ---- host hotkeys ------------------------------------------------------------
 
 const char* host_action_key(HostAction a) {
-    static const char* k[] = {"menu", "states", "fps", "turbo", "volume_up", "volume_down"};
+    static const char* k[] = {"menu", "states", "fps", "turbo", "volume_up", "volume_down", "replay_record"};
     return k[static_cast<int>(a)];
 }
 
 const char* host_action_label(HostAction a) {
     static const char* k[] = {"Pause menu", "Save states", "Show FPS",
-                              "Turbo",      "Volume up",   "Volume down"};
+                              "Turbo",      "Volume up",   "Volume down", "Record replay"};
     return k[static_cast<int>(a)];
 }
 
@@ -1018,6 +1018,7 @@ HostHotkeys default_host_hotkeys() {
     set(HostAction::Turbo, SDL_SCANCODE_TAB, PadSource{PadSource::AxisPlus, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER});
     set(HostAction::VolumeUp, SDL_SCANCODE_EQUALS, btn(SDL_GAMEPAD_BUTTON_DPAD_UP));
     set(HostAction::VolumeDown, SDL_SCANCODE_MINUS, btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN));
+    set(HostAction::ReplayRecord, SDL_SCANCODE_F11, btn(SDL_GAMEPAD_BUTTON_WEST));
     return h;
 }
 
