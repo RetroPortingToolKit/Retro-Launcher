@@ -35,9 +35,11 @@ jobs:
         with:
           submodules: true
 
-      # Resolve upstream HEAD once. Both hub and child compile against this
-      # same tree; build-arm64-v8a.json inside the APK records its commit.
+      # Published builds resolve upstream HEAD once. Pull requests use their
+      # pinned submodule so coordinated API changes can be tested before merge.
+      # Both hub and child use the same tree, recorded in build-arm64-v8a.json.
       - name: Check out latest Retro-Runtime source
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@v7
         with:
           repository: RetroPortingToolKit/Retro-Runtime
@@ -95,7 +97,7 @@ jobs:
 
       - name: Compile launcher and runner from source
         env:
-          RETCOMM_RUNTIME_DIR: ${{ github.workspace }}/.cache/android/Retro-Runtime
+          RETCOMM_RUNTIME_DIR: ${{ github.workspace }}/${{ github.event_name == 'pull_request' && 'third_party/Retro-Runtime' || '.cache/android/Retro-Runtime' }}
         run: bash scripts/build-android.sh
 
       - name: Configure signing
