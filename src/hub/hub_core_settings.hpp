@@ -346,7 +346,7 @@ std::map<std::string, std::string> layer_core_options(
 
 // What the host does with the player's shortcuts while a game runs (the play
 // overlay's): the same for every core, so stored with the play preferences.
-enum class HostAction : int { Menu, SaveStates, ShowFps, Turbo, VolumeUp, VolumeDown, Count };
+enum class HostAction : int { Menu, SaveStates, ShowFps, Turbo, VolumeUp, VolumeDown, ReplayRecord, Count };
 constexpr int kHostActionCount = static_cast<int>(HostAction::Count);
 const char* host_action_key(HostAction a);   // "menu", "states", ...
 const char* host_action_label(HostAction a); // "Pause menu", ...

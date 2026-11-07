@@ -72,6 +72,7 @@ public:
     // Explicit screenshot/thumbnail observer; never called by steady presentation.
     std::vector<std::uint8_t> snapshot(std::uint32_t& width, std::uint32_t& height);
     bool empty() const { return tex_ == 0; }
+    float aspect() const { return aspect_num_ && aspect_den_ ? float(aspect_num_)/aspect_den_ : h_ ? float(w_)/h_ : 4.f/3.f; }
 
     // Into `dl` (inside an ImGui frame), letterboxed on the display, tinted.
     void draw(ImDrawList* dl, ImU32 tint);

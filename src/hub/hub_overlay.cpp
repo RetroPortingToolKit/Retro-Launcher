@@ -201,8 +201,9 @@ int rail(const Metrics& m, const char* id, const std::vector<RailItem>& items,
             ImGui::EndDisabled();
             const bool hot = it.enabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
             const ImVec2 p1(p0.x + w, p0.y + m.item_h);
-            if (hot) {
-                dl->AddRectFilled(p0, p1, kAccent, 10.f);
+            if (hot || it.selected) {
+                dl->AddRectFilled(p0,p1,hot ? kAccent : IM_COL32(110,82,170,110),10.f);
+                if (it.selected) dl->AddRectFilled(ImVec2(p0.x+4.f,p0.y+10.f),ImVec2(p0.x+8.f,p1.y-10.f),kFocus,2.f);
                 if (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible)
                     dl->AddRect(p0, p1, kFocus, 10.f, 0, 2.f);
             }

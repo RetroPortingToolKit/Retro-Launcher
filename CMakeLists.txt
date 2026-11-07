@@ -506,7 +506,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_states.cpp src/hub/hub_picture.cpp
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_states.cpp src/hub/hub_replay_info.cpp src/hub/hub_picture.cpp
                    src/hub/hub_gpu_frames.cpp
                    src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp
                    src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)
@@ -547,6 +547,11 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     # option files, and the pad table they produce.
     include(CTest)
     if(BUILD_TESTING)
+        add_executable(retro-hub-replays-test tests/hub_replays_test.cpp src/hub/hub_replay_info.cpp)
+        target_include_directories(retro-hub-replays-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(retro-hub-replays-test PRIVATE retcomm_core retro_corelink retro_state)
+        add_test(NAME hub_replays COMMAND retro-hub-replays-test ${CMAKE_CURRENT_BINARY_DIR}/hub_replays_test.d
+            $<TARGET_FILE:retro-core-runner> $<TARGET_FILE:rcore_fake_core>)
         add_executable(retro-hub-settings-test tests/hub_core_settings_test.cpp
             src/hub/hub_core_settings.cpp)
         target_include_directories(retro-hub-settings-test PRIVATE

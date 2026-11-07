@@ -628,6 +628,11 @@ int main(int argc, char** argv) {
         // The host hotkeys round-trip through play.ini with the overlay's settings.
         PlayPrefs pr;
         check(pr.hotkeys == default_host_hotkeys(), "hotkeys start at the defaults");
+        check(pr.hotkeys.key[static_cast<size_t>(HostAction::ReplayRecord)]==SDL_SCANCODE_F11,
+              "F11 records a replay by default");
+        check(std::string(host_action_key(HostAction::ReplayRecord))=="replay_record",
+              "replay recording has a stable settings key");
+        pr.hotkeys.key[static_cast<size_t>(HostAction::ReplayRecord)] = SDL_SCANCODE_F10;
         pr.show_fps = true;
         check(pr.turbo_sound, "sound during turbo is on by default");
         pr.turbo_sound = false;

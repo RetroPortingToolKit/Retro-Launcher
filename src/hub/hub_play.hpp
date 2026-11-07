@@ -30,6 +30,7 @@
 #include "overlay.hpp"   // Retro-Runtime: retro_overlay
 #include "hub/hub_overlay.hpp"
 #include "hub/hub_states.hpp"
+#include "hub/hub_replay_info.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -140,6 +141,27 @@ private:
     void poll_host_combos();
     std::string shortcut_text(HostAction a) const; // "F7 or Function+R1"
     void service_states();
+    void toggle_recording();
+    void service_replays();
+    void draw_replays_page();
+    void draw_browser_tabs();
+    void open_replays();
+    void refresh_replays();
+    void finish_replay_preview();
+    struct ReplayCard { ReplayInfo info; StatesBrowser::Slot picture; };
+    std::vector<ReplayCard> replay_cards_;
+    std::optional<ReplayInfo> replay_preview_;
+    int replay_view_ = -1;
+    bool replays_refresh_ = false;
+
+    void draw_replay_ended();
+    corelink::LaunchSpec launch_spec_;
+    fs::path replays_dir_, replay_play_;
+    std::optional<bool> recording_request_;
+    corelink::ReplayState replay_seen_ = corelink::ReplayState::Idle;
+    std::string replay_message_;
+    fs::path replay_delete_;
+
     void draw_overlay();
     void draw_menu();
     void draw_menu_overlay(); // the overlay look (hub_overlay.hpp)
@@ -194,7 +216,7 @@ private:
     fs::path states_dir_;
     bool states_configured_ = false;
     // The quick menu is two pages: the main one and the save-state browser.
-    enum class MenuPage { Main, States };
+    using MenuPage = PlayMenuPage;
     MenuPage menu_page_ = MenuPage::Main;
     int states_view_ = -1;    // the slot shown alone, -1 = the twelve slots
     int states_confirm_ = -1; // a slot waiting for "Overwrite?" / "Delete?"

@@ -5,14 +5,18 @@ The **Android** Actions workflow builds an ARM64 release APK on pushes to
 calls the same build and publishes `Retro-Launcher-android-arm64.apk` alongside
 the desktop installers. Android 11 (API 30) and OpenGL ES 3 are required.
 
-For each CI build, **latest Retro-Runtime** means the HEAD of its default
-branch at checkout time. The workflow checks out that source separately, then
+For main-branch and published CI builds, **latest Retro-Runtime** means the
+HEAD of its default branch at checkout time. The workflow checks out that source separately, then
 compiles both the launcher's runtime libraries and `retro-core-runner` against
 the same checkout. It does not download a prebuilt desktop runner or silently
 fall back to the launcher's submodule pin. An incompatible upstream change
 fails the build. The exact launcher, runtime, and SDL commits are recorded in
 `assets/retcomm/build-arm64-v8a.json` inside the APK and in the CI artifact's
 `android-build.json`.
+
+Pull-request builds use the PR's pinned `third_party/Retro-Runtime` checkout
+for both libraries and runner. This permits coordinated API changes to pass
+before the Runtime dependency merges; merge that dependency before Launcher.
 
 The runner is **bundled in the APK and remains a child process**. The NDK
 builds it as a PIE executable named `libretro-core-runner.so` so Android's

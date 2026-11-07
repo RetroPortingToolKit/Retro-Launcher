@@ -143,7 +143,7 @@ window's resolution) is scaled down through mipmaps in every mode.
 **Hotkeys (System tab, right).** The host's in-game shortcuts, the same for
 every core and saved in `<data dir>/play.ini` (`[keys]`, `[combos]`) with the
 page: a key for each of pause menu, save states, show FPS, turbo (held) and
-volume up/down (defaults Esc, F7, F3, Tab, =, -; F1 and keypad +/- always
+volume up/down (defaults Esc, F7, F3, Tab, =, -, F11 for replay recording; F1 and keypad +/- always
 work), and a controller combo for each, **Function + a button** (defaults
 Start, R1, L1, R2, D-Up, D-Down; turbo's combo toggles it, its key is held).
 **Sound during turbo** (on by default, `play.ini` `turbo_sound`) keeps the
@@ -566,3 +566,5 @@ without the hub <-> runner link would print only the first three lines and
    its `version` and `commit` to match the manifest.
 7. Put `retro-core-runner` from Retro-Runtime's release at `<dir>/retro-core-runner`,
    or run the hub with `RETRO_CORE_RUNNER=<path to it>`.
+
+Replay controls and the F7 browser are documented in [Replays](REPLAYS.md).

@@ -9,6 +9,21 @@ namespace retcomm::hub {
 
 namespace state = ::retro::state;
 
+unsigned upload_save_thumbnail(const std::vector<std::uint8_t>& pixels) {
+    if (pixels.size()!=std::size_t(state::kThumbWidth)*state::kThumbHeight*4) return 0;
+    unsigned tex=0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLsizei(state::kThumbWidth),
+                     GLsizei(state::kThumbHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    return tex;
+}
+
 void StatesBrowser::configure(const fs::path& dir, const std::string& core_id,
                               const std::string& core_sha256) {
     dir_ = dir;
@@ -53,15 +68,7 @@ void StatesBrowser::scan_slot(int i) {
         s.mark = "OTHER BUILD";
     if (h.thumb_w == state::kThumbWidth && h.thumb_h == state::kThumbHeight &&
         thumb.size() == std::size_t(state::kThumbWidth) * state::kThumbHeight * 4) {
-        glGenTextures(1, &s.tex);
-        glBindTexture(GL_TEXTURE_2D, s.tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLsizei(state::kThumbWidth),
-                     GLsizei(state::kThumbHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, thumb.data());
+        s.tex=upload_save_thumbnail(thumb);
     }
 }
 

@@ -301,3 +301,5 @@ packaging/              AppImage, DMG, Windows helpers
 ## License
 
 Retro Launcher is released under the [MIT License](LICENSE).
+
+In-game recording, playback and hotkeys are documented in [Replays](docs/REPLAYS.md).
