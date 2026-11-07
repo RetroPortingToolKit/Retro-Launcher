@@ -141,6 +141,15 @@ bool load_title(const fs::path& path, TitleInfo& out, std::string* error) {
         } else {
             out.title_dir = (out.package.empty() ? out.core : out.package).parent_path();
         }
+        if (j.contains("defaults")) {
+            const json& defaults = j["defaults"];
+            if (!defaults.is_object()) return fail("\"defaults\" must be an object of string values");
+            for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+                if (it.key().empty() || !it.value().is_string())
+                    return fail("\"defaults\" needs nonempty keys and string values");
+                out.defaults.emplace(it.key(), it.value().get<std::string>());
+            }
+        }
         if (j.contains("opts")) {
             const json& o = j["opts"];
             if (o.is_array()) {

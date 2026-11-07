@@ -70,6 +70,7 @@ struct PlayArgs {
     std::array<std::string, 4> vru_device;
     fs::path exe_dir;
     std::map<std::string, std::string> options;
+    std::map<std::string, std::string> default_options;
     bool gl = true;
     // Extra NAME=value for the runner, which passes its environment on to the
     // core: title-app mode sets RETRO_TITLE_STATE_DIR=<data dir> here.

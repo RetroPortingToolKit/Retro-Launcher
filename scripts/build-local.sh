@@ -8,7 +8,7 @@
 # The prefix is laid out like the bare hub archive (scripts/package_hub_archive.sh,
 # the same file list: scripts/flat_hub_layout.sh) plus the runner:
 #
-#   <out>/retro-hub                 title_app 1, direct_mode 4
+#   <out>/retro-hub                 title_app 2, direct_mode 4
 #   <out>/retro-core-runner         from the Retro-Runtime submodule, or --runtime
 #   <out>/libSDL3.so.0              Linux: the SDL3 the hub was linked against
 #   <out>/retcomm.png, fonts/, platforms/, controllers/, setup/, LICENSE
@@ -19,7 +19,7 @@
 # <repo>/.cache/sdl3 (scripts/sdl3_local.sh); on macOS from Homebrew.
 #
 # The prefix is checked before its path is printed: retro-hub --version must
-# say `title_app 1` and list --package, the runner must answer --version, and
+# say `title_app 2` or newer and list --package, the runner must answer --version, and
 # the kit must run. The LAST line on stdout is always
 #   RETRO_HUB=<absolute path to retro-hub>
 #
@@ -222,7 +222,8 @@ fi
 HUB="${OUT}/retro-hub"
 report="$(env -u LD_LIBRARY_PATH "${HUB}" --version)" || die "${HUB} --version failed"
 field() { sed -n "s/^$1 //p" <<<"${report}"; }
-[[ "$(field title_app)" == 1 ]] || die "${HUB} --version has no 'title_app 1'"
+[[ "$(field title_app)" =~ ^[0-9]+$ ]] && (( $(field title_app) >= 2 )) ||
+  die "${HUB} --version needs 'title_app 2' or newer"
 [[ " $(field direct_mode_flags) " == *" --package "* ]] || die "${HUB} --version lists no --package"
 if [[ "${OS}" == linux ]]; then
   imports="$(env -u LD_LIBRARY_PATH ldd "${HUB}")" || die "cannot inspect the flat hub's imports"

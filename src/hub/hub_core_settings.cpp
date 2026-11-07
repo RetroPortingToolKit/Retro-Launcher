@@ -1097,8 +1097,10 @@ bool save_core_options(const fs::path& data_dir, const std::string& platform,
 std::map<std::string, std::string> layer_core_options(
     const std::map<std::string, std::string>& platform,
     const std::map<std::string, std::string>& title,
-    const std::map<std::string, std::string>& command_line) {
-    std::map<std::string, std::string> out = platform;
+    const std::map<std::string, std::string>& command_line,
+    const std::map<std::string, std::string>& defaults) {
+    std::map<std::string, std::string> out = defaults;
+    for (const auto& [k, v] : platform) out[k] = v;
     for (const auto& [k, v] : title) out[k] = v;
     for (const auto& [k, v] : command_line) out[k] = v;
     return out;

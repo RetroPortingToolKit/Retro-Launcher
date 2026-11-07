@@ -322,7 +322,7 @@ InstalledHub newest_installed_hub(const Paths& paths, const std::string& self_ve
         if (ver.empty() || field(ver, "version") != v || num("direct_mode") < 4 ||
             num("updates") < 1)
             continue;
-        if (title_mode && num("title_app") < 1) continue;
+        if (title_mode && num("title_app") < 2) continue;
         return {exe, v};
     }
     return {};
@@ -674,7 +674,7 @@ UpdateItem update_hub(const UpdateTarget& t, bool install) {
         return it == ver.end() ? 0 : to_int(it->second, 0);
     };
     if (field(ver, "version") != item.latest || (!commit.empty() && field(ver, "commit") != commit) ||
-        num("direct_mode") < 4 || num("updates") < 1 || (t.title_mode && num("title_app") < 1))
+        num("direct_mode") < 4 || num("updates") < 1 || (t.title_mode && num("title_app") < 2))
         return discard("the downloaded hub reports version " + field(ver, "version") + " commit " +
                        field(ver, "commit") + ", the manifest says " + item.latest + " commit " +
                        commit + "; not installed");

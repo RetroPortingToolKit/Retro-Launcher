@@ -247,6 +247,12 @@ no title: none passed, none beside it.
 `title.json` and may not leave its directory. Unknown keys are ignored (a hub
 from before `update` ignores it); a greater `schema` is refused.
 
+**Suggested core defaults.** An optional `defaults` object maps nonempty option
+keys to string values. Its values apply below saved platform and title options;
+`opts` and command-line `--opt` still take precedence. Use `defaults` for a
+release's initial settings when players should be able to change and save them.
+The Settings page displays these inherited values too.
+
 **The ROM**, in order: `--rom` (checked, and remembered); the remembered one, if
 it still exists and still matches; each `rom.file_names` entry beside the app,
 then in `<data dir>/roms/`. Otherwise the home page shows **Choose ROM…** (SDL3
@@ -536,13 +542,14 @@ rcore_abi_major 0
 rcore_draft_revision 5
 direct_mode 4
 direct_mode_flags --run-core --package --rom --title-dir --tpak1-rom --tpak1-save --no-gl --opt --boot --title --core --runner --hub --check-title
-title_app 1
+title_app 2
 updates 1
 runner_lookup RETRO_CORE_RUNNER exe_dir/retro-core-runner data_dir/runtime/<version>/retro-core-runner
 ```
 
-`title_app` is the title-app mode revision (and the `title.json` schema it
-reads); a hub without the line predates it. `updates` is the
+`title_app` is the title-app capability revision; a hub without the line
+predates it. Revision 2 adds overridable `defaults` while retaining JSON
+schema 1. Title-app updates retain revision 2 support. `updates` is the
 [Update page](#updates)'s revision; the manifest carries it as
 `direct_mode.updates`, and a hub without it is never installed by one. A build that was not given
 `RETCOMM_COMMIT` says `commit unknown`. `build` is `release` for a CI release

@@ -335,12 +335,12 @@ bool save_core_options(const fs::path& data_dir, const std::string& platform,
                        const std::string& title_key,
                        const std::map<std::string, std::string>& values, std::string* error);
 
-// What a session is given: the platform's values, the title's over them, the
-// command line's over both.
+// What a session is given: bundled defaults < platform < title < command line.
 std::map<std::string, std::string> layer_core_options(
     const std::map<std::string, std::string>& platform,
     const std::map<std::string, std::string>& title,
-    const std::map<std::string, std::string>& command_line);
+    const std::map<std::string, std::string>& command_line,
+    const std::map<std::string, std::string>& defaults = {});
 
 // ---- host hotkeys ------------------------------------------------------------
 
