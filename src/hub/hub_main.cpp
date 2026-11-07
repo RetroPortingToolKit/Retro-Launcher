@@ -18598,8 +18598,8 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
 //        (`title_app 1`), a title.json found by --title or beside the hub.
 //        Every path flag is now made absolute against the launch directory.
 constexpr int kDirectModeCliRevision = 4;
-// title.json schema this hub reads (hub_title.hpp); `title_app` in --version.
-constexpr int kTitleAppRevision = 1;
+// Title-app capabilities: revision 2 adds overridable defaults (schema 1).
+constexpr int kTitleAppRevision = 2;
 // The home page's Update button (hub_update.hpp); `updates` in --version and
 // in hub-manifest.json. The Update page installs, and a start hands over to,
 // only a hub that has it too, so an app never updates itself out of updates.
