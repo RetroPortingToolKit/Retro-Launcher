@@ -10401,6 +10401,7 @@ void setup_title_app(DirectPlay& d, const fs::path& title_json, bool create) {
     if (!d.core_given) d.args.core = t.core;
     if (!d.package_given) d.args.package = t.package;
     if (!d.title_dir_given) d.args.title_dir = t.title_dir;
+    d.args.default_options = t.defaults;
     // The title's opts under the command line's --opt.
     std::map<std::string, std::string> opts;
     for (const auto& [k, v] : t.opts) opts[k] = v;
@@ -11039,8 +11040,8 @@ std::string rcore_manifest_platform(const fs::path& core) {
 }
 
 // Loads the player's seats and option values into a session's arguments:
-// the platform's options, the title's over them, and the command line's --opt
-// over both (it is the most specific request). Also the play overlay's
+// bundled defaults, the platform's options, the title's over them, and the
+// command line's --opt over them (the most specific request). Also the play overlay's
 // settings (play.ini), which the in-game hotkeys write back, and how the hub
 // scales the picture (display.ini, the title's over the platform's).
 void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_dir,
@@ -11050,7 +11051,10 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
     args.data_dir = data_dir;
     args.exe_dir = exe_dir;
-    if (platform.empty()) return;
+    if (platform.empty()) {
+        args.options = retcomm::hub::layer_core_options({}, {}, args.options, args.default_options);
+        return;
+    }
     std::vector<std::string> warnings;
     args.input = retcomm::hub::load_platform_input(data_dir, platform, &warnings);
     for (const std::string& w : warnings) std::fprintf(stderr, "retro-hub: %s\n", w.c_str());
@@ -11120,7 +11124,7 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
         drop(plat, "every title's");
         drop(title, "this title's");
     }
-    args.options = retcomm::hub::layer_core_options(plat, title, args.options);
+    args.options = retcomm::hub::layer_core_options(plat, title, args.options, args.default_options);
 }
 
 // A runner from before seats 2-4 took a Transfer Pak (no transfer_pak_seats
@@ -11183,6 +11187,7 @@ struct CoreSettingsPage {
 
     retcomm::hub::PlatformInput input, input_saved;
     std::map<std::string, std::string> plat_opts, plat_saved, title_opts, title_saved;
+    std::map<std::string, std::string> default_opts;
     // The play overlay's settings (play.ini): every core's, shown here too.
     retcomm::hub::PlayPrefs prefs, prefs_saved;
     // The hub's scaling of the picture (display.ini): layered like the
@@ -11308,11 +11313,13 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
                         const std::string& title_name, const fs::path& core,
                         const fs::path& package,
                         const retcomm::hub::CoreDescription* known = nullptr,
-                        bool direct = false, const fs::path& title_dir = {}) {
+                        bool direct = false, const fs::path& title_dir = {},
+                        const std::map<std::string, std::string>& defaults = {}) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
     p.platform = platform;
     p.title_dir = title_dir;
+    p.default_opts = defaults;
     p.vru.vocabulary_checked = false;
     p.vru.test_until_ns = 0;
     p.vru.test_text.clear();
@@ -11610,12 +11617,18 @@ std::string option_group(const std::string& key) {
 // resolves it to without re-implementing the core, so it does not guess.
 // Reset to Default clears the title's file.
 constexpr const char* kTitleDeclaredValue = "title";
+std::string core_settings_default(const CoreSettingsPage& p,
+                                  const retcomm::hub::CoreOptionDecl& o) {
+    const auto it = p.default_opts.find(o.key);
+    return it == p.default_opts.end() ? (o.has_default ? o.default_value : std::string())
+                                      : it->second;
+}
 void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o,
                           const Theme& th) {
     std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
     const auto own = layer.find(o.key);
     const bool set = own != layer.end();
-    std::string inherited = o.has_default ? o.default_value : std::string();
+    std::string inherited = core_settings_default(p, o);
     if (p.title_scope)
         if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) inherited = it->second;
     const std::string cur = set ? own->second : inherited;
@@ -11666,9 +11679,11 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
         }
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        const bool has_default = o.has_default || p.default_opts.count(o.key);
+        const std::string default_value = core_settings_default(p, o);
         ImGui::SetTooltip("%s\n\n%s%s%s%s", o.description.c_str(), o.key.c_str(),
-                          o.has_default ? "  \xC2\xB7  default " : "",
-                          o.has_default ? o.default_value.c_str() : "",
+                          has_default ? "  \xC2\xB7  default " : "",
+                          has_default ? default_value.c_str() : "",
                           o.restart ? "\nApplies the next time a game starts." : "");
     }
     ImGui::PopID();
@@ -13454,7 +13469,7 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
     std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
     const auto own = layer.find(o.key);
     const bool set = own != layer.end();
-    std::string inherited = o.has_default ? o.default_value : std::string();
+    std::string inherited = core_settings_default(p, o);
     if (p.title_scope)
         if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) inherited = it->second;
     const std::string cur = set ? own->second : inherited;
@@ -13555,7 +13570,7 @@ bool option_in_section(const retcomm::hub::CoreOptionDecl& o, const std::string&
 std::string option_summary_text(const CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o) {
     const std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
     const auto own = layer.find(o.key);
-    std::string cur = o.has_default ? o.default_value : std::string();
+    std::string cur = core_settings_default(p, o);
     if (p.title_scope)
         if (const auto it = p.plat_opts.find(o.key); it != p.plat_opts.end()) cur = it->second;
     if (own != layer.end()) cur = own->second;
@@ -16849,7 +16864,8 @@ void refresh_direct_mods(DirectHome& h) {
 std::string direct_base_id(const DirectHome& h, const HubModel& hub) {
     const auto opts = retcomm::hub::layer_core_options(
         retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, {}),
-        retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, h.title_key), {});
+        retcomm::hub::load_core_options(hub.paths.data_dir, h.platform, h.title_key), {},
+        h.d.args.default_options);
     const auto it = opts.find(retcomm::kRomhackOption);
     return it == opts.end() ? std::string() : it->second;
 }
@@ -17295,7 +17311,7 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         auto open_tab = [&](bool gamepads) {
             open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core,
                                h.d.args.package, h.desc_ready ? &h.desc : nullptr,
-                               /*direct=*/true, h.title_dir);
+                               /*direct=*/true, h.title_dir, h.d.args.default_options);
             core_settings_page().gamepads_tab = gamepads;
         };
         if (ImGui::Button("System", ImVec2(half, 0))) open_tab(false);
@@ -17791,7 +17807,7 @@ bool direct_step_back(DirectHome& h, HubModel& hub) {
 
 void open_direct_core_settings(DirectHome& h, HubModel& hub, const char* section) {
     open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core, h.d.args.package,
-                       h.desc_ready ? &h.desc : nullptr, /*direct=*/true, h.title_dir);
+                       h.desc_ready ? &h.desc : nullptr, /*direct=*/true, h.title_dir, h.d.args.default_options);
     core_settings_page().section = section;
 }
 

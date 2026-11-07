@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
     write(payload / "title.json", R"({
       "schema": 1, "id": "fake_title", "name": "Fake Title", "version": "0.0.1",
       "platform": "test", "core": "core/fake_core.so", "package": "package/fake_game.so",
-      "opts": ["video.renderer=software"], "future_key": {"ignored": true},
+      "opts": ["video.renderer=software"], "defaults": {"video.aspect": "fit"}, "future_key": {"ignored": true},
       "rom": {"file_names": ["fake.z64"], "size": )" + std::to_string(rom_bytes.size()) +
                                         R"(, "sha256": ")" + sha + R"(", "label": "Fake - USA"}
     })");
@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     check(t.core == (payload / "core" / "fake_core.so").lexically_normal(), "core is absolute");
     check(t.title_dir == (payload / "package").lexically_normal(), "title_dir defaults to the package's");
     check(t.opts.size() == 1 && t.opts[0].first == "video.renderer", "opts");
+    check(t.defaults.at("video.aspect") == "fit", "bundled defaults are read");
     check(t.has_rom && t.rom.has_size && t.rom.sha256 == sha, "rom identity");
     check(find_bundled_title(dir / "app") == fs::weakly_canonical(payload / "title.json"),
           "found beside the exe");
@@ -104,6 +105,17 @@ int main(int argc, char** argv) {
     check(!load_title(dir / "t7", t, &err), "update.github must be owner/repo");
     check(load_title(payload / "title.json", t, &err), "load_title from the file");
     check(t.boxart.empty() && t.update_github.empty(), "boxart and update are optional");
+
+    TitleInfo invalid;
+    write(dir / "bad-defaults" / "title.json",
+          R"({"schema":1,"id":"x","core":"c.so","defaults":{"video.aspect":4}})");
+    check(!load_title(dir / "bad-defaults", invalid, &err), "non-string defaults refused");
+    write(dir / "bad-defaults" / "title.json",
+          R"({"schema":1,"id":"x","core":"c.so","defaults":[]})");
+    check(!load_title(dir / "bad-defaults", invalid, &err), "non-object defaults refused");
+    write(dir / "bad-defaults" / "title.json",
+          R"({"schema":1,"id":"x","core":"c.so","defaults":{"":"fit"}})");
+    check(!load_title(dir / "bad-defaults", invalid, &err), "empty default key refused");
 
     // ---- the app and its data dir -------------------------------------------
     const fs::path exe = dir / "app" / "retro-hub";

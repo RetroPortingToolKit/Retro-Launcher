@@ -51,6 +51,8 @@ struct TitleInfo {
     // `opts`: ["key=value", ...] or {"key": "value"}; the command line's --opt
     // wins over these.
     std::vector<std::pair<std::string, std::string>> opts;
+    // Suggested values, below saved platform/title choices and explicit opts.
+    std::map<std::string, std::string> defaults;
     bool has_rom = false;
     TitleRom rom;
     // `boxart`: the title's own cover (png or jpg), shown on the home page

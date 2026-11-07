@@ -226,6 +226,22 @@ void test_options(const fs::path& dir) {
                              {{"video.internal_resolution", "3x"}}, four_x)
                   .at("video.internal_resolution") == "4x",
           "explicit N64 4x wins over platform and title scales");
+    const std::map<std::string, std::string> defaults{{"video.aspect", "fit"}};
+    check(layer_core_options({}, {}, {}, defaults).at("video.aspect") == "fit",
+          "fresh title uses bundled Fit default");
+    check(save_core_options(dir, "n64", "", {{"video.aspect", "original"}}, &err),
+          "platform aspect saves");
+    const auto platform = load_core_options(dir, "n64", "");
+    check(layer_core_options(platform, {}, {}, defaults).at("video.aspect") == "original",
+          "saved platform aspect overrides bundled Fit");
+    check(save_core_options(dir, "n64", "aspect-test", {{"video.aspect", "16:9"}}, &err),
+          "title aspect saves");
+    const auto title = load_core_options(dir, "n64", "aspect-test");
+    check(layer_core_options(platform, title, {}, defaults).at("video.aspect") == "16:9",
+          "saved title aspect overrides platform and bundled Fit");
+    check(layer_core_options(platform, title, {{"video.aspect", "original"}}, defaults)
+                  .at("video.aspect") == "original",
+          "explicit option still wins over saved choices and bundled defaults");
     check(!save_core_options(dir, "n64", "t", {{"k", "a\nb"}}, &err),
           "a value with a newline refused");
 }
