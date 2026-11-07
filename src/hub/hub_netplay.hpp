@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,12 @@ struct NetplayLaunch {
     // Transfer Pak lobbies: every seat's cartridge (this machine's copy of
     // it) and that seat's save as the room exchanged it. Empty = no pak.
     std::array<std::string, 4> tpak_rom, tpak_save;
+    std::map<std::string, std::string> core_options;
+};
+
+struct NetplayChoice {
+    std::string key, label, value;
+    std::vector<std::string> values;
 };
 
 // One player's Transfer Pak, as brought to a match: which of the supported
@@ -60,6 +67,7 @@ struct NetplayScope {
     std::string pin;            // the lobby's wire version: this build, exactly
     int max_slots = 4;
     bool tpak_supported = false;
+    std::function<std::vector<NetplayChoice>()> room_choices;
     // "" when all three Transfer Pak cartridges are set and check out.
     std::function<std::string()> tpak_problem;
     // "" when this machine's seats can join a match at all; else why not

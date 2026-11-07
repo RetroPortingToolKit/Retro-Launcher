@@ -1,4 +1,5 @@
 #include "hub/hub_netplay.hpp"
+#include "hub/hub_netplay_options.hpp"
 #include "hub/hub_overlay.hpp"
 
 #include "hub/hub_model.hpp"
@@ -374,6 +375,7 @@ struct Page {
     int host_max = 2;
     bool host_spectators = false;
     std::string host_error;
+    std::map<std::string, std::string> host_core_options;
     char join_pw[64]{};
     std::string join_pw_lobby, join_pw_game, join_pw_version;
     char name_buf[64]{};
@@ -506,6 +508,34 @@ std::string local_name(const HubModel& hub) {
         if (!h.empty()) return h;
     }
     return hub.cfg.netplay.display_name;
+}
+
+void draw_host_room_choices(Page& p) {
+    if (!p.scope || !p.scope->room_choices) return;
+    for (const auto& choice : p.scope->room_choices()) {
+        if (choice.values.empty()) continue;
+        auto [it, inserted] = p.host_core_options.emplace(choice.key, choice.value);
+        if (std::find(choice.values.begin(), choice.values.end(), it->second) == choice.values.end())
+            it->second = choice.values.front();
+        ImGui::PushID(choice.key.c_str());
+        ImGui::TextUnformatted(choice.label.c_str());
+        if (ImGui::BeginCombo("##room_option", it->second.c_str())) {
+            for (const auto& value : choice.values)
+                if (ImGui::Selectable(value.c_str(), value == it->second)) it->second = value;
+            ImGui::EndCombo();
+        }
+        ImGui::PopID();
+    }
+}
+
+std::map<std::string, std::string> chosen_room_options(const Page& p) {
+    std::map<std::string, std::string> result;
+    if (!p.scope || !p.scope->room_choices) return result;
+    for (const auto& choice : p.scope->room_choices()) {
+        const auto selected = p.host_core_options.find(choice.key);
+        result[choice.key] = selected == p.host_core_options.end() ? choice.value : selected->second;
+    }
+    return result;
 }
 
 void ensure_init(HubModel& hub) {
@@ -1580,6 +1610,7 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
             ImGui::TextUnformatted("Lobby name");
             ImGui::SetNextItemWidth(430.f);
             ImGui::InputText("##host_name", p.host_name, sizeof(p.host_name));
+            draw_host_room_choices(p);
             ImGui::TextUnformatted("Max Players");
             const int top = std::min(8, g.max_slots);
             p.host_max = std::clamp(p.host_max, 2, std::max(2, top));
@@ -1623,6 +1654,7 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
                     json caps = json::object();
                     caps["tpak"] = p.host_tpak;
                     caps["relay"] = "host"; // the lobby server's relay only as a fallback
+                    caps["core_options"] = chosen_room_options(p);
                     p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max,
                                         p.host_spectators, caps);
                     if (p.filter.empty()) p.scope_dirty = true;
@@ -1854,8 +1886,15 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
             ImGui::TextColored(th.accent, "MATCH SETTINGS");
             ImGui::SameLine();
             ImGui::TextColored(th.text_muted, "(set by the host)");
+            if (p.scope && p.scope->room_choices && s.match_caps.contains("core_options")) {
+                for (const auto& choice : p.scope->room_choices()) {
+                    const auto& selected = s.match_caps["core_options"];
+                    if (selected.is_object() && selected.contains(choice.key) && selected[choice.key].is_string())
+                        ImGui::Text("%s: %s", choice.label.c_str(), selected[choice.key].get_ref<const std::string&>().c_str());
+                }
+            }
             for (auto it = s.match_caps.begin(); it != s.match_caps.end(); ++it) {
-                if (it.key() == "v" || it.key() == "mods") continue;
+                if (it.key() == "v" || it.key() == "mods" || it.key() == "core_options") continue;
                 ImGui::Text("%s: %s", it.key().c_str(), it->dump().c_str());
             }
         }
@@ -2402,6 +2441,7 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
     if (p.scope) ov::value_row(m, "game", "Game", g.title + "  \xC2\xB7  " + g.pin);
     else if (ov::setting_row(m, "game", "Game", g.title, "The game the lobby is for. Guests need the same build.", games.size() > 1))
         ov::open_picker("##hostgame");
+    draw_host_room_choices(p);
     {
         std::vector<ov::PickerChoice> choices;
         for (const Game& x : games) choices.push_back({x.title, "Version " + x.pin});
@@ -2449,6 +2489,7 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
             json caps = json::object();
             caps["tpak"] = p.host_tpak;
             caps["relay"] = "host"; // the lobby server's relay only as a fallback
+            caps["core_options"] = chosen_room_options(p);
             p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max, p.host_spectators, caps);
             if (p.filter.empty()) p.scope_dirty = true;
             p.status = "Creating lobby...";
@@ -2682,9 +2723,16 @@ void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
     } else {
         ov::value_row(m, "srv", "Lobby server", p.client_url);
         ov::value_row(m, "lid", "Lobby id", s.lobby_id);
+        if (p.scope && p.scope->room_choices && s.match_caps.is_object() && s.match_caps.contains("core_options")) {
+            for (const auto& choice : p.scope->room_choices()) {
+                const auto& selected = s.match_caps["core_options"];
+                if (selected.is_object() && selected.contains(choice.key) && selected[choice.key].is_string())
+                    ov::value_row(m, choice.key.c_str(), choice.label.c_str(), selected[choice.key].get<std::string>());
+            }
+        }
         if (s.match_caps.is_object() && !s.match_caps.empty())
             for (auto it = s.match_caps.begin(); it != s.match_caps.end(); ++it) {
-                if (it.key() == "v" || it.key() == "mods") continue;
+                if (it.key() == "v" || it.key() == "mods" || it.key() == "core_options") continue;
                 ov::value_row(m, it.key().c_str(), it.key().c_str(), it->dump());
             }
     }
@@ -3115,6 +3163,7 @@ void ingest(HubModel& hub) {
                 l.host_endpoint = s.launch.value("host_endpoint", std::string());
                 l.host = s.is_host;
                 l.tpak = s.match_caps.is_object() && s.match_caps.value("tpak", false);
+                const bool options_ok = read_room_options(s.match_caps, &l.core_options);
                 l.seat = -1;
                 const auto slots = s.launch.find("slots");
                 if (slots != s.launch.end() && slots->is_array()) {
@@ -3139,7 +3188,10 @@ void ingest(HubModel& hub) {
                     p.host_port.stop();
                     p.host_port_open = false;
                 }
-                if (l.seat < 0) {
+                if (!options_ok) {
+                    p.room_status = "The room supplied invalid match options.";
+                    p.client.ack_launch();
+                } else if (l.seat < 0) {
                     p.room_status = "The match started without you in a player seat "
                                     "(spectating is not built yet).";
                 } else {

@@ -19,6 +19,7 @@
 #include "hub/hub_theme.hpp"
 #include "hub/hub_widgets.hpp"
 #include "hub/hub_netplay.hpp"
+#include "hub/hub_netplay_options.hpp"
 
 #if !defined(RETCOMM_COMMIT)
 #define RETCOMM_COMMIT ""
@@ -17648,6 +17649,18 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
              (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
     sc.max_slots = 4;
     sc.tpak_supported = h.tpak_supported;
+    sc.room_choices = [&h, &hub] {
+        retcomm::hub::PlayArgs args = h.d.args;
+        apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
+        std::vector<retcomm::hub::NetplayChoice> choices;
+        for (const auto& o : h.desc.options) {
+            if (!retcomm::hub::room_option(o)) continue;
+            const auto selected = args.options.find(o.key);
+            choices.push_back({o.key, o.label,
+                selected == args.options.end() ? o.default_value : selected->second, o.values});
+        }
+        return choices;
+    };
     const fs::path data = hub.paths.data_dir;
     const std::string platform = h.platform;
     sc.tpak_problem = [data, platform]() -> std::string {
@@ -18178,14 +18191,17 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     std::string err;
     retcomm::hub::PlayArgs args = h.d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
-    // NETPLAY-flagged options join the match key: each peer's own choice
-    // would only get the match refused, so every peer takes the core's default.
+    // NETPLAY-flagged options join the match key. Every peer adopts the room's
+    // validated host choices; other shared options take the core's defaults.
     // Except the BASE (system.romhack): the stock game in a romhack player's
     // place would be a silent substitution. It stays, so the match key admits
     // peers on the same base and refuses peers on another.
+    if (!l.core_options.empty() && (!h.desc_ready || !h.desc.ok)) {
+        *why = "The core description is unavailable; the room settings cannot be validated.";
+        return false;
+    }
     if (h.desc_ready && h.desc.ok) {
-        for (const auto& o : h.desc.options)
-            if (o.netplay && o.key != retcomm::kRomhackOption) args.options.erase(o.key);
+        if (!retcomm::hub::apply_room_options(h.desc.options, l.core_options, &args.options, why)) return false;
     }
     args.tpak_rom = {};
     args.tpak_save = {};

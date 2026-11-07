@@ -135,8 +135,16 @@ cmake_args=(
   "-DCMAKE_BUILD_TYPE=${CONFIG}"
   "-DRETCOMM_COMMIT=${COMMIT}"
 )
-[[ -z "${RUNTIME}" ]] || cmake_args+=("-DRETCOMM_RUNTIME_DIR=${RUNTIME}")
-[[ -z "${RELEASE_VERSION}" ]] || cmake_args+=("-DRETCOMM_VERSION=${RELEASE_VERSION}" -DRETCOMM_RELEASE_BUILD=ON)
+if [[ -n "${RUNTIME}" ]]; then
+  cmake_args+=("-DRETCOMM_RUNTIME_DIR=${RUNTIME}")
+else
+  cmake_args+=(-URETCOMM_RUNTIME_DIR)
+fi
+if [[ -n "${RELEASE_VERSION}" ]]; then
+  cmake_args+=("-DRETCOMM_VERSION=${RELEASE_VERSION}" -DRETCOMM_RELEASE_BUILD=ON)
+else
+  cmake_args+=(-URETCOMM_VERSION -URETCOMM_RELEASE_BUILD)
+fi
 command -v ninja >/dev/null && cmake_args+=(-G Ninja)
 [[ -z "${CMAKE_PREFIX_PATH:-}" ]] || cmake_args+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
 # The runner finds SDL3 beside itself in the flat prefix (the hub already
@@ -145,11 +153,15 @@ case "${OS}" in
   linux) cmake_args+=("-DCMAKE_INSTALL_RPATH=\$ORIGIN") ;;
   macos) cmake_args+=("-DCMAKE_INSTALL_RPATH=@loader_path") ;;
 esac
-# Another generator or other choices in an existing cache: start it afresh.
+# Keep compiled objects and caller-supplied dependency paths when definitions
+# change. Only a generator transition needs a fresh CMake cache.
 STAMP="${BUILD}/build-local.args"
 if [[ -f "${STAMP}" && "$(cat "${STAMP}")" != "$(printf '%s\n' "${cmake_args[@]}")" ]]; then
-  say "configuration changed since the last build in ${BUILD}; reconfiguring from scratch"
-  rm -rf "${BUILD}/CMakeCache.txt" "${BUILD}/CMakeFiles"
+  say "configuration changed since the last build in ${BUILD}; reconfiguring"
+  old_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${BUILD}/CMakeCache.txt" 2>/dev/null || true)"
+  if [[ -n "${old_generator}" && "${old_generator}" != Ninja ]] && command -v ninja >/dev/null; then
+    rm -rf "${BUILD}/CMakeCache.txt" "${BUILD}/CMakeFiles"
+  fi
 fi
 say "${PLATFORM}, ${CONFIG}, build ${BUILD}"
 cmake "${cmake_args[@]}" >&2
@@ -196,7 +208,8 @@ done
 # title-app kit's bundle_dylibs.sh copies it into an app.
 SDL_NOTE="SDL3 from the system install name"
 if [[ "${OS}" == linux ]]; then
-  sdl="$(ldd "${BUILD}/retro-hub" | awk '$1 ~ /^libSDL3\.so/ {print $1 " " $3; exit}')"
+  imports="$(ldd "${BUILD}/retro-hub")" || die "cannot inspect the built hub's imports"
+  sdl="$(awk '$1 ~ /^libSDL3\.so/ {print $1 " " $3; exit}' <<<"${imports}")"
   [[ -n "${sdl}" ]] || die "retro-hub does not import libSDL3"
   soname="${sdl%% *}" path="${sdl#* }"
   [[ -f "${path}" ]] || die "retro-hub needs ${soname}, which does not resolve"
@@ -212,7 +225,8 @@ field() { sed -n "s/^$1 //p" <<<"${report}"; }
 [[ "$(field title_app)" == 1 ]] || die "${HUB} --version has no 'title_app 1'"
 [[ " $(field direct_mode_flags) " == *" --package "* ]] || die "${HUB} --version lists no --package"
 if [[ "${OS}" == linux ]]; then
-  env -u LD_LIBRARY_PATH ldd "${HUB}" | grep -qF "${soname} => ${OUT}/${soname}" ||
+  imports="$(env -u LD_LIBRARY_PATH ldd "${HUB}")" || die "cannot inspect the flat hub's imports"
+  grep -qF "${soname} => ${OUT}/${soname}" <<<"${imports}" ||
     die "${HUB} does not resolve ${soname} from the prefix"
 fi
 runner_report="$(env -u LD_LIBRARY_PATH "${OUT}/retro-core-runner" --version)" ||
