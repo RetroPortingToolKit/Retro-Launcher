@@ -129,8 +129,42 @@ void Picture::set_minified(bool on) {
     mipmapped_ = on;
 }
 
+bool Picture::supports_pixel_pairs() { return gl3().blit; }
+
+bool Picture::upload_pixel_pairs(const void* rgba, std::uint32_t w, std::uint32_t h,
+                                 std::uint32_t aspect_num, std::uint32_t aspect_den) {
+    if (!rgba || !w || !h || w > UINT32_MAX / 2 || !supports_pixel_pairs()) return false;
+    if (!pair_source_) {
+        glGenTextures(1, &pair_source_);
+        glBindTexture(GL_TEXTURE_2D, pair_source_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, pair_source_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (w != pair_w_ || h != pair_h_) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(w), GLsizei(h), 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        pair_w_ = w; pair_h_ = h;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GLsizei(w), GLsizei(h), GL_RGBA,
+                        GL_UNSIGNED_BYTE, rgba);
+    }
+    // Canonical tex_ stays 2*w wide, so mipmaps, snapshots, sharp-bilinear
+    // scaling and integer-scale decisions see exactly the legacy image.
+    return copy_texture_sized(pair_source_, w, h, w * 2, h, aspect_num, aspect_den);
+}
+
 bool Picture::copy_texture(unsigned int texture, std::uint32_t w, std::uint32_t h,
                            std::uint32_t aspect_num, std::uint32_t aspect_den) {
+    return copy_texture_sized(texture, w, h, w, h, aspect_num, aspect_den);
+}
+
+bool Picture::copy_texture_sized(unsigned int texture, std::uint32_t sw, std::uint32_t sh,
+                                std::uint32_t w, std::uint32_t h,
+                                std::uint32_t aspect_num, std::uint32_t aspect_den) {
     const auto& g = gl3();
     if (!g.blit || !texture || !w || !h) return false;
     if (!tex_ || w != w_ || h != h_) upload(nullptr, w, h, aspect_num, aspect_den);
@@ -147,7 +181,7 @@ bool Picture::copy_texture(unsigned int texture, std::uint32_t w, std::uint32_t 
     g.FramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_, 0);
     const bool ok = g.CheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
                     g.CheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-    if (ok) g.BlitFramebuffer(0, 0, GLint(w), GLint(h), 0, 0, GLint(w), GLint(h),
+    if (ok) g.BlitFramebuffer(0, 0, GLint(sw), GLint(sh), 0, 0, GLint(w), GLint(h),
                               GL_COLOR_BUFFER_BIT, GL_NEAREST);
     g.BindFramebuffer(GL_READ_FRAMEBUFFER, GLuint(read));
     g.BindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(draw));
@@ -268,13 +302,15 @@ void Picture::draw(ImDrawList* dl, ImU32 tint) {
 
 void Picture::release() {
     if (tex_) glDeleteTextures(1, &tex_);
+    if (pair_source_) glDeleteTextures(1, &pair_source_);
     if (pre_) glDeleteTextures(1, &pre_);
     if (read_fb_ || draw_fb_) {
         const Gl3& g = gl3();
         if (read_fb_) g.DeleteFramebuffers(1, &read_fb_);
         if (draw_fb_) g.DeleteFramebuffers(1, &draw_fb_);
     }
-    tex_ = pre_ = read_fb_ = draw_fb_ = 0;
+    tex_ = pre_ = pair_source_ = read_fb_ = draw_fb_ = 0;
+    pair_w_ = pair_h_ = 0;
     w_ = h_ = pre_w_ = pre_h_ = 0;
     mag_ = 0;
     mipmapped_ = false;

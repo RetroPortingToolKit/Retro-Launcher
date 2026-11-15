@@ -295,6 +295,43 @@ int main(int argc, char** argv) {
         return imgs.front().second;
     };
 
+    // Compact storage must reproduce the canonical texture BEFORE any output
+    // policy. Exercise actual ImGui sampling, minification and resize reuse.
+    check(Picture::supports_pixel_pairs(), "GL3.2 supports exact pixel-pair reconstruction");
+    const PictureStyle pair_styles[] = {bilinear, nearest, sharp, bilinear_int, sharp_int};
+    for (const auto& shape : {std::pair{320u,480u}, std::pair{31u,47u}}) {
+        Frame compact = test_frame(shape.first, shape.second);
+        Frame expanded{compact.w*2,compact.h,std::vector<std::uint8_t>(compact.rgba.size()*2)};
+        for(unsigned y=0;y<compact.h;++y) for(unsigned x=0;x<expanded.w;++x)
+            std::memcpy(&expanded.rgba[(std::size_t(y)*expanded.w+x)*4],
+                        &compact.rgba[(std::size_t(y)*compact.w+x/2)*4],4);
+        for(const auto& style : pair_styles) {
+            Picture ordinary, pairs;
+            ordinary.set_style(style); pairs.set_style(style);
+            for(const auto& dimensions : {std::pair{1000,750},std::pair{257,193},std::pair{1280,960}}) {
+                const Target target=make_target(dimensions.first,dimensions.second);
+                ordinary.upload(expanded.rgba.data(),expanded.w,expanded.h,4,3);
+                check(pairs.upload_pixel_pairs(compact.rgba.data(),compact.w,compact.h,4,3),
+                      "compact GPU reconstruction accepted");
+                auto expected=render(target,[&](ImDrawList* dl){ordinary.draw(dl,IM_COL32_WHITE);});
+                auto got=render(target,[&](ImDrawList* dl){pairs.draw(dl,IM_COL32_WHITE);});
+                check(differing(expected,got)==0,"compact vs canonical filtered output is byte-identical");
+                std::uint32_t snapshot_w=0,snapshot_h=0;
+                auto snapshot=pairs.snapshot(snapshot_w,snapshot_h);
+                check(snapshot_w==expanded.w && snapshot_h==expanded.h && snapshot==expanded.rgba,
+                      "compact snapshot is canonical with exact orientation/alpha");
+                glDeleteTextures(1,&target.tex);
+                const auto del=reinterpret_cast<PFNGLDELETEFRAMEBUFFERSPROC>(SDL_GL_GetProcAddress("glDeleteFramebuffers"));
+                if(del) del(1,&target.fbo);
+            }
+            // Ordinary GPU/CPU fallback can replace the compact picture and
+            // then compact publication can resume without stale mip levels.
+            pairs.upload(expanded.rgba.data(),expanded.w,expanded.h,4,3);
+            check(pairs.upload_pixel_pairs(compact.rgba.data(),compact.w,compact.h,4,3),"compact resumes after ordinary upload");
+            ordinary.release(); pairs.release();
+        }
+    }
+
     // 1. 40x30 at 7.5x (300x225): not a whole multiple.
     const Frame small = test_frame(40, 30);
     const auto a = run("small_7.5x", small, 4, 3, 300, 225);
