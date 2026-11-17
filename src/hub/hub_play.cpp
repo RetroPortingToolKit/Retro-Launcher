@@ -131,6 +131,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.title_dir = args.title_dir.empty() ? owner.parent_path() : args.title_dir;
     spec.session_dir = session_dir;
     spec.gpu_capabilities = gpu_frames_.capabilities();
+    spec.cpu_pixel_pairs = Picture::supports_pixel_pairs();
     spec.save_dir = save_dir;
     spec.gl = args.gl && runner_lends_gl(runner);
     if (args.gl && !spec.gl)
@@ -598,8 +599,13 @@ void PlaySession::upload_frame() {
     const auto cutoff = f ? std::max(picture_frame_, f->frame_number) : picture_frame_;
     picture_frame_ = gpu_frames_.pump(link_, picture_, cutoff);
     if (f && f->width && f->height && f->frame_number >= picture_frame_) {
-        picture_.upload(link_.frame_pixels(), f->width, f->height, f->aspect_num, f->aspect_den);
-        picture_frame_ = f->frame_number;
+        const bool uploaded = f->pixel_format == RCORE_PIXEL_RGBA8_X2
+            ? picture_.upload_pixel_pairs(link_.frame_pixels(), f->width, f->height,
+                                           f->aspect_num, f->aspect_den)
+            : (picture_.upload(link_.frame_pixels(), f->width, f->height,
+                               f->aspect_num, f->aspect_den), true);
+        if (uploaded) picture_frame_ = f->frame_number;
+        else SDL_Log("retro-hub: exact CPU pixel-pair reconstruction failed");
     }
 }
 

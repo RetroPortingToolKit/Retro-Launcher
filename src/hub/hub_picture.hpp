@@ -66,6 +66,11 @@ public:
     // current.
     void upload(const void* rgba, std::uint32_t w, std::uint32_t h, std::uint32_t aspect_num,
                 std::uint32_t aspect_den);
+    // Exact horizontal pixel pairs, reconstructed on the GPU before all
+    // existing filtering. Capability is sampled before launching the runner.
+    static bool supports_pixel_pairs();
+    bool upload_pixel_pairs(const void* rgba, std::uint32_t w, std::uint32_t h,
+                            std::uint32_t aspect_num, std::uint32_t aspect_den);
     // GPU copy from a same-context RGBA8 texture. No host pixel transfer.
     bool copy_texture(unsigned int texture, std::uint32_t w, std::uint32_t h,
                       std::uint32_t aspect_num, std::uint32_t aspect_den);
@@ -81,11 +86,15 @@ public:
     void release();
 
 private:
+    bool copy_texture_sized(unsigned int texture, std::uint32_t sw, std::uint32_t sh,
+                            std::uint32_t w, std::uint32_t h,
+                            std::uint32_t aspect_num, std::uint32_t aspect_den);
     void set_minified(bool on);
     unsigned int prescaled(std::uint32_t kx, std::uint32_t ky);
 
     PictureStyle style_;
-    unsigned int tex_ = 0;
+    unsigned int tex_ = 0, pair_source_ = 0;
+    std::uint32_t pair_w_ = 0, pair_h_ = 0;
     std::uint32_t w_ = 0, h_ = 0;
     std::uint32_t aspect_num_ = 0, aspect_den_ = 0;
     std::uint64_t rev_ = 0;        // bumped per uploaded frame
