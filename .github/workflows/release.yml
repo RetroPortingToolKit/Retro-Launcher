@@ -443,7 +443,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             arch: arm64
           # macos-13 was retired Dec 2025; macos-15-intel is the last hosted x86_64 image.
           - os: macos-15-intel
