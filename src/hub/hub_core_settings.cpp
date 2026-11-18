@@ -1160,6 +1160,32 @@ bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::stri
     return write_atomically(data_dir / "play.ini", o.str(), error);
 }
 
+namespace {
+fs::path diagnostics_path(const fs::path& data_dir, const std::string& title_key) {
+    return platform_settings_dir(data_dir, "n64") / "diagnostics" / (title_key + ".ini");
+}
+} // namespace
+
+bool load_gameplay_diagnostics(const fs::path& data_dir, const std::string& title_key) {
+    bool enabled = true;
+    for_each_ini(read_text(diagnostics_path(data_dir, title_key)),
+                 [&](const std::string& section, const std::string& key, const std::string& value) {
+        if (section == "diagnostics" && key == "record_gameplay") {
+            if (value == "0") enabled = false;
+            else if (value == "1") enabled = true;
+        }
+    });
+    return enabled;
+}
+
+bool save_gameplay_diagnostics(const fs::path& data_dir, const std::string& title_key,
+                               bool enabled, std::string* error) {
+    return write_atomically(diagnostics_path(data_dir, title_key),
+                            enabled ? "[diagnostics]\nrecord_gameplay = 1\n"
+                                    : "[diagnostics]\nrecord_gameplay = 0\n",
+                            error);
+}
+
 // ---- display ------------------------------------------------------------------
 
 namespace {

@@ -3561,6 +3561,7 @@ struct ModsPageState {
     bool focus_list = false;      // set by the detail column, consumed next frame
     bool pending_rescan = false;  // a write landed; re-read once the panel is done
     bool detail = false;          // the overlay: one feature's page is open
+    bool record_gameplay = true;
 };
 
 // Right / Left as a player produces them: d-pad, left stick, or the arrow keys
@@ -3584,11 +3585,26 @@ ModsPageState& mods_page_state() {
     return s;
 }
 
+bool has_gameplay_diagnostics(const TitleRow& row) {
+    return row.platform == "n64" && !row.id.empty() &&
+           (row.kind == "core" || !row.core_manifest.empty());
+}
+
 void refresh_mods_page(HubModel& hub, const TitleRow& row) {
     ModsPageState& st = mods_page_state();
     st.scan = retcomm::scan_game_mods(title_game_dir(hub, row), fs::path(row.install_root),
                                       fs::path(row.mods_state_dir));
     st.title_id = row.id;
+    if (has_gameplay_diagnostics(row))
+        st.record_gameplay = retcomm::hub::load_gameplay_diagnostics(hub.paths.data_dir, row.id);
+}
+
+void set_gameplay_diagnostics(HubModel& hub, const TitleRow& row, bool enabled) {
+    std::string error;
+    if (retcomm::hub::save_gameplay_diagnostics(hub.paths.data_dir, row.id, enabled, &error))
+        mods_page_state().record_gameplay = enabled;
+    else
+        hub.append_log("Gameplay diagnostics: " + error);
 }
 
 // Every (package, feature) pair, flattened and grouped the way the left panel
@@ -3645,6 +3661,13 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
     ImGui::TextUnformatted(row.name.c_str());
     ImGui::TextColored(th.text_muted, "%s", st.scan.root.string().c_str());
     ImGui::Separator();
+    if (has_gameplay_diagnostics(row)) {
+        bool enabled = st.record_gameplay;
+        if (ImGui::Checkbox("Gameplay diagnostics", &enabled))
+            set_gameplay_diagnostics(hub, row, enabled);
+        ImGui::TextWrapped("Record offline gameplay automatically. Find recordings in Replays.");
+        ImGui::Separator();
+    }
 
     auto set_all = [&](bool on) {
         std::string err;
@@ -4109,6 +4132,15 @@ void draw_shell_mods(HubModel& hub, const Theme& th, const retcomm::hub::overlay
             else if (r == 2) st.search[0] = '\0';
         }
         const std::string needle = st.search;
+        if (has_gameplay_diagnostics(row)) {
+            retcomm::ModPackageInfo diagnostics;
+            diagnostics.name = "Gameplay diagnostics";
+            if (mod_row_matches(diagnostics, nullptr, needle) &&
+                ov::setting_row(m, "gameplay_diagnostics", "Gameplay diagnostics",
+                                st.record_gameplay ? "On" : "Off",
+                                "Record offline gameplay automatically. Find recordings in Replays."))
+                set_gameplay_diagnostics(hub, row, !st.record_gameplay);
+        }
         if (!st.scan.root_exists)
             ov::muted("No mods folder yet. The engine creates mods/bundled at build time; mods/installed is where "
                       "packages are added.");
@@ -11049,6 +11081,8 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
                            const std::string& title_key) {
     // The overlay's settings are every core's: loaded whatever the platform.
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
+    args.record_gameplay_diagnostics = platform == "n64" && !title_key.empty() &&
+        retcomm::hub::load_gameplay_diagnostics(data_dir, title_key);
     args.data_dir = data_dir;
     args.exe_dir = exe_dir;
     if (platform.empty()) {
@@ -11623,6 +11657,18 @@ std::string core_settings_default(const CoreSettingsPage& p,
     return it == p.default_opts.end() ? (o.has_default ? o.default_value : std::string())
                                       : it->second;
 }
+// The core ABI carries stored enum values. Friendly text is presentation-only.
+const std::string& core_option_value_label(const retcomm::hub::CoreOptionDecl& option,
+                                           const std::string& value) {
+    static const std::string fit = "Fit to screen";
+    static const std::string original = "Original (4:3)";
+    if (option.key == "video.aspect") {
+        if (value == "fit") return fit;
+        if (value == "original") return original;
+    }
+    return value;
+}
+
 void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o,
                           const Theme& th) {
     std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
@@ -11639,18 +11685,19 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
     std::string t, f;
     if (o.type == "enum" && !o.values.empty()) {
         settings_row(label.c_str(), th, kSettingsCtrlW);
+        const std::string& display = core_option_value_label(o, cur);
         const std::string preview =
-            !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
-                           : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
+            !p.title_scope ? (set ? display : std::string(inherit_word) + ": " + display)
+                           : (cur == kTitleDeclaredValue ? std::string("Default") : display);
         if (ImGui::BeginCombo("##v", preview.c_str())) {
             if (!p.title_scope &&
-                ImGui::Selectable((std::string(inherit_word) + " (" + inherited + ")").c_str(),
+                ImGui::Selectable((std::string(inherit_word) + " (" + core_option_value_label(o, inherited) + ")").c_str(),
                                   !set))
                 layer.erase(o.key);
             for (const std::string& v : o.values) {
                 if (p.title_scope && v == kTitleDeclaredValue) continue;
                 const bool chosen = (set || p.title_scope) && v == cur;
-                if (ImGui::Selectable(v.c_str(), chosen)) layer[o.key] = v;
+                if (ImGui::Selectable(core_option_value_label(o, v).c_str(), chosen)) layer[o.key] = v;
                 if (chosen) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
@@ -11683,7 +11730,7 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
         const std::string default_value = core_settings_default(p, o);
         ImGui::SetTooltip("%s\n\n%s%s%s%s", o.description.c_str(), o.key.c_str(),
                           has_default ? "  \xC2\xB7  default " : "",
-                          has_default ? default_value.c_str() : "",
+                          has_default ? core_option_value_label(o, default_value).c_str() : "",
                           o.restart ? "\nApplies the next time a game starts." : "");
     }
     ImGui::PopID();
@@ -13480,23 +13527,24 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
     ImGui::PushID(o.key.c_str());
     std::string t, f;
     if (o.type == "enum" && !o.values.empty()) {
+        const std::string& display = core_option_value_label(o, cur);
         const std::string shown =
-            !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
-                           : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
+            !p.title_scope ? (set ? display : std::string(inherit_word) + ": " + display)
+                           : (cur == kTitleDeclaredValue ? std::string("Default") : display);
         if (ov::setting_row(m, "row", label.c_str(), shown, desc, true, p.title_scope && set))
             ov::open_picker("##pick");
         std::vector<ov::PickerChoice> choices;
         std::vector<std::string> vals; // "" = inherit
         int current = -1;
         if (!p.title_scope) {
-            choices.push_back({std::string(inherit_word) + " (" + inherited + ")", ""});
+            choices.push_back({std::string(inherit_word) + " (" + core_option_value_label(o, inherited) + ")", ""});
             vals.push_back("");
             if (!set) current = 0;
         }
         for (const std::string& v : o.values) {
             if (p.title_scope && v == kTitleDeclaredValue) continue;
             if ((set || p.title_scope) && v == cur) current = static_cast<int>(choices.size());
-            choices.push_back({v, ""});
+            choices.push_back({core_option_value_label(o, v), ""});
             vals.push_back(v);
         }
         const int pick = ov::picker(m, "##pick", label.c_str(), choices, current);
@@ -13577,7 +13625,7 @@ std::string option_summary_text(const CoreSettingsPage& p, const retcomm::hub::C
     std::string t, f;
     if (o.type == "bool" && bool_spelling(o, t, f))
         return (o.label.empty() ? o.key : o.label) + (cur == t ? " on" : " off");
-    return cur.empty() ? std::string("default") : cur;
+    return cur.empty() ? std::string("default") : core_option_value_label(o, cur);
 }
 
 struct CoreSection {

@@ -641,6 +641,15 @@ int main(int argc, char** argv) {
     test_transfer_pak(dir);
     test_tpak_library(dir);
     {
+        std::string err;
+        check(load_gameplay_diagnostics(dir, "kart"), "gameplay diagnostics default on");
+        check(save_gameplay_diagnostics(dir, "kart", false, &err), "gameplay diagnostics saves off");
+        check(!load_gameplay_diagnostics(dir, "kart"), "saved off choice is authoritative");
+        check(load_gameplay_diagnostics(dir, "zelda"), "other titles retain their defaults");
+        check(save_gameplay_diagnostics(dir, "kart", true, &err), "gameplay diagnostics saves on");
+        check(load_gameplay_diagnostics(dir, "kart"), "saved on choice reads back");
+    }
+    {
         // The host hotkeys round-trip through play.ini with the overlay's settings.
         PlayPrefs pr;
         check(pr.hotkeys == default_host_hotkeys(), "hotkeys start at the defaults");

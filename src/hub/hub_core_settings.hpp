@@ -386,6 +386,11 @@ struct PlayPrefs {
 PlayPrefs load_play_prefs(const fs::path& data_dir);
 bool save_play_prefs(const fs::path& data_dir, const PlayPrefs& prefs, std::string* error);
 
+// The Mods page's host-only recording choice for one Nintendo 64 title.
+bool load_gameplay_diagnostics(const fs::path& data_dir, const std::string& title_key);
+bool save_gameplay_diagnostics(const fs::path& data_dir, const std::string& title_key,
+                               bool enabled, std::string* error);
+
 // ---- display ------------------------------------------------------------------
 
 // How the hub scales the core's frame to the window (hub_picture.hpp). The
