@@ -11247,6 +11247,7 @@ struct CoreSettingsPage {
     // their own (the green Developer button), not beside the player's.
     bool developer_page = false;
     bool show_developer = false;
+    bool allow_developer = true;
     int configuring = -1;     // seat whose controller page is open
     retcomm::hub::PlatformInput cfg_backup; // the inputs when that page opened (Cancel restores)
     int cfg_backup_seat = -1;
@@ -11321,7 +11322,7 @@ CoreSettingsPage& core_settings_page() {
 bool core_settings_platform(const std::string& platform) { return platform == "n64"; }
 
 const char* core_settings_button_label(const std::string& platform) {
-    return platform == "n64" ? "n64lle Config" : "Core Config";
+    return platform == "n64" ? "n64llr Config" : "Core Config";
 }
 
 // A core the library knows for this platform: the title's own when it has
@@ -11348,7 +11349,8 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
                         const fs::path& package,
                         const retcomm::hub::CoreDescription* known = nullptr,
                         bool direct = false, const fs::path& title_dir = {},
-                        const std::map<std::string, std::string>& defaults = {}) {
+                        const std::map<std::string, std::string>& defaults = {},
+                        bool title_app = false) {
     CoreSettingsPage& p = core_settings_page();
     const fs::path& data = hub.paths.data_dir;
     p.platform = platform;
@@ -11381,7 +11383,8 @@ void open_core_settings(HubModel& hub, const std::string& platform, const std::s
     p.cfg_backup_seat = -1;
     p.gb_scanned = false;
     p.pak_note.clear();
-    p.show_developer = hub.cfg.show_developer_options;
+    p.allow_developer = platform != "n64" || (kLocalBuild && !title_app);
+    p.show_developer = p.allow_developer && hub.cfg.show_developer_options;
     p.configuring = -1;
     p.status.clear();
     cancel_core_capture(p);
@@ -14538,8 +14541,9 @@ void draw_core_page_overlay(HubModel& hub, CoreSettingsPage& p, const Theme& th,
     const float info_h = rows_page ? 64.f : 0.f;
     const float bar_h = dirty ? 70.f : 0.f;
     const float body_h = std::max(100.f, ImGui::GetContentRegionAvail().y - info_h - bar_h);
-    const std::vector<CoreSection> sections = p.global_only ? std::vector<CoreSection>{}
-                                                            : core_sections(p, kLocalBuild || p.show_developer);
+    const std::vector<CoreSection> sections =
+        p.global_only ? std::vector<CoreSection>{}
+                      : core_sections(p, p.allow_developer && (kLocalBuild || p.show_developer));
     if (!p.global_only && !p.section.empty() &&
         std::none_of(sections.begin(), sections.end(), [&](const CoreSection& c) { return c.name == p.section; }))
         p.section.clear();
@@ -15686,7 +15690,7 @@ void draw_core_settings_panel(HubModel& hub, const Theme& th, BoxartCache& boxar
             const float right = ImGui::GetWindowContentRegionMax().x;
             // Direct mode has no tab switch (its home page opens either tab); a
             // local build has the Developer page there instead.
-            const bool dev_button = p.direct && kLocalBuild;
+            const bool dev_button = p.direct && kLocalBuild && p.allow_developer;
             const bool top_button = !p.direct || dev_button;
             const float wrap_x = top_button ? right - kTabW - 12.f : right;
             const float desc_y = ImGui::GetCursorPosY();
@@ -17359,7 +17363,7 @@ DirectAction draw_direct_actions(DirectHome& h, HubModel& hub, const Theme& th) 
         auto open_tab = [&](bool gamepads) {
             open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core,
                                h.d.args.package, h.desc_ready ? &h.desc : nullptr,
-                               /*direct=*/true, h.title_dir, h.d.args.default_options);
+                               /*direct=*/true, h.title_dir, h.d.args.default_options, h.d.title_mode);
             core_settings_page().gamepads_tab = gamepads;
         };
         if (ImGui::Button("System", ImVec2(half, 0))) open_tab(false);
@@ -17855,7 +17859,8 @@ bool direct_step_back(DirectHome& h, HubModel& hub) {
 
 void open_direct_core_settings(DirectHome& h, HubModel& hub, const char* section) {
     open_core_settings(hub, h.platform, h.title_key, h.name, h.d.args.core, h.d.args.package,
-                       h.desc_ready ? &h.desc : nullptr, /*direct=*/true, h.title_dir, h.d.args.default_options);
+                       h.desc_ready ? &h.desc : nullptr, /*direct=*/true, h.title_dir,
+                       h.d.args.default_options, h.d.title_mode);
     core_settings_page().section = section;
 }
 
