@@ -11321,7 +11321,7 @@ CoreSettingsPage& core_settings_page() {
 bool core_settings_platform(const std::string& platform) { return platform == "n64"; }
 
 const char* core_settings_button_label(const std::string& platform) {
-    return platform == "n64" ? "n64lle Config" : "Core Config";
+    return platform == "n64" ? "n64llr Config" : "Core Config";
 }
 
 // A core the library knows for this platform: the title's own when it has

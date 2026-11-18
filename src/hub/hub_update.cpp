@@ -49,7 +49,8 @@ struct CoreChannel {
     const char* manifest;
 };
 constexpr CoreChannel kCoreChannels[] = {
-    {"n64lle", "RetroPortingToolKit/n64lle", "n64lle-release-manifest.json"},
+    {"n64llr", "RetroPortingToolKit/n64llr", "n64llr-release-manifest.json"},
+    {"n64lle", "RetroPortingToolKit/n64llr", "n64lle-release-manifest.json"},
 };
 
 std::string strip_v(const std::string& tag) {
