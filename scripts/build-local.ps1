@@ -13,7 +13,7 @@
 # <repo>\.cache\vcpkg (cloned and bootstrapped on first use).
 #
 # The prefix is checked before its path is printed: retro-hub.exe --version
-# must say `title_app 1` and list --package, the runner must answer --version.
+# must say `title_app 2` or newer and list --package, the runner must answer --version.
 # The LAST line written is always
 #   RETRO_HUB=<absolute path to retro-hub.exe>
 #
@@ -175,7 +175,10 @@ function Get-VersionReport([string]$Exe) {
 }
 $Hub = Join-Path $Out "retro-hub.exe"
 $report = Get-VersionReport $Hub
-if ($report -notmatch "(?m)^title_app 1\r?$") { Fail "$Hub --version has no 'title_app 1'" }
+$titleApp = [regex]::Match($report, '(?m)^title_app ([0-9]+)\r?$')
+if (!$titleApp.Success -or [int]$titleApp.Groups[1].Value -lt 2) {
+    Fail "$Hub --version needs 'title_app 2' or newer"
+}
 if ($report -notmatch "(?m)^direct_mode_flags .*--package") { Fail "$Hub --version lists no --package" }
 $runnerReport = Get-VersionReport (Join-Path $Out "retro-core-runner.exe")
 if ($runnerReport -notmatch "(?m)^game_package 1\r?$") { Fail "retro-core-runner.exe cannot load a game package (no 'game_package 1')" }
