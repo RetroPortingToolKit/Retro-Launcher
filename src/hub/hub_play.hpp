@@ -72,6 +72,7 @@ struct PlayArgs {
     std::map<std::string, std::string> options;
     std::map<std::string, std::string> default_options;
     bool gl = true;
+    bool record_gameplay_diagnostics = false;
     // Extra NAME=value for the runner, which passes its environment on to the
     // core: title-app mode sets RETRO_TITLE_STATE_DIR=<data dir> here.
     std::vector<std::string> env;
@@ -159,6 +160,8 @@ private:
     corelink::LaunchSpec launch_spec_;
     fs::path replays_dir_, replay_play_;
     std::optional<bool> recording_request_;
+    bool diagnostics_pending_ = false;
+    bool diagnostics_recording_ = false;
     corelink::ReplayState replay_seen_ = corelink::ReplayState::Idle;
     std::string replay_message_;
     fs::path replay_delete_;

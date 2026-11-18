@@ -3561,6 +3561,7 @@ struct ModsPageState {
     bool focus_list = false;      // set by the detail column, consumed next frame
     bool pending_rescan = false;  // a write landed; re-read once the panel is done
     bool detail = false;          // the overlay: one feature's page is open
+    bool record_gameplay = true;
 };
 
 // Right / Left as a player produces them: d-pad, left stick, or the arrow keys
@@ -3584,11 +3585,26 @@ ModsPageState& mods_page_state() {
     return s;
 }
 
+bool has_gameplay_diagnostics(const TitleRow& row) {
+    return row.platform == "n64" && !row.id.empty() &&
+           (row.kind == "core" || !row.core_manifest.empty());
+}
+
 void refresh_mods_page(HubModel& hub, const TitleRow& row) {
     ModsPageState& st = mods_page_state();
     st.scan = retcomm::scan_game_mods(title_game_dir(hub, row), fs::path(row.install_root),
                                       fs::path(row.mods_state_dir));
     st.title_id = row.id;
+    if (has_gameplay_diagnostics(row))
+        st.record_gameplay = retcomm::hub::load_gameplay_diagnostics(hub.paths.data_dir, row.id);
+}
+
+void set_gameplay_diagnostics(HubModel& hub, const TitleRow& row, bool enabled) {
+    std::string error;
+    if (retcomm::hub::save_gameplay_diagnostics(hub.paths.data_dir, row.id, enabled, &error))
+        mods_page_state().record_gameplay = enabled;
+    else
+        hub.append_log("Gameplay diagnostics: " + error);
 }
 
 // Every (package, feature) pair, flattened and grouped the way the left panel
@@ -3645,6 +3661,13 @@ void draw_mods_page(HubModel& hub, const Theme& th) {
     ImGui::TextUnformatted(row.name.c_str());
     ImGui::TextColored(th.text_muted, "%s", st.scan.root.string().c_str());
     ImGui::Separator();
+    if (has_gameplay_diagnostics(row)) {
+        bool enabled = st.record_gameplay;
+        if (ImGui::Checkbox("Gameplay diagnostics", &enabled))
+            set_gameplay_diagnostics(hub, row, enabled);
+        ImGui::TextWrapped("Record offline gameplay automatically. Find recordings in Replays.");
+        ImGui::Separator();
+    }
 
     auto set_all = [&](bool on) {
         std::string err;
@@ -4109,6 +4132,15 @@ void draw_shell_mods(HubModel& hub, const Theme& th, const retcomm::hub::overlay
             else if (r == 2) st.search[0] = '\0';
         }
         const std::string needle = st.search;
+        if (has_gameplay_diagnostics(row)) {
+            retcomm::ModPackageInfo diagnostics;
+            diagnostics.name = "Gameplay diagnostics";
+            if (mod_row_matches(diagnostics, nullptr, needle) &&
+                ov::setting_row(m, "gameplay_diagnostics", "Gameplay diagnostics",
+                                st.record_gameplay ? "On" : "Off",
+                                "Record offline gameplay automatically. Find recordings in Replays."))
+                set_gameplay_diagnostics(hub, row, !st.record_gameplay);
+        }
         if (!st.scan.root_exists)
             ov::muted("No mods folder yet. The engine creates mods/bundled at build time; mods/installed is where "
                       "packages are added.");
@@ -11049,6 +11081,8 @@ void apply_player_settings(retcomm::hub::PlayArgs& args, const fs::path& data_di
                            const std::string& title_key) {
     // The overlay's settings are every core's: loaded whatever the platform.
     args.prefs = retcomm::hub::load_play_prefs(data_dir);
+    args.record_gameplay_diagnostics = platform == "n64" && !title_key.empty() &&
+        retcomm::hub::load_gameplay_diagnostics(data_dir, title_key);
     args.data_dir = data_dir;
     args.exe_dir = exe_dir;
     if (platform.empty()) {

@@ -197,6 +197,13 @@ the core's settings are unavailable and labels the pad chips generically. Mods r
 `include/retcomm/mods.hpp` names (n64lle writes its selection to
 `<title dir>/mods.toml`).
 
+For Nintendo 64 titles, **Gameplay diagnostics** appears on the Mods page.
+It records offline gameplay by default, with a saved choice for each title.
+Open Replays to inspect the recordings. A save or load seals the current
+recording and starts a new segment when play resumes. Automatic recording
+requires a compatible runner and stays off during netplay and accessory
+sessions. The usual in-session replay hotkey still works.
+
 **The runner.** Direct mode finds `retro-core-runner` the way the launcher does
 (`resolve_runner`, `src/update/runtime_update.cpp`), in this order:
 

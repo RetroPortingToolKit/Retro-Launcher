@@ -35,20 +35,28 @@ constexpr std::uint64_t kTurboBudgetNs = 10 * 1000000ull;
 constexpr double kTurboSoundLowMs = 40.0;
 constexpr double kTurboSoundHighMs = 100.0;
 
-// Whether the runner can lend a core a GL context (`gl 1` in its --version).
-// A runner built without SDL3 -- the Android APK's -- exits on --gl, so a
-// session asks for one only when the runner says it has one. Asked once per
-// runner for the life of the hub; a runner that cannot be asked keeps the
-// old behaviour (its start will say what is wrong).
-bool runner_lends_gl(const fs::path& runner) {
-    static std::map<std::string, bool> known;
+struct RunnerFeatures {
+    bool gl = true;
+    bool safe_interactive_recording = false;
+};
+
+// Keep the existing GL fallback when a version probe fails. Automatic
+// diagnostics requires a runner that can record without blocking saves.
+RunnerFeatures runner_features(const fs::path& runner) {
+    static std::map<std::string, RunnerFeatures> known;
     const std::string key = corelink::path_utf8(runner);
     if (auto it = known.find(key); it != known.end()) return it->second;
     corelink::RunnerVersion v;
     std::string err;
-    const bool gl = corelink::probe_runner(runner, v, &err) ? v.gl : true;
-    known.emplace(key, gl);
-    return gl;
+    RunnerFeatures features;
+    if (corelink::probe_runner(runner, v, &err)) {
+        features.gl = v.gl;
+#if defined(RETRO_CORELINK_HAS_SAFE_INTERACTIVE_RECORDING)
+        features.safe_interactive_recording = v.safe_interactive_recording;
+#endif
+    }
+    known.emplace(key, features);
+    return features;
 }
 constexpr double kTurboFadeMs = 4.0;
 constexpr int kVolumeStep = 10;
@@ -133,7 +141,9 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.gpu_capabilities = gpu_frames_.capabilities();
     spec.cpu_pixel_pairs = Picture::supports_pixel_pairs();
     spec.save_dir = save_dir;
-    spec.gl = args.gl && runner_lends_gl(runner);
+    const RunnerFeatures features = args.gl || args.record_gameplay_diagnostics
+        ? runner_features(runner) : RunnerFeatures{};
+    spec.gl = args.gl && features.gl;
     if (args.gl && !spec.gl)
         SDL_Log("retro-hub: %s lends no GL context (gl 0); the core runs without one",
                 corelink::path_utf8(runner).c_str());
@@ -142,6 +152,13 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
     spec.env = args.env;
     spec.extra_args = args.net_args;
     netplay_ = !args.net_args.empty();
+    recording_request_.reset();
+    diagnostics_recording_ = false;
+    diagnostics_pending_ = args.record_gameplay_diagnostics &&
+        features.safe_interactive_recording && !netplay_ &&
+        std::none_of(args.tpak_rom.begin(), args.tpak_rom.end(),
+                     [](const std::string& rom) { return !rom.empty(); }) &&
+        std::none_of(args.vru_seat.begin(), args.vru_seat.end(), [](bool active) { return active; });
     for (std::size_t seat = 0; seat < args.tpak_save.size(); ++seat)
         if (!args.tpak_rom[seat].empty() && !args.tpak_save[seat].empty())
             spec.save_files["tpak" + std::to_string(seat + 1)] = args.tpak_save[seat];
@@ -381,6 +398,9 @@ void PlaySession::service_states() {
             }
             const bool sent = save ? link_.request_save_state(state_request_.path, thumbnail)
                                    : link_.request_load_state(state_request_.path);
+            if (sent && diagnostics_recording_ &&
+                link_.replay_status().state == corelink::ReplayState::Recording)
+                diagnostics_pending_ = true;
             if (!sent) states_.finish(false, save, "the link could not send the request");
             state_request_ = Req{};
         }
@@ -693,6 +713,8 @@ void PlaySession::toggle_recording() {
     if (state==corelink::ReplayState::Playing) {
         osd_.toast("Recording is off during replay playback",SDL_GetTicksNS()); return;
     }
+    diagnostics_pending_ = false;
+    diagnostics_recording_ = false;
     recording_request_=state!=corelink::ReplayState::Recording;
 }
 
@@ -706,7 +728,16 @@ void PlaySession::service_replays() {
         else if (status.state==corelink::ReplayState::TakenOver) replay_message_="Live input took over";
         else if (status.state==corelink::ReplayState::Recording) replay_message_="Recording replay";
         else replay_message_.clear();
-        if (!replay_message_.empty()) osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
+        if (!replay_message_.empty() && !diagnostics_recording_)
+            osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
+    }
+    if (diagnostics_pending_ && !paused() && link_.can_grant()) {
+        diagnostics_pending_ = false;
+        if (link_.replays_supported() && !recording_request_ &&
+            (status.state == corelink::ReplayState::Idle || status.state == corelink::ReplayState::Saved)) {
+            diagnostics_recording_ = true;
+            recording_request_ = true;
+        }
     }
     if (recording_request_ && link_.can_grant()) {
         const bool record=*recording_request_;
@@ -724,14 +755,24 @@ void PlaySession::service_replays() {
             if (!pixels.empty()) info.pixels=retro::state::make_thumbnail(pixels.data(),w,h,w*4);
             info.aspect=picture_.aspect(); preview=std::move(info);
         }
-        if (ec || !link_.request_recording(record,path)) {
+#if defined(RETRO_CORELINK_HAS_SAFE_INTERACTIVE_RECORDING)
+        const bool sent = !ec && link_.request_recording(record, path, diagnostics_recording_);
+#else
+        const bool sent = !ec && link_.request_recording(record, path);
+#endif
+        if (!sent) {
             replay_message_=ec ? ec.message() : "The replay request could not be sent";
-            osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
+            if (!diagnostics_recording_) osd_.toast(replay_message_,SDL_GetTicksNS(),3000);
         }
         else if (record) replay_preview_=std::move(preview);
         recording_request_.reset();
     }
     if (!replay_play_.empty() && link_.can_grant()) {
+        if (diagnostics_recording_ && status.state==corelink::ReplayState::Recording) {
+            recording_request_ = false;
+            diagnostics_pending_ = false;
+            return;
+        }
         const auto path=replay_play_; replay_play_.clear();
         if (status.state==corelink::ReplayState::Recording) {
             replay_message_="Stop recording before playing a replay"; return;
@@ -792,7 +833,7 @@ void PlaySession::draw_overlay() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    if (link_.replay_status().state==corelink::ReplayState::Recording) {
+    if (!diagnostics_recording_ && link_.replay_status().state==corelink::ReplayState::Recording) {
         dl->AddCircleFilled(ImVec2(disp.x-88.f,26.f),6.f,IM_COL32(240,48,48,255));
         dl->AddText(ImVec2(disp.x-74.f,18.f),IM_COL32(255,255,255,255),"REC");
     }
@@ -928,7 +969,8 @@ void PlaySession::draw_replays_page() {
         ImGui::TextDisabled("%s  |  %s",state_time_text(info.saved_unix).c_str(),replay_duration(info).c_str());
         ImGui::TextWrapped("%s",info.path.filename().u8string().c_str());
         ImGui::TextWrapped("Play starts a fresh process. Release controls once, then use a button or stick to take over. Playback saves stay private.");
-        ImGui::BeginDisabled(!link_.replays_supported() || state==corelink::ReplayState::Recording || !info.sealed);
+        ImGui::BeginDisabled(!link_.replays_supported() ||
+            (state == corelink::ReplayState::Recording && !diagnostics_recording_) || !info.sealed);
         if (hov::action_button("Play",true)) replay_play_=info.path;
         ImGui::EndDisabled(); ImGui::SameLine();
         if (hov::action_button("Export copy",false)) {
