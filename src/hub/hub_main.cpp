@@ -11657,6 +11657,18 @@ std::string core_settings_default(const CoreSettingsPage& p,
     return it == p.default_opts.end() ? (o.has_default ? o.default_value : std::string())
                                       : it->second;
 }
+// The core ABI carries stored enum values. Friendly text is presentation-only.
+const std::string& core_option_value_label(const retcomm::hub::CoreOptionDecl& option,
+                                           const std::string& value) {
+    static const std::string fit = "Fit to screen";
+    static const std::string original = "Original (4:3)";
+    if (option.key == "video.aspect") {
+        if (value == "fit") return fit;
+        if (value == "original") return original;
+    }
+    return value;
+}
+
 void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl& o,
                           const Theme& th) {
     std::map<std::string, std::string>& layer = p.title_scope ? p.title_opts : p.plat_opts;
@@ -11673,18 +11685,19 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
     std::string t, f;
     if (o.type == "enum" && !o.values.empty()) {
         settings_row(label.c_str(), th, kSettingsCtrlW);
+        const std::string& display = core_option_value_label(o, cur);
         const std::string preview =
-            !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
-                           : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
+            !p.title_scope ? (set ? display : std::string(inherit_word) + ": " + display)
+                           : (cur == kTitleDeclaredValue ? std::string("Default") : display);
         if (ImGui::BeginCombo("##v", preview.c_str())) {
             if (!p.title_scope &&
-                ImGui::Selectable((std::string(inherit_word) + " (" + inherited + ")").c_str(),
+                ImGui::Selectable((std::string(inherit_word) + " (" + core_option_value_label(o, inherited) + ")").c_str(),
                                   !set))
                 layer.erase(o.key);
             for (const std::string& v : o.values) {
                 if (p.title_scope && v == kTitleDeclaredValue) continue;
                 const bool chosen = (set || p.title_scope) && v == cur;
-                if (ImGui::Selectable(v.c_str(), chosen)) layer[o.key] = v;
+                if (ImGui::Selectable(core_option_value_label(o, v).c_str(), chosen)) layer[o.key] = v;
                 if (chosen) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
@@ -11717,7 +11730,7 @@ void draw_core_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDec
         const std::string default_value = core_settings_default(p, o);
         ImGui::SetTooltip("%s\n\n%s%s%s%s", o.description.c_str(), o.key.c_str(),
                           has_default ? "  \xC2\xB7  default " : "",
-                          has_default ? default_value.c_str() : "",
+                          has_default ? core_option_value_label(o, default_value).c_str() : "",
                           o.restart ? "\nApplies the next time a game starts." : "");
     }
     ImGui::PopID();
@@ -13514,23 +13527,24 @@ void overlay_option_row(CoreSettingsPage& p, const retcomm::hub::CoreOptionDecl&
     ImGui::PushID(o.key.c_str());
     std::string t, f;
     if (o.type == "enum" && !o.values.empty()) {
+        const std::string& display = core_option_value_label(o, cur);
         const std::string shown =
-            !p.title_scope ? (set ? cur : std::string(inherit_word) + ": " + cur)
-                           : (cur == kTitleDeclaredValue ? std::string("Default") : cur);
+            !p.title_scope ? (set ? display : std::string(inherit_word) + ": " + display)
+                           : (cur == kTitleDeclaredValue ? std::string("Default") : display);
         if (ov::setting_row(m, "row", label.c_str(), shown, desc, true, p.title_scope && set))
             ov::open_picker("##pick");
         std::vector<ov::PickerChoice> choices;
         std::vector<std::string> vals; // "" = inherit
         int current = -1;
         if (!p.title_scope) {
-            choices.push_back({std::string(inherit_word) + " (" + inherited + ")", ""});
+            choices.push_back({std::string(inherit_word) + " (" + core_option_value_label(o, inherited) + ")", ""});
             vals.push_back("");
             if (!set) current = 0;
         }
         for (const std::string& v : o.values) {
             if (p.title_scope && v == kTitleDeclaredValue) continue;
             if ((set || p.title_scope) && v == cur) current = static_cast<int>(choices.size());
-            choices.push_back({v, ""});
+            choices.push_back({core_option_value_label(o, v), ""});
             vals.push_back(v);
         }
         const int pick = ov::picker(m, "##pick", label.c_str(), choices, current);
@@ -13611,7 +13625,7 @@ std::string option_summary_text(const CoreSettingsPage& p, const retcomm::hub::C
     std::string t, f;
     if (o.type == "bool" && bool_spelling(o, t, f))
         return (o.label.empty() ? o.key : o.label) + (cur == t ? " on" : " off");
-    return cur.empty() ? std::string("default") : cur;
+    return cur.empty() ? std::string("default") : core_option_value_label(o, cur);
 }
 
 struct CoreSection {
