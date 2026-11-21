@@ -643,7 +643,7 @@ void PlaySession::upload_frame() {
 
 void PlaySession::service_review() {
     if (review_dir_.empty() || link_.state() != corelink::LinkState::Ready) return;
-    if (review_first_picture_ && link_.frames_done() != 0) {
+    if (review_first_picture_ && control_ready()) {
         review_first_picture_ = false;
         review_paused_ = true;
         review_pause_ack_ = true;
