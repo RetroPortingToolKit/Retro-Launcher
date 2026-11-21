@@ -17817,6 +17817,8 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
     const auto eeprom = netplay.find("eeprom_bytes");
     if (eeprom != netplay.end() && (eeprom->second == "512" || eeprom->second == "2048")) {
         sc.eeprom_bytes = eeprom->second == "512" ? 512 : 2048;
+        const auto writeback = netplay.find("eeprom_writeback");
+        sc.eeprom_writeback = writeback != netplay.end() && writeback->second == "true";
         sc.read_eeprom = [&h, &hub, size = sc.eeprom_bytes](std::string* data, std::string* error) {
             retcomm::hub::PlayArgs args = h.d.args;
             apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
@@ -18421,6 +18423,8 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = err;
         return false;
     }
+    std::string argv;
+    for (const auto& a : args.net_args) argv += " " + a;
     const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /
                           ("session-" + std::to_string(l.session_id));
     std::error_code ec;
@@ -18455,6 +18459,12 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
             *why = "Could not stage the host's campaign save for the match.";
             return false;
         }
+        if (l.host && h.net_scope.eeprom_writeback) {
+            const fs::path campaign = session_save_dir(hub.paths.data_dir, h.title_key, h.title_dir, args) /
+                                      "eeprom.sav";
+            args.net_args.insert(args.net_args.end(),
+                {"--net-confirmed-eeprom", retro::corelink::path_utf8(campaign)});
+        }
     }
     // Transfer Pak lobbies: every seat's cartridge and a copy of the save the
     // room exchanged. The copies are the match's; nobody's real save is
@@ -18478,8 +18488,6 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = "Cannot start the match: " + err;
         return false;
     }
-    std::string argv;
-    for (const auto& a : args.net_args) argv += " " + a;
     std::fprintf(stderr, "retro-hub: netplay match %u, seat %d of %d:%s\n", l.session_id,
                  l.seat + 1, l.slots, argv.c_str());
     return true;
