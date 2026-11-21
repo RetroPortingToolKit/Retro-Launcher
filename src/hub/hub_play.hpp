@@ -123,7 +123,7 @@ public:
     bool control_ready() const { return link_.state() == corelink::LinkState::Ready && !picture_.empty(); }
     bool control_paused() const { return paused(); }
     void control_pause() { set_paused(true); }
-    bool control_grant(const rcore_pad& pad);
+    bool control_grant(const rcore_pad (&pads)[RCORE_MAX_SEATS]);
     std::string control_picture();
 
 private:

@@ -11,6 +11,7 @@ Connect to `127.0.0.1` using one local client. Send one ASCII command per line a
 | `status` | `loading`, `paused`, or `playing` |
 | `capture` | The current game picture as a binary PPM, without the launcher overlay |
 | `step FRAMES BUTTONS LX LY RX RY` | Advance 1–10,000 fields with the specified seat-one input, then stay paused. The reply has an empty body. |
+| `step-pads FRAMES SEATS BUTTONS LX LY RX RY ...` | Advance with one input group per connected seat, in seat order. The reply has an empty body. |
 | `close` | Finish the Direct session using normal save and shutdown handling. The reply has an empty body. |
 
 Pass decimal numbers and use `0` for neutral axes. `BUTTONS` uses the 16 generic `RCORE_PAD_*` bits. For N64, `1` is A, `4` is B, `64` is Z, and `1024` is Start. Axes range from -32768 to 32767. Positive `LY` moves the N64 analog stick up. The N64 core maps the right stick to C Buttons, with positive `RY` for C-Up. `step 3 0 0 0 0 0` advances three fields with neutral input.

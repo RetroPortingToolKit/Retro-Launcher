@@ -719,11 +719,8 @@ void PlaySession::tick(SDL_Window* window) {
     }
 }
 
-bool PlaySession::control_grant(const rcore_pad& pad) {
+bool PlaySession::control_grant(const rcore_pad (&pads)[RCORE_MAX_SEATS]) {
     if (!paused() || !link_.can_grant()) return false;
-    rcore_pad pads[RCORE_MAX_SEATS]{};
-    for (auto& seat : pads) seat.struct_size = sizeof(rcore_pad);
-    pads[0] = pad;
 #if defined(RETCOMM_LINK_PRESENTATION_SIZE)
     return link_.grant(pads, presentation_width_, presentation_height_);
 #else

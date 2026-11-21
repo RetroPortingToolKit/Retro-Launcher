@@ -18755,7 +18755,7 @@ public:
             } else if (play.control_field() >= step_target) {
                 reply(play, true);
             } else {
-                if (play.control_granted() < step_target) play.control_grant(step_pad);
+                if (play.control_granted() < step_target) play.control_grant(step_pads);
                 return true;
             }
             step_target = 0;
@@ -18778,22 +18778,17 @@ public:
             const auto image = play.control_picture();
             if (image.empty()) reply(play, false, "no picture");
             else reply(play, true, image);
-        } else if (operation == "step") {
-            unsigned count = 0, buttons = 0;
-            std::array<int, 4> axes{};
-            if (!(fields >> count >> buttons >> axes[0] >> axes[1] >> axes[2] >> axes[3]) ||
-                (fields >> extra) || count < 1 || count > 10000 || buttons > 0xffff ||
-                std::any_of(axes.begin(), axes.end(), [](int v) { return v < -32768 || v > 32767; })) {
-                reply(play, false, "usage: step frames buttons lx ly rx ry");
+        } else if (operation == "step" || operation == "step-pads") {
+            const bool multiple = operation == "step-pads";
+            unsigned count = 0, seats = 1;
+            if (!(fields >> count) || (multiple && !(fields >> seats)) ||
+                count < 1 || count > 10000 || seats < 1 || seats > RCORE_MAX_SEATS ||
+                !read_step_pads(fields, seats) || (fields >> extra)) {
+                reply(play, false, multiple ? "usage: step-pads frames seats [buttons lx ly rx ry] per seat"
+                                            : "usage: step frames buttons lx ly rx ry");
             } else if (!play.control_paused()) {
                 reply(play, false, "pause the game first");
             } else {
-                step_pad = {};
-                step_pad.struct_size = sizeof(rcore_pad);
-                step_pad.connected = 1;
-                step_pad.buttons = buttons;
-                for (std::size_t i = 0; i < axes.size(); ++i)
-                    step_pad.axes[i] = static_cast<std::int16_t>(axes[i]);
                 step_target = play.control_field() + count;
             }
         } else {
@@ -18803,13 +18798,35 @@ public:
     }
 
 private:
+    bool read_step_pads(std::istream& fields, unsigned seats) {
+        for (auto& pad : step_pads) {
+            pad = {};
+            pad.struct_size = sizeof(rcore_pad);
+        }
+        for (unsigned seat = 0; seat < seats; ++seat) {
+            unsigned buttons = 0;
+            std::array<int, 4> axes{};
+            if (!(fields >> buttons >> axes[0] >> axes[1] >> axes[2] >> axes[3]) ||
+                buttons > 0xffff ||
+                std::any_of(axes.begin(), axes.end(), [](int v) { return v < -32768 || v > 32767; })) {
+                return false;
+            }
+            auto& pad = step_pads[seat];
+            pad.connected = 1;
+            pad.buttons = buttons;
+            for (std::size_t i = 0; i < axes.size(); ++i)
+                pad.axes[i] = static_cast<std::int16_t>(axes[i]);
+        }
+        return true;
+    }
+
     void reply(const retcomm::hub::PlaySession& play, bool ok, const std::string& payload = {}) {
         socket.reply((ok ? "ok " : "error ") + std::to_string(play.control_field()) + ' ' +
                   std::to_string(payload.size()) + '\n' + payload);
     }
 
     retcomm::hub::GameControlSocket socket;
-    rcore_pad step_pad{};
+    rcore_pad step_pads[RCORE_MAX_SEATS]{};
     std::uint64_t step_target = 0;
     bool started = false;
     bool closing = false;
