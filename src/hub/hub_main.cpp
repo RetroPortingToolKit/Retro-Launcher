@@ -17795,6 +17795,8 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
              (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
     sc.max_slots = 4;
     const auto netplay = read_toml_section(h.title_dir / "game.toml", "netplay");
+    const auto recover_connection = netplay.find("recover_connection");
+    sc.recover_connection = recover_connection != netplay.end() && recover_connection->second == "true";
     const auto match_mods = netplay.find("gameplay_mods");
     if (match_mods != netplay.end() && match_mods->second == "true") {
         sc.resolve_mod_plan = [&h, &hub] {
@@ -18423,6 +18425,8 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = err;
         return false;
     }
+    if (h.net_scope.recover_connection)
+        args.net_args.push_back("--net-recover-connection");
     std::string argv;
     for (const auto& a : args.net_args) argv += " " + a;
     const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /

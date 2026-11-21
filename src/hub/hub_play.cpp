@@ -831,6 +831,15 @@ void PlaySession::draw_browser_tabs() {
 
 void PlaySession::draw_overlay() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    if (link_.netplay_waiting()) {
+        ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 24.f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(480.f, disp.x * 0.9f), 0.f), ImGuiCond_Always);
+        ImGui::Begin("##play_netplay_waiting", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::TextWrapped("Waiting for the other player to reconnect");
+        ImGui::End();
+    }
     std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     if (!diagnostics_recording_ && link_.replay_status().state==corelink::ReplayState::Recording) {

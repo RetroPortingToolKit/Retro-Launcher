@@ -82,6 +82,7 @@ struct NetplayScope {
     std::function<std::future<NetplayModPlan>()> resolve_mod_plan;
     std::size_t eeprom_bytes = 0;
     bool eeprom_writeback = false;
+    bool recover_connection = false;
     std::function<bool(std::string* data, std::string* error)> read_eeprom;
     // "" when all three Transfer Pak cartridges are set and check out.
     std::function<std::string()> tpak_problem;
