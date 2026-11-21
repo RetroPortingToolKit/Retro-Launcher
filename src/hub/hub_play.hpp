@@ -118,6 +118,14 @@ public:
     bool finished() const { return finished_; }
     void shutdown();
 
+    std::uint64_t control_field() const { return link_.frames_done(); }
+    std::uint64_t control_granted() const { return link_.frames_granted(); }
+    bool control_ready() const { return link_.state() == corelink::LinkState::Ready && !picture_.empty(); }
+    bool control_paused() const { return paused(); }
+    void control_pause() { set_paused(true); }
+    bool control_grant(const rcore_pad& pad);
+    std::string control_picture();
+
 private:
     void fill_pads(rcore_pad pads[RCORE_MAX_SEATS]);
     void grant(std::uint64_t now);
