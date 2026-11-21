@@ -21,6 +21,37 @@ inline bool valid_room_mod_plan(const std::string& value) {
     }));
 }
 
+// The caller supplies the scan of a disposable match profile. A title may
+// choose a session setting of an enabled mod, leaving the saved profile alone.
+inline bool stage_room_mod_options(const ModScanResult& scan,
+                                   const std::map<std::string, std::string>& overrides,
+                                   std::string* error) {
+    if (scan.layout != ModLayout::N64lle) return true;
+    for (const auto& pkg : scan.packages) {
+        const auto entry = overrides.find(pkg.id);
+        if (entry == overrides.end() ||
+            std::none_of(pkg.features.begin(), pkg.features.end(), [](const auto& feature) { return feature.enabled; })) {
+            continue;
+        }
+        const auto& setting = entry->second;
+        const auto split = setting.find('=');
+        const auto key = setting.substr(0, split);
+        const auto option = std::find_if(pkg.options.begin(), pkg.options.end(),
+                                        [&](const auto& item) { return item.id == key; });
+        if (split == std::string::npos || option == pkg.options.end()) {
+            *error = "The title declared an unsupported match setting for " + pkg.name + ".";
+            return false;
+        }
+        const auto feature = std::find_if(pkg.features.begin(), pkg.features.end(),
+                                          [&](const auto& item) { return item.id == option->feature_id; });
+        if (feature != pkg.features.end() && feature->enabled &&
+            !set_scanned_mod_option(scan, {}, pkg, option->feature_id, key, setting.substr(split + 1), error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline nlohmann::json write_room_mods(const std::vector<N64MatchMod>& mods) {
     auto result = nlohmann::json::array();
     for (const auto& mod : mods) {

@@ -1,6 +1,8 @@
 #include "hub/hub_netplay_campaign.hpp"
 #include "hub/hub_netplay_options.hpp"
+#include <chrono>
 #include <cstdio>
+#include <fstream>
 
 using namespace retcomm::hub;
 
@@ -74,6 +76,13 @@ int main() {
     active.id = "native-actor";
     active.enabled = true;
     story.features = {active};
+    retcomm::ModOptionInfo camera;
+    camera.feature_id = active.id;
+    camera.id = "camera";
+    camera.type = "choice";
+    camera.default_value = camera.value = "unified";
+    camera.choices = {{"unified", "Unified"}, {"split", "Split"}};
+    story.options = {camera};
     retcomm::ModPackageInfo bonus = story;
     bonus.id = "yoshisstory.bonus-roster";
     bonus.features[0].id = "main";
@@ -98,6 +107,36 @@ int main() {
         received[0].version = story.version;
         received[0].features.push_back("native-actor");
         check(!retcomm::n64_match_mods_toml(mods, received, &toml, &error), "refuse repeated features");
+    }
+
+    const auto profile = retcomm::fs::temp_directory_path() /
+        ("retcomm-match-options-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    if (retcomm::fs::create_directory(profile)) {
+        mods.selection = profile / "mods.toml";
+        const auto read_selection = [&] {
+            std::ifstream in(mods.selection);
+            std::ostringstream text;
+            text << in.rdbuf();
+            return text.str();
+        };
+        const std::string other = "[unrelated]\nenabled = \"item\"\n";
+        std::ofstream(mods.selection) << other;
+        const std::map<std::string, std::string> overrides = {{story.id, "camera=split"}};
+        check(stage_room_mod_options(mods, overrides, &error) && read_selection() == other,
+              "a room option does not turn on a disabled mod");
+        mods.packages[0].features[0].enabled = true;
+        check(stage_room_mod_options(mods, overrides, &error), "stage the enabled mod's match camera");
+        const auto staged = read_selection();
+        check(staged.find(other) != std::string::npos &&
+              staged.find("options = \"camera=split\"") != std::string::npos &&
+              mods.packages[0].options[0].value == "unified",
+              "the disposable profile gets Split and leaves other choices intact");
+        check(!stage_room_mod_options(mods, {{story.id, "camera=unknown"}}, &error) &&
+              read_selection() == staged, "reject unsupported declared match values");
+        retcomm::fs::remove(mods.selection);
+        retcomm::fs::remove(profile);
+    } else {
+        check(false, "create a disposable match profile");
     }
 
     using retcomm::netplay::Member;

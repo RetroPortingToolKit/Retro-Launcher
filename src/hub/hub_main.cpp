@@ -17724,6 +17724,19 @@ retcomm::hub::NetplayModPlan resolve_direct_mod_plan(const fs::path& runner,
     const auto choices = work / "mods.toml";
     if (fs::exists(saved_choices, ec)) fs::copy_file(saved_choices, choices, ec);
     if (ec) return {{}, "Could not read the saved gameplay mod choices. " + ec.message()};
+    const auto match_setting = read_toml_section(title_dir / "game.toml", "netplay.mod_options");
+    if (!match_setting.empty()) {
+        const auto package = match_setting.find("package");
+        const auto setting = match_setting.find("setting");
+        if (package == match_setting.end() || package->second.empty() || setting == match_setting.end()) {
+            return {{}, "The title's match mod setting needs a package and an option value."};
+        }
+        const std::map<std::string, std::string> overrides = {{package->second, setting->second}};
+        std::string error;
+        if (!retcomm::hub::stage_room_mod_options(retcomm::scan_game_mods(title_dir, {}, work), overrides, &error)) {
+            return {{}, std::move(error)};
+        }
+    }
     retro::corelink::SpawnSpec spec;
     spec.args = {path_utf8(runner), "--resolve-mod-plan", "--core", path_utf8(args.core),
                  "--rom", args.rom, "--title-dir", path_utf8(title_dir), "--out", path_utf8(work)};
