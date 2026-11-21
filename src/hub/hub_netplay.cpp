@@ -1,4 +1,5 @@
 #include "hub/hub_netplay.hpp"
+#include "hub/hub_netplay_campaign.hpp"
 #include "hub/hub_netplay_options.hpp"
 #include "hub/hub_overlay.hpp"
 
@@ -417,6 +418,7 @@ struct Page {
     bool pak_ready = false;
     NetplayPak my_pak;
     std::string pak_note;
+    CampaignSave campaign;
 
     // Library games (docs/NETPLAY_HANDOFF.md): the game this hub starts into
     // the match its lobby negotiates. Everything the game's own lobby would
@@ -454,49 +456,6 @@ struct Page {
 
 constexpr int kPakSignal = 0x5450; // "TP"
 constexpr std::size_t kPakChunk = 12288;
-
-const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-std::string b64_encode(const std::string& in) {
-    std::string out;
-    std::size_t i = 0;
-    for (; i + 2 < in.size(); i += 3) {
-        const unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
-                           (static_cast<unsigned char>(in[i + 1]) << 8) |
-                           static_cast<unsigned char>(in[i + 2]);
-        out += kB64[v >> 18];
-        out += kB64[(v >> 12) & 63];
-        out += kB64[(v >> 6) & 63];
-        out += kB64[v & 63];
-    }
-    if (i < in.size()) {
-        unsigned v = static_cast<unsigned char>(in[i]) << 16;
-        if (i + 1 < in.size()) v |= static_cast<unsigned char>(in[i + 1]) << 8;
-        out += kB64[v >> 18];
-        out += kB64[(v >> 12) & 63];
-        out += i + 1 < in.size() ? kB64[(v >> 6) & 63] : '=';
-        out += '=';
-    }
-    return out;
-}
-
-bool b64_decode(const std::string& in, std::string* out) {
-    out->clear();
-    unsigned v = 0;
-    int bits = 0;
-    for (char c : in) {
-        if (c == '=') break;
-        const char* at = std::strchr(kB64, c);
-        if (!at || !c) return false;
-        v = (v << 6) | static_cast<unsigned>(at - kB64);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out->push_back(static_cast<char>((v >> bits) & 0xFF));
-        }
-    }
-    return true;
-}
 
 Page& page() {
     static Page p;
@@ -1412,6 +1371,10 @@ bool paks_complete(const np::Snapshot& s) {
     return true;
 }
 
+std::string campaign_save_problem(const Page& p, const np::Snapshot& s) {
+    return p.scope && p.scope->eeprom_bytes ? p.campaign.problem(s) : std::string();
+}
+
 void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
     Page& p = page();
     const np::Snapshot& s = p.snap;
@@ -1558,9 +1521,11 @@ void draw_room(HubModel& hub, const Theme& th, const std::vector<Game>& games) {
                                     : std::string();
         const std::string match_why =
             p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
+        const std::string save_why = campaign_save_problem(p, s);
         const char* why = seated < 2   ? "Waiting for another player to join"
                           : !lib_why.empty() ? lib_why.c_str()
                           : !match_why.empty() ? match_why.c_str()
+                          : !save_why.empty() ? save_why.c_str()
                           : tpak_room && !paks_complete(s)
                                          ? "Waiting for every player's Transfer Pak"
                                          : nullptr;
@@ -1914,7 +1879,7 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
                 }
             }
             for (auto it = s.match_caps.begin(); it != s.match_caps.end(); ++it) {
-                if (it.key() == "v" || it.key() == "mods" || it.key() == "core_options") continue;
+                if (it.key() == "v" || it.key() == "mods" || it.key() == "mod_plan" || it.key() == "core_options") continue;
                 ImGui::Text("%s: %s", it.key().c_str(), it->dump().c_str());
             }
         }
@@ -2672,9 +2637,11 @@ void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
                                     : lib->settle_f.valid() ? std::string("Settling the match...")
                                                             : std::string();
         const std::string match_why = p.scope && p.scope->match_problem ? p.scope->match_problem() : std::string();
+        const std::string save_why = campaign_save_problem(p, s);
         play_why = seated < 2 ? std::string("Waiting for another player to join")
                    : !lib_why.empty() ? lib_why
                    : !match_why.empty() ? match_why
+                   : !save_why.empty() ? save_why
                    : tpak_room && p.scope && !paks_complete(s) ? std::string("Waiting for every player's Transfer Pak")
                                                                 : std::string();
         ImGui::SameLine(0, 8.f);
@@ -2746,7 +2713,7 @@ void ov_room(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
         }
         if (s.match_caps.is_object() && !s.match_caps.empty())
             for (auto it = s.match_caps.begin(); it != s.match_caps.end(); ++it) {
-                if (it.key() == "v" || it.key() == "mods" || it.key() == "core_options") continue;
+                if (it.key() == "v" || it.key() == "mods" || it.key() == "mod_plan" || it.key() == "core_options") continue;
                 ov::value_row(m, it.key().c_str(), it.key().c_str(), it->dump());
             }
     }
@@ -2956,7 +2923,13 @@ void ingest(HubModel& hub) {
         if (p.scope && p.scope->pin == pending.seat.version && !s.in_room) {
             if (plan.error.empty()) {
                 pending.caps["core_options"][kRoomModPlan] = plan.fingerprint;
-                finish_direct_lobby(p, pending.seat, pending.caps);
+                pending.caps["mod_plan"] = write_room_mods(plan.mods);
+                std::vector<N64MatchMod> encoded;
+                if (read_room_mods(pending.caps, &encoded)) {
+                    finish_direct_lobby(p, pending.seat, pending.caps);
+                } else {
+                    p.status = "The selected gameplay mods do not fit the lobby's mod plan.";
+                }
             } else {
                 p.status = plan.error;
             }
@@ -3160,6 +3133,14 @@ void ingest(HubModel& hub) {
         }
     }
 
+    if (p.scope) {
+        p.campaign.sync(s, p.scope->eeprom_bytes, p.scope->read_eeprom,
+                        [&](const auto& text, const auto& recipient) {
+                            p.client.signal(CampaignSave::signal_type, text, recipient);
+                        });
+    } else {
+        p.campaign = {};
+    }
     if (s.launch_pending) {
         const long long sid = s.launch.value("session_id", 0LL);
         if (sid != p.launched_session) {
@@ -3192,6 +3173,11 @@ void ingest(HubModel& hub) {
                 l.host = s.is_host;
                 l.tpak = s.match_caps.is_object() && s.match_caps.value("tpak", false);
                 const bool options_ok = read_room_options(s.match_caps, &l.core_options);
+                const auto plan = l.core_options.find(kRoomModPlan);
+                const bool mods_ok = !p.scope->resolve_mod_plan || (plan != l.core_options.end() &&
+                    read_room_mods(s.match_caps, &l.gameplay_mods) && plan->second.empty() == l.gameplay_mods.empty());
+                const std::string save_why = campaign_save_problem(p, s);
+                l.eeprom = p.campaign.data;
                 l.seat = -1;
                 const auto slots = s.launch.find("slots");
                 if (slots != s.launch.end() && slots->is_array()) {
@@ -3216,8 +3202,11 @@ void ingest(HubModel& hub) {
                     p.host_port.stop();
                     p.host_port_open = false;
                 }
-                if (!options_ok) {
+                if (!options_ok || !mods_ok) {
                     p.room_status = "The room supplied invalid match options.";
+                    p.client.ack_launch();
+                } else if (!save_why.empty()) {
+                    p.room_status = save_why;
                     p.client.ack_launch();
                 } else if (l.seat < 0) {
                     p.room_status = "The match started without you in a player seat "

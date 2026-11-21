@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "retcomm/mods.hpp"
+
 struct SDL_Window;
 
 namespace retcomm::hub {
@@ -40,6 +42,8 @@ struct NetplayLaunch {
     // it) and that seat's save as the room exchanged it. Empty = no pak.
     std::array<std::string, 4> tpak_rom, tpak_save;
     std::map<std::string, std::string> core_options;
+    std::vector<N64MatchMod> gameplay_mods;
+    std::string eeprom;
 };
 
 struct NetplayChoice {
@@ -50,6 +54,7 @@ struct NetplayChoice {
 struct NetplayModPlan {
     std::string fingerprint;
     std::string error;
+    std::vector<N64MatchMod> mods;
 };
 
 // One player's Transfer Pak, as brought to a match: which of the supported
@@ -75,6 +80,8 @@ struct NetplayScope {
     bool tpak_supported = false;
     std::function<std::vector<NetplayChoice>()> room_choices;
     std::function<std::future<NetplayModPlan>()> resolve_mod_plan;
+    std::size_t eeprom_bytes = 0;
+    std::function<bool(std::string* data, std::string* error)> read_eeprom;
     // "" when all three Transfer Pak cartridges are set and check out.
     std::function<std::string()> tpak_problem;
     // "" when this machine's seats can join a match at all; else why not

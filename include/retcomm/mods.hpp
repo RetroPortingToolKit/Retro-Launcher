@@ -21,6 +21,7 @@
 #include "retcomm/paths.hpp"
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,18 @@ bool set_mod_option(const fs::path& game_dir, const std::string& package_id,
 // `game_dir` (see ModScanResult::selection).
 ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root = {},
                              const fs::path& state_dir = {});
+
+struct N64MatchMod {
+    std::string id, version;
+    std::vector<std::string> features;
+    std::map<std::string, std::string> options;
+};
+
+std::vector<N64MatchMod> selected_n64_match_mods(const ModScanResult& scan);
+// Materialize a host's selection using the packages this peer actually has.
+// The core still verifies the resulting plan against the room fingerprint.
+bool n64_match_mods_toml(const ModScanResult& scan, const std::vector<N64MatchMod>& mods,
+                        std::string* toml, std::string* error);
 
 const char* mod_origin_name(ModOrigin origin);
 

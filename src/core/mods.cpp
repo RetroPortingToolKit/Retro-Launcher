@@ -968,6 +968,20 @@ std::vector<std::string> n64lle_enabled_list(const ModPackageInfo& pkg) {
     return on;
 }
 
+bool n64lle_option_value(const ModOptionInfo& option, const std::string& text) {
+    if (option.type == "boolean") return text == "true" || text == "false";
+    if (option.type == "integer") {
+        char* end = nullptr;
+        const long value = std::strtol(text.c_str(), &end, 10);
+        const auto step = static_cast<unsigned long>(option.step > 0 ? option.step : 1);
+        return end != text.c_str() && *end == 0 && std::to_string(value) == text &&
+               value >= option.min && value <= option.max &&
+               (static_cast<unsigned long>(value) - static_cast<unsigned long>(option.min)) % step == 0;
+    }
+    return std::any_of(option.choices.begin(), option.choices.end(),
+                       [&](const ModChoice& choice) { return choice.value == text; });
+}
+
 bool write_n64lle_selection(const fs::path& path, const ModPackageInfo& pkg,
                             const std::vector<std::string>& on, std::string* error) {
     return write_n64lle_section(path, pkg, on, n64lle_options_text(pkg), error);
@@ -1019,6 +1033,91 @@ bool is_n64lle_tree(const fs::path& game_dir, const fs::path& state_dir) {
 }
 
 } // namespace
+
+std::vector<N64MatchMod> selected_n64_match_mods(const ModScanResult& scan) {
+    std::vector<N64MatchMod> mods;
+    if (scan.layout != ModLayout::N64lle) return mods;
+    for (const auto& pkg : scan.packages) {
+        auto features = n64lle_enabled_list(pkg);
+        if (features.empty()) continue;
+        N64MatchMod row{pkg.id, pkg.version, std::move(features), {}};
+        for (const auto& o : pkg.options) {
+            if (!o.value.empty() && o.value != o.default_value) row.options.emplace(o.id, o.value);
+        }
+        mods.push_back(std::move(row));
+    }
+    return mods;
+}
+
+bool n64_match_mods_toml(const ModScanResult& scan, const std::vector<N64MatchMod>& mods,
+                        std::string* toml, std::string* error) {
+    const auto token = [](const std::string& text) {
+        return !text.empty() && text.find_first_of(" \t\r\n\"\\#[]=,") == std::string::npos &&
+               std::none_of(text.begin(), text.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; });
+    };
+    std::map<std::string, const N64MatchMod*> required;
+    for (const auto& row : mods) {
+        if (row.features.empty() || !required.emplace(row.id, &row).second) {
+            *error = "The host sent an invalid gameplay mod selection.";
+            return false;
+        }
+    }
+    std::string out;
+    for (const auto& pkg : scan.packages) {
+        const auto match = required.find(pkg.id);
+        if (scan.layout != ModLayout::N64lle || !token(pkg.id)) continue;
+        out += '[' + pkg.id + "]\nenabled = \"";
+        if (match == required.end()) {
+            out += "\"\n\n";
+            continue;
+        }
+        const auto& row = *match->second;
+        if (pkg.version != row.version) {
+            *error = "Install the host's version of " + pkg.name + ".";
+            return false;
+        }
+        auto features = row.features;
+        std::sort(features.begin(), features.end());
+        if (std::adjacent_find(features.begin(), features.end()) != features.end()) {
+            *error = "The host sent an invalid gameplay mod selection.";
+            return false;
+        }
+        for (std::size_t i = 0; i < features.size(); ++i) {
+            const auto& id = features[i];
+            if (!token(id) || std::none_of(pkg.features.begin(), pkg.features.end(),
+                                           [&](const auto& f) { return f.id == id; })) {
+                *error = pkg.name + " is missing a feature required by the host.";
+                return false;
+            }
+            out += (i ? " " : "") + id;
+        }
+        out += "\"\n";
+        if (!row.options.empty()) {
+            out += "options = \"";
+            bool first = true;
+            for (const auto& [id, value] : row.options) {
+                const auto option = std::find_if(pkg.options.begin(), pkg.options.end(),
+                                                [&](const auto& o) { return o.id == id; });
+                if (option == pkg.options.end() || !token(id) || !token(value) ||
+                    !n64lle_option_value(*option, value)) {
+                    *error = pkg.name + " does not support a setting required by the host.";
+                    return false;
+                }
+                out += (first ? "" : " ") + id + '=' + value;
+                first = false;
+            }
+            out += "\"\n";
+        }
+        out += '\n';
+        required.erase(match);
+    }
+    if (!required.empty()) {
+        *error = "Install the gameplay mod required by the host: " + required.begin()->first;
+        return false;
+    }
+    *toml = std::move(out);
+    return true;
+}
 
 ModScanResult scan_game_mods(const fs::path& game_dir, const fs::path& install_root,
                              const fs::path& state_dir) {
@@ -1090,19 +1189,7 @@ bool set_scanned_mod_option(const ModScanResult& scan, const fs::path& game_dir,
     }
     // The game refuses a plan holding a value the option does not allow, so a
     // page must not write one: it would boot stock with the mod silently off.
-    bool legal = false;
-    if (o->type == "boolean") {
-        legal = value == "true" || value == "false";
-    } else if (o->type == "integer") {
-        char* end = nullptr;
-        const long v = std::strtol(value.c_str(), &end, 10);
-        const long step = o->step > 0 ? o->step : 1;
-        legal = end && end != value.c_str() && *end == 0 && std::to_string(v) == value &&
-                v >= o->min && v <= o->max && (v - o->min) % step == 0;
-    } else {
-        for (const ModChoice& c : o->choices) legal |= c.value == value;
-    }
-    if (!legal) {
+    if (!n64lle_option_value(*o, value)) {
         if (error) *error = "'" + value + "' is not a value option '" + option_id + "' allows";
         return false;
     }

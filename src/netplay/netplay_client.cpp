@@ -253,6 +253,7 @@ void LobbyClient::leave_room_state(const std::string& why) {
     snap_.all_ready = false;
     snap_.lobby_id.clear();
     snap_.room_name.clear();
+    snap_.host_player_id.clear();
     snap_.local_slot = -1;
     snap_.player_count = 0;
     snap_.max_slots = 0;
@@ -360,6 +361,7 @@ void LobbyClient::handle(const json& m) {
         snap_.room_msg = json();
         snap_.in_room = true;
         snap_.is_host = (op == "created");
+        snap_.host_player_id = snap_.is_host ? snap_.player_id : str_or(m, "host_player_id");
         snap_.lobby_id = str_or(m, "lobby_id");
         snap_.room_name = pending_room_name_;
         snap_.local_slot = int_or(m, "local_slot", -1);
@@ -386,14 +388,16 @@ void LobbyClient::handle(const json& m) {
             if (const std::string ep = str_or(m, "host_endpoint"); !ep.empty())
                 snap_.host_endpoint = ep;
             const std::string host = str_or(m, "host_player_id");
-            if (!host.empty()) snap_.is_host = (host == snap_.player_id);
+            if (!host.empty()) {
+                snap_.host_player_id = host;
+                snap_.is_host = (host == snap_.player_id);
+            }
             const auto caps = m.find("match_caps");
             if (caps != m.end() && caps->is_object()) snap_.match_caps = *caps;
         }
         const auto slots = m.find("slots");
         if (slots != m.end() && slots->is_array()) {
             snap_.members.clear();
-            const std::string host = str_or(m, "host_player_id");
             for (const json& s : *slots) {
                 Member mem;
                 mem.slot = int_or(s, "slot", -1);
@@ -403,7 +407,8 @@ void LobbyClient::handle(const json& m) {
                 mem.ready = bool_or(s, "ready");
                 mem.account = str_or(s, "account");
                 mem.is_local = !mem.player_id.empty() && mem.player_id == snap_.player_id;
-                mem.is_host = host.empty() ? mem.slot == 0 : mem.player_id == host;
+                mem.is_host = snap_.host_player_id.empty() ? mem.slot == 0 :
+                              mem.player_id == snap_.host_player_id;
                 if (mem.is_local) snap_.local_slot = mem.slot;
                 snap_.members.push_back(std::move(mem));
             }
