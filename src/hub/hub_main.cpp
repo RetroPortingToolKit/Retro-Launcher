@@ -17699,6 +17699,52 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     return true;
 }
 
+retcomm::hub::NetplayModPlan resolve_direct_mod_plan(const fs::path& runner,
+                                                    const retcomm::hub::PlayArgs& args,
+                                                    const fs::path& title_dir,
+                                                    const fs::path& reports) {
+    using retro::corelink::path_utf8;
+    if (runner.empty()) return {{}, "No usable runner was found to check gameplay mods."};
+    if (args.rom.empty()) return {{}, "Choose the game's ROM before hosting a match."};
+    const fs::path work = reports / std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::error_code ec;
+    if (!fs::create_directories(work, ec)) {
+        return {{}, "Could not create the gameplay mod check directory."};
+    }
+    retro::corelink::SpawnSpec spec;
+    spec.args = {path_utf8(runner), "--resolve-mod-plan", "--core", path_utf8(args.core),
+                 "--rom", args.rom, "--title-dir", path_utf8(title_dir), "--out", path_utf8(work)};
+    if (!args.package.empty()) {
+        spec.args.insert(spec.args.end(), {"--package", path_utf8(args.package)});
+    }
+    if (const auto base = args.options.find(retcomm::kRomhackOption); base != args.options.end()) {
+        spec.args.insert(spec.args.end(), {"--opt", base->first + "=" + base->second});
+    }
+    spec.env = args.env;
+    spec.log = work / "runner.log";
+    std::string why;
+    const auto code = retro::corelink::run_to_completion(spec, -1, &why);
+    if (!code) return {{}, "Could not check gameplay mods. " + why};
+    if (*code == 0) {
+        std::ifstream log(spec.log);
+        std::string line;
+        const std::string prefix = "mod-plan\t1\t";
+        while (std::getline(log, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind(prefix, 0) != 0) continue;
+            const std::string plan = line.substr(prefix.size());
+            if (retcomm::hub::valid_room_mod_plan(plan)) {
+                log.close();
+                fs::remove(spec.log, ec);
+                fs::remove(work, ec);
+                return {plan, {}};
+            }
+            break;
+        }
+    }
+    return {{}, "Could not verify gameplay mods. See " + path_utf8(spec.log)};
+}
+
 // The lobby identity of this exact build: the title's version plus the core's
 // and the package's sha256, so only players who can simulate identically see
 // each other (recomp-ai-rules NETPLAY.md §4). Worked out once per run.
@@ -17716,6 +17762,26 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
     sc.pin = version + "+c" + core_sha.substr(0, 10) +
              (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
     sc.max_slots = 4;
+    const auto netplay = read_toml_section(h.title_dir / "game.toml", "netplay");
+    const auto match_mods = netplay.find("gameplay_mods");
+    if (match_mods != netplay.end() && match_mods->second == "true") {
+        sc.resolve_mod_plan = [&h, &hub] {
+            retcomm::hub::PlayArgs args = h.d.args;
+            apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
+            return std::async(std::launch::async,
+                [paths = hub.paths, exe_dir = hub.exe_dir, title_dir = h.title_dir,
+                 key = h.title_key, args = std::move(args)] {
+                    const auto runner = retcomm::resolve_runner(paths, exe_dir);
+                    return resolve_direct_mod_plan(runner.path, args, title_dir,
+                                                   paths.data_dir / "netplay" / key / "mod-plan");
+                });
+        };
+    }
+    const auto max_players = netplay.find("max_players");
+    if (max_players != netplay.end() && max_players->second.size() == 1 &&
+        max_players->second[0] >= '2' && max_players->second[0] <= '8') {
+        sc.max_slots = max_players->second[0] - '0';
+    }
     sc.tpak_supported = h.tpak_supported;
     sc.room_choices = [&h, &hub] {
         retcomm::hub::PlayArgs args = h.d.args;

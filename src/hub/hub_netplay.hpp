@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <string>
 #include <vector>
@@ -46,6 +47,11 @@ struct NetplayChoice {
     std::vector<std::string> values;
 };
 
+struct NetplayModPlan {
+    std::string fingerprint;
+    std::string error;
+};
+
 // One player's Transfer Pak, as brought to a match: which of the supported
 // cartridges (hub_core_settings.hpp supported_gb_rom; -1 = none) and the
 // battery save's bytes.
@@ -68,6 +74,7 @@ struct NetplayScope {
     int max_slots = 4;
     bool tpak_supported = false;
     std::function<std::vector<NetplayChoice>()> room_choices;
+    std::function<std::future<NetplayModPlan>()> resolve_mod_plan;
     // "" when all three Transfer Pak cartridges are set and check out.
     std::function<std::string()> tpak_problem;
     // "" when this machine's seats can join a match at all; else why not

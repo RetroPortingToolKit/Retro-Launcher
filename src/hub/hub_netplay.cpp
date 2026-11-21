@@ -443,6 +443,12 @@ struct Page {
         bool spectators = false;
     };
     std::optional<PendingSeat> pending_seat;
+    struct PendingLobby {
+        PendingSeat seat;
+        json caps;
+        std::future<NetplayModPlan> mod_plan;
+    };
+    std::optional<PendingLobby> pending_lobby;
     double ready_sent_at = -1;
 };
 
@@ -536,6 +542,27 @@ std::map<std::string, std::string> chosen_room_options(const Page& p) {
         result[choice.key] = selected == p.host_core_options.end() ? choice.value : selected->second;
     }
     return result;
+}
+
+void finish_direct_lobby(Page& p, const Page::PendingSeat& seat, const json& caps) {
+    p.client.create_for(seat.game_name, seat.version, seat.name, seat.password,
+                        seat.max_slots, seat.spectators, caps);
+    if (p.filter.empty()) p.scope_dirty = true;
+    p.status = "Creating lobby\xE2\x80\xA6";
+}
+
+void create_direct_lobby(Page& p, const Game& game, const std::string& name) {
+    if (p.pending_lobby) return;
+    auto options = chosen_room_options(p);
+    json caps = {{"tpak", p.host_tpak}, {"relay", "host"}, {"core_options", options}};
+    Page::PendingSeat seat{true, {}, p.host_pw, game.game_name, game.pin, name,
+                           p.host_max, p.host_spectators};
+    if (p.scope->resolve_mod_plan) {
+        p.pending_lobby = Page::PendingLobby{std::move(seat), std::move(caps), p.scope->resolve_mod_plan()};
+        p.status = "Checking gameplay mods\xE2\x80\xA6";
+        return;
+    }
+    finish_direct_lobby(p, seat, caps);
 }
 
 void ensure_init(HubModel& hub) {
@@ -1651,14 +1678,7 @@ void draw_modals(HubModel& hub, const Theme& th, const std::vector<Game>& games)
                 if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
                     p.host_error = p.scope->tpak_problem();
                 if (p.host_error.empty() && p.scope) {
-                    json caps = json::object();
-                    caps["tpak"] = p.host_tpak;
-                    caps["relay"] = "host"; // the lobby server's relay only as a fallback
-                    caps["core_options"] = chosen_room_options(p);
-                    p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max,
-                                        p.host_spectators, caps);
-                    if (p.filter.empty()) p.scope_dirty = true;
-                    p.status = "Creating lobby\xE2\x80\xA6";
+                    create_direct_lobby(p, g, name);
                     ImGui::CloseCurrentPopup();
                 } else if (p.host_error.empty()) {
                     // The library: the room carries the game's own match caps.
@@ -2486,13 +2506,7 @@ void ov_host(HubModel& hub, const Theme& th, const ov::Metrics& m, const std::ve
         if (p.host_error.empty() && p.host_tpak && p.scope && p.scope->tpak_problem)
             p.host_error = p.scope->tpak_problem();
         if (p.host_error.empty() && p.scope) {
-            json caps = json::object();
-            caps["tpak"] = p.host_tpak;
-            caps["relay"] = "host"; // the lobby server's relay only as a fallback
-            caps["core_options"] = chosen_room_options(p);
-            p.client.create_for(g.game_name, g.pin, name, p.host_pw, p.host_max, p.host_spectators, caps);
-            if (p.filter.empty()) p.scope_dirty = true;
-            p.status = "Creating lobby...";
+            create_direct_lobby(p, g, name);
             p.view = View::Online;
         } else if (p.host_error.empty()) {
             Page::PendingSeat ps;
@@ -2933,6 +2947,20 @@ void ingest(HubModel& hub) {
     if (s.swap_result.seq != p.seen_swap_result_seq) {
         p.seen_swap_result_seq = s.swap_result.seq;
         p.room_status = s.swap_result.accepted ? "" : "That player kept their seat.";
+    }
+    if (p.pending_lobby && p.pending_lobby->mod_plan.wait_for(std::chrono::seconds(0)) ==
+                                std::future_status::ready) {
+        auto pending = std::move(*p.pending_lobby);
+        p.pending_lobby.reset();
+        const auto plan = pending.mod_plan.get();
+        if (p.scope && p.scope->pin == pending.seat.version && !s.in_room) {
+            if (plan.error.empty()) {
+                pending.caps["core_options"][kRoomModPlan] = plan.fingerprint;
+                finish_direct_lobby(p, pending.seat, pending.caps);
+            } else {
+                p.status = plan.error;
+            }
+        }
     }
     // ---- library games: identity, ready, settle, the match's status -------
     if (p.lib && future_ready(p.lib->identity_f)) {

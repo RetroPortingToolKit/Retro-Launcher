@@ -16,7 +16,11 @@ int main() {
     CoreOptionDecl cpu;
     cpu.key = "system.cpu_mode";
     cpu.netplay = true;
-    const std::vector<CoreOptionDecl> decl = {aspect, scale, cpu};
+    CoreOptionDecl mod_plan;
+    mod_plan.key = kRoomModPlan;
+    mod_plan.type = "string";
+    mod_plan.netplay = true;
+    const std::vector<CoreOptionDecl> decl = {aspect, scale, cpu, mod_plan};
     int failed = 0;
     const auto check = [&](bool ok, const char* what) {
         if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); ++failed; }
@@ -38,8 +42,16 @@ int main() {
         check(!local.count("system.cpu_mode"), "other simulation settings retain common defaults");
         check(local["system.romhack"] == "same-base", "romhack identity preserved");
     }
+    for (const std::string selected : {"", "7d101a186e5098c8"}) {
+        const nlohmann::json caps = {{"core_options", {{kRoomModPlan, selected}}}};
+        std::map<std::string, std::string> room, local = {{kRoomModPlan, "different"}};
+        std::string error;
+        check(read_room_options(caps, &room) && apply_room_options(decl, room, &local, &error) &&
+              local.at(kRoomModPlan) == selected, "adopt the verified host gameplay plan");
+    }
     for (const auto& room : std::vector<std::map<std::string, std::string>>{
-            {{"netplay.aspect", "fit"}}, {{"video.internal_resolution", "1x"}}, {{"unknown", "x"}}}) {
+            {{"netplay.aspect", "fit"}}, {{"video.internal_resolution", "1x"}}, {{"unknown", "x"}},
+            {{kRoomModPlan, "1234"}}, {{kRoomModPlan, "7z101a186e5098c8"}}}) {
         std::map<std::string, std::string> local = {{"video.internal_resolution", "16x"}};
         const auto before = local;
         std::string error;
