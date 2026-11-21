@@ -134,7 +134,8 @@ private:
     void upload_frame();
     void set_paused(bool paused);
     // A match never pauses: every peer runs on (recomp-ai-rules NETPLAY.md §6).
-    bool paused() const { return !netplay_ && menu_open_; }
+    bool paused() const { return !netplay_ && (menu_open_ || review_paused_); }
+    void service_review();
     void sync_pause();
     void set_volume(int percent);
     void set_show_fps(bool on);
@@ -158,6 +159,10 @@ private:
 
     void draw_replay_ended();
     corelink::LaunchSpec launch_spec_;
+    fs::path review_dir_;
+    bool review_first_picture_ = false;
+    bool review_paused_ = false;
+    bool review_pause_ack_ = false;
     fs::path replays_dir_, replay_play_;
     std::optional<bool> recording_request_;
     bool diagnostics_pending_ = false;
