@@ -1,16 +1,22 @@
 // netplay_nat: the host relay's reachability pieces. Pure encoders and
 // parsers against fixtures; then a HostPort over loopback with a fake STUN
 // server, answering a probe. The real router is never asked (try_router off).
-// Run as `retcomm-netplay-nat-test`. POSIX only.
+// Run as `retcomm-netplay-nat-test`.
 
 #include "retcomm/netplay_nat.hpp"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -20,6 +26,20 @@
 using namespace retcomm::netplay;
 
 namespace {
+#ifdef _WIN32
+using Socket = SOCKET;
+using AddressSize = int;
+using PollFd = WSAPOLLFD;
+int poll_socket(PollFd& p) { return WSAPoll(&p, 1, 50); }
+void close_socket(Socket s) { closesocket(s); }
+#else
+using Socket = int;
+using AddressSize = socklen_t;
+using PollFd = pollfd;
+int poll_socket(PollFd& p) { return poll(&p, 1, 50); }
+void close_socket(Socket s) { close(s); }
+#endif
+
 int g_failures = 0;
 void check(bool ok, const char* what) {
     if (!ok) {
@@ -30,6 +50,13 @@ void check(bool ok, const char* what) {
 } // namespace
 
 int main() {
+#ifdef _WIN32
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        std::fprintf(stderr, "FAIL: WinSock initialization\n");
+        return 1;
+    }
+#endif
     // ---- SSDP / IGD / SOAP
     check(ssdp_location("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nLocation: "
                         "http://192.168.1.1:5000/rootDesc.xml\r\nST: x\r\n\r\n") ==
@@ -114,57 +141,59 @@ int main() {
           "another transaction's answer is refused");
 
     // ---- a HostPort on loopback: a fake STUN server, then a probe
-    const int stun = socket(AF_INET, SOCK_DGRAM, 0);
+    const Socket stun = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     sa.sin_port = 0;
     bind(stun, reinterpret_cast<sockaddr*>(&sa), sizeof sa);
-    socklen_t sl = sizeof sa;
+    AddressSize sl = sizeof sa;
     getsockname(stun, reinterpret_cast<sockaddr*>(&sa), &sl);
     const std::uint16_t stun_port = ntohs(sa.sin_port);
     std::atomic<bool> done{false};
     std::thread fake([&] {
         while (!done) {
-            pollfd p{stun, POLLIN, 0};
-            if (poll(&p, 1, 50) <= 0) continue;
+            PollFd p{stun, POLLIN, 0};
+            if (poll_socket(p) <= 0 || !(p.revents & POLLIN)) continue;
             std::uint8_t buf[512];
             sockaddr_in from{};
-            socklen_t fl = sizeof from;
-            const auto n = recvfrom(stun, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&from), &fl);
+            AddressSize fl = sizeof from;
+            const auto n = recvfrom(stun, reinterpret_cast<char*>(buf), sizeof buf, 0,
+                                    reinterpret_cast<sockaddr*>(&from), &fl);
             if (n < 20) continue;
             std::copy(buf + 8, buf + 20, tx); // answer this transaction
             auto r = stun_answer("198.51.100.77", ntohs(from.sin_port));
-            sendto(stun, r.data(), r.size(), 0, reinterpret_cast<sockaddr*>(&from), fl);
+            sendto(stun, reinterpret_cast<const char*>(r.data()), static_cast<int>(r.size()), 0,
+                   reinterpret_cast<sockaddr*>(&from), fl);
         }
     });
     HostPort hp;
     std::string err;
     check(hp.start(7799, "127.0.0.1:" + std::to_string(stun_port), &err, /*try_router=*/false),
           ("HostPort binds its port: " + err).c_str());
-    for (int i = 0; i < 60 && !hp.status().done; ++i)
+    while (!hp.status().done && !g_failures)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     const HostPort::Status st = hp.status();
     check(st.done && st.how == "stun" && st.endpoint == "198.51.100.77:7799",
           "STUN names this socket's public mapping");
     check(probe_host("127.0.0.1:7799", 3), "a probe of the host's port is answered");
-    check(hp.status().probes_answered >= 1, "and counted");
     check(!probe_host("127.0.0.1:7798", 2), "a probe of nothing is not");
     hp.stop();
+    check(hp.status().probes_answered >= 1, "and counted");
     check(!probe_host("127.0.0.1:7799", 2), "after stop() the port is free and silent");
     done = true;
     fake.join();
-    close(stun);
+    close_socket(stun);
 
     // A guest probes as soon as it joins, while the host is still asking:
     // the probe is answered then, not after STUN gives up (a silent server
     // takes 1.5 s; the probe window is 3 x 400 ms).
-    const int silent = socket(AF_INET, SOCK_DGRAM, 0);
+    const Socket silent = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in qa{};
     qa.sin_family = AF_INET;
     qa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     bind(silent, reinterpret_cast<sockaddr*>(&qa), sizeof qa);
-    socklen_t ql = sizeof qa;
+    AddressSize ql = sizeof qa;
     getsockname(silent, reinterpret_cast<sockaddr*>(&qa), &ql);
     HostPort early;
     check(early.start(7799, "127.0.0.1:" + std::to_string(ntohs(qa.sin_port)), &err, false),
@@ -173,7 +202,10 @@ int main() {
     check(probe_host("127.0.0.1:7799", 3), "a probe during discovery is answered at once");
     check(!early.status().done, "before discovery finished");
     early.stop();
-    close(silent);
+    close_socket(silent);
+#ifdef _WIN32
+    WSACleanup();
+#endif
 
     if (g_failures) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);

@@ -12,7 +12,14 @@
 
 #include <curl/curl.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#else
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -219,11 +226,52 @@ bool stun_parse_mapped(const std::vector<std::uint8_t>& r, const std::uint8_t tx
     return got;
 }
 
-#if !defined(_WIN32)
-
 namespace {
 
+#if defined(_WIN32)
+using Socket = SOCKET;
+using AddressSize = int;
+constexpr Socket kNoSocket = INVALID_SOCKET;
+
+bool ensure_socket_runtime() {
+    static const bool ready = [] {
+        WSADATA data{};
+        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    return ready;
+}
+
+void close_socket(Socket socket) { closesocket(socket); }
+#else
+using Socket = int;
+using AddressSize = socklen_t;
+constexpr Socket kNoSocket = -1;
+
+bool ensure_socket_runtime() { return true; }
+void close_socket(Socket socket) { close(socket); }
+#endif
+
+Socket open_udp() {
+    return ensure_socket_runtime() ? socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) : kNoSocket;
+}
+
+std::string system_default_gateway() {
+#if defined(_WIN32)
+    MIB_IPFORWARDROW route{};
+    if (GetBestRoute(INADDR_ANY, INADDR_ANY, &route) != NO_ERROR || route.dwForwardNextHop == 0)
+        return {};
+    in_addr address{};
+    address.s_addr = route.dwForwardNextHop;
+    char text[INET_ADDRSTRLEN]{};
+    return inet_ntop(AF_INET, &address, text, sizeof text) ? text : "";
+#else
+    std::ifstream routes("/proc/net/route");
+    return default_gateway_from_route(std::string(std::istreambuf_iterator<char>(routes), {}));
+#endif
+}
+
 bool resolve4(const std::string& host, std::uint16_t port, sockaddr_in* out) {
+    if (!ensure_socket_runtime()) return false;
     addrinfo hints{};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
@@ -245,12 +293,17 @@ bool split_hostport(const std::string& ep, std::string* host, std::uint16_t* por
     return true;
 }
 
-bool recv_within(int s, int ms, std::vector<std::uint8_t>* out, sockaddr_in* from = nullptr) {
+bool recv_within(Socket s, int ms, std::vector<std::uint8_t>* out, sockaddr_in* from = nullptr) {
+#if defined(_WIN32)
+    WSAPOLLFD p{s, POLLIN, 0};
+    if (WSAPoll(&p, 1, ms) <= 0 || !(p.revents & POLLIN)) return false;
+#else
     pollfd p{s, POLLIN, 0};
-    if (poll(&p, 1, ms) <= 0) return false;
-    std::uint8_t buf[2048];
+    if (poll(&p, 1, ms) <= 0 || !(p.revents & POLLIN)) return false;
+#endif
+    char buf[2048];
     sockaddr_in f{};
-    socklen_t fl = sizeof f;
+    AddressSize fl = sizeof f;
     const auto n = recvfrom(s, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&f), &fl);
     if (n <= 0) return false;
     out->assign(buf, buf + n);
@@ -258,9 +311,15 @@ bool recv_within(int s, int ms, std::vector<std::uint8_t>* out, sockaddr_in* fro
     return true;
 }
 
+bool send_udp(Socket s, const void* data, std::size_t bytes, const sockaddr_in& to) {
+    return sendto(s, static_cast<const char*>(data), static_cast<int>(bytes), 0,
+                  reinterpret_cast<const sockaddr*>(&to), sizeof to) == static_cast<int>(bytes);
+}
+
 // The address this machine uses to reach `ip` (a connected UDP socket's name).
 std::string local_ip_toward(const std::string& ip) {
-    const int s = socket(AF_INET, SOCK_DGRAM, 0);
+    const Socket s = open_udp();
+    if (s == kNoSocket) return {};
     sockaddr_in d{};
     d.sin_family = AF_INET;
     d.sin_port = htons(9);
@@ -268,14 +327,14 @@ std::string local_ip_toward(const std::string& ip) {
     std::string out;
     if (connect(s, reinterpret_cast<sockaddr*>(&d), sizeof d) == 0) {
         sockaddr_in me{};
-        socklen_t ml = sizeof me;
+        AddressSize ml = sizeof me;
         if (getsockname(s, reinterpret_cast<sockaddr*>(&me), &ml) == 0) {
             char b[64];
             inet_ntop(AF_INET, &me.sin_addr, b, sizeof b);
             out = b;
         }
     }
-    close(s);
+    close_socket(s);
     return out;
 }
 
@@ -315,8 +374,8 @@ bool http(const std::string& url, const std::string& soap_action, const std::str
 }
 
 std::string upnp_discover() {
-    const int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) return {};
+    const Socket s = open_udp();
+    if (s == kNoSocket) return {};
     sockaddr_in d{};
     d.sin_family = AF_INET;
     d.sin_port = htons(1900);
@@ -326,7 +385,7 @@ std::string upnp_discover() {
         const std::string req = std::string("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
                                             "MAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ") +
                                 st + "\r\n\r\n";
-        sendto(s, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&d), sizeof d);
+        send_udp(s, req.data(), req.size(), d);
     }
     std::string loc;
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
@@ -335,7 +394,7 @@ std::string upnp_discover() {
         if (!recv_within(s, 250, &r)) continue;
         loc = ssdp_location(std::string(r.begin(), r.end()));
     }
-    close(s);
+    close_socket(s);
     return loc;
 }
 
@@ -346,14 +405,14 @@ bool probe_host(const std::string& endpoint, int tries) {
     std::uint16_t port = 0;
     sockaddr_in to{};
     if (!split_hostport(endpoint, &host, &port) || !resolve4(host, port, &to)) return false;
-    const int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) return false;
+    const Socket s = open_udp();
+    if (s == kNoSocket) return false;
     std::mt19937 rng(static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()));
     const std::string nonce = std::to_string(rng());
     const std::string msg = std::string(kProbe) + nonce;
     bool ok = false;
     for (int i = 0; i < tries && !ok; ++i) {
-        sendto(s, msg.data(), msg.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof to);
+        send_udp(s, msg.data(), msg.size(), to);
         std::vector<std::uint8_t> r;
         while (recv_within(s, 400, &r)) {
             if (std::string(r.begin(), r.end()) == std::string(kProbeAck) + nonce) {
@@ -362,7 +421,7 @@ bool probe_host(const std::string& endpoint, int tries) {
             }
         }
     }
-    close(s);
+    close_socket(s);
     return ok;
 }
 
@@ -374,27 +433,33 @@ HostPort::~HostPort() {
 bool HostPort::start(std::uint16_t port, const std::string& stun_server, std::string* error,
                      bool try_router) {
     stop();
-    int s = -1;
+    Socket s = kNoSocket;
     std::uint16_t bound = 0;
-    for (std::uint16_t p = port ? port : 7777; p <= (port ? port : 7808); ++p) {
-        s = socket(AF_INET, SOCK_DGRAM, 0);
+    for (unsigned p = port ? port : 7777; p <= (port ? port : 7808u); ++p) {
+        s = open_udp();
+        if (s == kNoSocket) break;
+#if defined(_WIN32)
+        const int exclusive = 1;
+        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive),
+                   sizeof exclusive);
+#endif
         sockaddr_in a{};
         a.sin_family = AF_INET;
         a.sin_addr.s_addr = htonl(INADDR_ANY);
-        a.sin_port = htons(p);
+        a.sin_port = htons(static_cast<std::uint16_t>(p));
         if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0) {
-            bound = p;
+            bound = static_cast<std::uint16_t>(p);
             break;
         }
-        close(s);
-        s = -1;
+        close_socket(s);
+        s = kNoSocket;
     }
-    if (s < 0) {
+    if (s == kNoSocket) {
         if (error) *error = port ? "UDP port " + std::to_string(port) + " is in use"
                                  : "no free UDP port in 7777-7808";
         return false;
     }
-    sock_ = s;
+    sock_ = static_cast<std::uintptr_t>(s);
     {
         std::lock_guard<std::mutex> lk(mu_);
         st_ = Status{};
@@ -412,16 +477,18 @@ bool HostPort::start(std::uint16_t port, const std::string& stun_server, std::st
 }
 
 void HostPort::respond() {
+    const auto socket = static_cast<Socket>(sock_);
     while (!stop_) {
         std::vector<std::uint8_t> r;
         sockaddr_in from{};
-        if (!recv_within(sock_, 200, &r, &from)) continue;
+        if (!recv_within(socket, 200, &r, &from)) continue;
         const std::string m(r.begin(), r.end());
         if (m.rfind(kProbe, 0) == 0) {
             const std::string ack = std::string(kProbeAck) + m.substr(std::strlen(kProbe));
-            sendto(sock_, ack.data(), ack.size(), 0, reinterpret_cast<sockaddr*>(&from), sizeof from);
-            std::lock_guard<std::mutex> lk(mu_);
-            ++st_.probes_answered;
+            if (send_udp(socket, ack.data(), ack.size(), from)) {
+                std::lock_guard<std::mutex> lk(mu_);
+                ++st_.probes_answered;
+            }
             continue;
         }
         std::lock_guard<std::mutex> lk(inbox_mu_);
@@ -443,9 +510,9 @@ void HostPort::stop() {
     stop_ = true;
     if (worker_.joinable()) worker_.join();
     if (responder_.joinable()) responder_.join();
-    if (sock_ >= 0) {
-        close(sock_);
-        sock_ = -1;
+    if (sock_ != ~std::uintptr_t{0}) {
+        close_socket(static_cast<Socket>(sock_));
+        sock_ = ~std::uintptr_t{0};
     }
 }
 
@@ -461,13 +528,13 @@ void HostPort::unmap() {
              &out, &status);
     }
     if (natpmp_mapped_ && !gateway_.empty() && mapped_port_) {
-        const int s = socket(AF_INET, SOCK_DGRAM, 0);
+        const Socket s = open_udp();
         sockaddr_in g{};
-        if (s >= 0 && resolve4(gateway_, 5351, &g)) {
+        if (s != kNoSocket && resolve4(gateway_, 5351, &g)) {
             const auto req = natpmp_mapping_request(mapped_port_, 0, 0); // lifetime 0 = delete
-            sendto(s, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&g), sizeof g);
+            send_udp(s, req.data(), req.size(), g);
         }
-        if (s >= 0) close(s);
+        if (s != kNoSocket) close_socket(s);
     }
     upnp_control_.clear();
     natpmp_mapped_ = false;
@@ -543,20 +610,18 @@ void HostPort::run(std::string stun_server, bool try_router) {
 
     // 2. NAT-PMP.
     if (try_router && !resolved && !stop_) {
-        std::ifstream rt("/proc/net/route");
-        const std::string gw =
-            default_gateway_from_route(std::string(std::istreambuf_iterator<char>(rt), {}));
-        const int s = gw.empty() ? -1 : socket(AF_INET, SOCK_DGRAM, 0);
+        const std::string gw = system_default_gateway();
+        const Socket s = gw.empty() ? kNoSocket : open_udp();
         sockaddr_in g{};
-        if (s >= 0 && resolve4(gw, 5351, &g)) {
+        if (s != kNoSocket && resolve4(gw, 5351, &g)) {
             const std::vector<std::uint8_t> addr_req = {0, 0};
-            sendto(s, addr_req.data(), addr_req.size(), 0, reinterpret_cast<sockaddr*>(&g), sizeof g);
+            send_udp(s, addr_req.data(), addr_req.size(), g);
             std::vector<std::uint8_t> r;
             std::string ext_ip;
             if (recv_within(s, 800, &r)) natpmp_parse_address(r, &ext_ip);
             if (!ext_ip.empty()) {
                 const auto req = natpmp_mapping_request(port, port, 7200);
-                sendto(s, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&g), sizeof g);
+                send_udp(s, req.data(), req.size(), g);
                 std::uint16_t ext = 0, rc = 0;
                 if (recv_within(s, 800, &r) && natpmp_parse_mapping(r, &ext, &rc) && ext) {
                     gateway_ = gw;
@@ -568,7 +633,7 @@ void HostPort::run(std::string stun_server, bool try_router) {
                 }
             }
         }
-        if (s >= 0) close(s);
+        if (s != kNoSocket) close_socket(s);
     }
 
     // 3. STUN: the public mapping of this very socket, unforwarded.
@@ -584,7 +649,7 @@ void HostPort::run(std::string stun_server, bool try_router) {
             std::string ip;
             std::uint16_t mp = 0;
             for (int i = 0; i < 3 && ip.empty() && !stop_; ++i) {
-                sendto(sock_, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof to);
+                send_udp(static_cast<Socket>(sock_), req.data(), req.size(), to);
                 std::vector<std::uint8_t> r;
                 while (inbox_pop(500, &r)) {
                     if (stun_parse_mapped(r, tx, &ip, &mp)) break;
@@ -604,20 +669,5 @@ void HostPort::run(std::string stun_server, bool try_router) {
                        "will relay the match.");
     // Probes go on being answered by respond() until stop().
 }
-
-#else // _WIN32: the host relay's network half is not built for Windows yet
-
-bool probe_host(const std::string&, int) { return false; }
-HostPort::~HostPort() = default;
-bool HostPort::start(std::uint16_t, const std::string&, std::string* error, bool) {
-    if (error) *error = "hosting the relay is not built for Windows yet";
-    return false;
-}
-void HostPort::stop() {}
-void HostPort::unmap() {}
-HostPort::Status HostPort::status() const { return {}; }
-void HostPort::run(std::string, bool) {}
-
-#endif
 
 } // namespace retcomm::netplay
