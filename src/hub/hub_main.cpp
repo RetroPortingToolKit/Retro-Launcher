@@ -18436,7 +18436,7 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     }
     if (h.net_scope.resolve_mod_plan) {
         std::string selection;
-        const auto installed = retcomm::scan_game_mods(h.title_dir);
+        const auto installed = retcomm::scan_game_mods(h.title_dir, {}, h.mods_state_dir);
         if (!retcomm::n64_match_mods_toml(installed, l.gameplay_mods, &selection, why)) return false;
         std::ofstream out(base / "mods.toml", std::ios::binary | std::ios::trunc);
         out << selection;

@@ -740,6 +740,7 @@ bool read_n64lle_manifest(const fs::path& path, ModPackageInfo& out, std::string
             else if (key == "name") out.name = unquote(val);
             else if (key == "author") out.author = unquote(val);
             else if (key == "description") out.description = unquote(val);
+            else if (key == "presentation_only") out.presentation_only = trim(val) == "true";
         } else if (section == "target" && key == "game_id") {
             game_id = unquote(val);
         } else if (section == "target" && key == "bases") {
@@ -1038,6 +1039,7 @@ std::vector<N64MatchMod> selected_n64_match_mods(const ModScanResult& scan) {
     std::vector<N64MatchMod> mods;
     if (scan.layout != ModLayout::N64lle) return mods;
     for (const auto& pkg : scan.packages) {
+        if (pkg.presentation_only) continue;
         auto features = n64lle_enabled_list(pkg);
         if (features.empty()) continue;
         N64MatchMod row{pkg.id, pkg.version, std::move(features), {}};
@@ -1066,13 +1068,27 @@ bool n64_match_mods_toml(const ModScanResult& scan, const std::vector<N64MatchMo
     for (const auto& pkg : scan.packages) {
         const auto match = required.find(pkg.id);
         if (scan.layout != ModLayout::N64lle || !token(pkg.id)) continue;
+        N64MatchMod local;
+        const N64MatchMod* selected = match == required.end() ? nullptr : match->second;
+        if (pkg.presentation_only) {
+            if (selected) {
+                *error = "The host cannot set this player's local presentation mods.";
+                return false;
+            }
+            local.features = n64lle_enabled_list(pkg);
+            for (const auto& option : pkg.options) {
+                if (!option.value.empty() && option.value != option.default_value)
+                    local.options.emplace(option.id, option.value);
+            }
+            selected = &local;
+        }
         out += '[' + pkg.id + "]\nenabled = \"";
-        if (match == required.end()) {
+        if (!selected) {
             out += "\"\n\n";
             continue;
         }
-        const auto& row = *match->second;
-        if (pkg.version != row.version) {
+        const auto& row = *selected;
+        if (!pkg.presentation_only && pkg.version != row.version) {
             *error = "Install the host's version of " + pkg.name + ".";
             return false;
         }
@@ -1109,7 +1125,7 @@ bool n64_match_mods_toml(const ModScanResult& scan, const std::vector<N64MatchMo
             out += "\"\n";
         }
         out += '\n';
-        required.erase(match);
+        if (match != required.end()) required.erase(match);
     }
     if (!required.empty()) {
         *error = "Install the gameplay mod required by the host: " + required.begin()->first;

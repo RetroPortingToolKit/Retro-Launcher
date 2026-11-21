@@ -87,7 +87,12 @@ int main() {
     bonus.id = "yoshisstory.bonus-roster";
     bonus.features[0].id = "main";
     bonus.features[0].enabled = false;
-    mods.packages = {story, bonus};
+    auto fit = story;
+    fit.id = "yoshisstory.adaptive-widescreen";
+    fit.presentation_only = true;
+    fit.features[0].id = "fit";
+    fit.options.clear();
+    mods.packages = {story, bonus, fit};
     const auto choices = retcomm::selected_n64_match_mods(mods);
     const nlohmann::json caps = {{"mod_plan", write_room_mods(choices)}};
     std::vector<retcomm::N64MatchMod> received;
@@ -101,6 +106,16 @@ int main() {
           "materialize the host plan over a different guest selection");
     check(!mods.packages[0].features[0].enabled && mods.packages[1].features[0].enabled,
           "preserve the guest selection");
+    check(toml.find("[yoshisstory.adaptive-widescreen]\nenabled = \"fit\"") != std::string::npos,
+          "preserve a local presentation default");
+    mods.packages[2].features[0].enabled = false;
+    check(retcomm::n64_match_mods_toml(mods, received, &toml, &error) &&
+          toml.find("[yoshisstory.adaptive-widescreen]\nenabled = \"\"") != std::string::npos,
+          "preserve an explicit local presentation opt-out");
+    auto bad = received;
+    bad.push_back({fit.id, fit.version, {"fit"}, {}});
+    check(!retcomm::n64_match_mods_toml(mods, bad, &toml, &error),
+          "reject a host override of local presentation");
     if (!received.empty()) {
         received[0].version = "unavailable";
         check(!retcomm::n64_match_mods_toml(mods, received, &toml, &error), "refuse missing host package version");
