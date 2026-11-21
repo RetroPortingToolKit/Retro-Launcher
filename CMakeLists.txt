@@ -506,7 +506,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_states.cpp src/hub/hub_replay_info.cpp src/hub/hub_picture.cpp
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_game_control_socket.cpp src/hub/hub_states.cpp src/hub/hub_replay_info.cpp src/hub/hub_picture.cpp
                    src/hub/hub_gpu_frames.cpp
                    src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp
                    src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)

@@ -670,6 +670,29 @@ void PlaySession::tick(SDL_Window* window) {
     }
 }
 
+bool PlaySession::control_grant(const rcore_pad& pad) {
+    if (!paused() || !link_.can_grant()) return false;
+    rcore_pad pads[RCORE_MAX_SEATS]{};
+    for (auto& seat : pads) seat.struct_size = sizeof(rcore_pad);
+    pads[0] = pad;
+#if defined(RETCOMM_LINK_PRESENTATION_SIZE)
+    return link_.grant(pads, presentation_width_, presentation_height_);
+#else
+    return link_.grant(pads);
+#endif
+}
+
+std::string PlaySession::control_picture() {
+    std::uint32_t width = 0, height = 0;
+    const auto pixels = picture_.snapshot(width, height);
+    if (pixels.empty()) return {};
+    auto ppm = "P6\n" + std::to_string(width) + ' ' + std::to_string(height) + "\n255\n";
+    ppm.reserve(ppm.size() + std::size_t(width) * height * 3);
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4)
+        ppm.append(reinterpret_cast<const char*>(pixels.data() + i), 3);
+    return ppm;
+}
+
 void PlaySession::draw() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImDrawList* bg = ImGui::GetBackgroundDrawList();

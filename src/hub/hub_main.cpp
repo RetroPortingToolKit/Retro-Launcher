@@ -6,6 +6,7 @@
 #include "hub/hub_touch.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
+#include "hub/hub_game_control_socket.hpp"
 #include "hub/hub_title.hpp"
 #include "hub/hub_vru.hpp"
 #include "hub/hub_vru_mic.hpp"
@@ -97,6 +98,8 @@ constexpr bool kLocalBuild = true;
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <charconv>
+#include <sstream>
 #include <cerrno>
 #include <filesystem>
 #include <map>
@@ -18544,6 +18547,113 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     return h.restart ? kDirectRestart : 0;
 }
 
+// Optional tool access to the local Direct game session.
+class DirectGameControl {
+public:
+    bool start(const fs::path& session) {
+        const char* value = std::getenv("RETCOMM_GAME_CONTROL_PORT");
+        if (!value) return true;
+        unsigned requested = 0;
+        const char* end = value + std::strlen(value);
+        const auto [parsed, error] = std::from_chars(value, end, requested);
+        if (error == std::errc{} && parsed == end && requested <= 65535) {
+            if (const auto port = socket.listen(static_cast<std::uint16_t>(requested))) {
+                std::error_code ec;
+                fs::create_directories(session, ec);
+                std::ofstream port_file(session / "game-control-port");
+                port_file << *port << '\n';
+                port_file.close();
+                if (!port_file) {
+                    std::fprintf(stderr, "retro-hub: cannot record the local game control port\n");
+                    return false;
+                }
+                std::fprintf(stderr, "retro-hub: game control listening on 127.0.0.1:%u\n",
+                             static_cast<unsigned>(*port));
+                return true;
+            }
+        }
+        std::fprintf(stderr, "retro-hub: cannot start local game control\n");
+        return false;
+    }
+
+    bool poll(retcomm::hub::PlaySession& play) {
+        if (!socket.enabled()) return true;
+        if (!started && play.control_ready()) {
+            play.control_pause();
+            started = true;
+        }
+        socket.poll();
+        if (closing) return socket.reply_pending();
+        if (!socket.connected()) {
+            step_target = 0;
+            return true;
+        }
+        if (step_target) {
+            if (!play.control_ready() || !play.control_paused()) {
+                reply(play, false, "game is not paused and ready");
+            } else if (play.control_field() >= step_target) {
+                reply(play, true);
+            } else {
+                if (play.control_granted() < step_target) play.control_grant(step_pad);
+                return true;
+            }
+            step_target = 0;
+        }
+        auto request = socket.request();
+        if (!request) return true;
+        std::istringstream fields(*request);
+        std::string operation, extra;
+        fields >> operation;
+        if (operation == "close" && !(fields >> extra)) {
+            closing = true;
+            reply(play, true);
+        } else if (operation == "status" && !(fields >> extra)) {
+            const char* status = started && play.control_ready() && play.control_granted() == play.control_field() ?
+                (play.control_paused() ? "paused" : "playing") : "loading";
+            reply(play, true, status);
+        } else if (!started || !play.control_ready() || play.control_granted() != play.control_field()) {
+            reply(play, false, "game is not ready");
+        } else if (operation == "capture" && !(fields >> extra)) {
+            const auto image = play.control_picture();
+            if (image.empty()) reply(play, false, "no picture");
+            else reply(play, true, image);
+        } else if (operation == "step") {
+            unsigned count = 0, buttons = 0;
+            std::array<int, 4> axes{};
+            if (!(fields >> count >> buttons >> axes[0] >> axes[1] >> axes[2] >> axes[3]) ||
+                (fields >> extra) || count < 1 || count > 10000 || buttons > 0xffff ||
+                std::any_of(axes.begin(), axes.end(), [](int v) { return v < -32768 || v > 32767; })) {
+                reply(play, false, "usage: step frames buttons lx ly rx ry");
+            } else if (!play.control_paused()) {
+                reply(play, false, "pause the game first");
+            } else {
+                step_pad = {};
+                step_pad.struct_size = sizeof(rcore_pad);
+                step_pad.connected = 1;
+                step_pad.buttons = buttons;
+                for (std::size_t i = 0; i < axes.size(); ++i)
+                    step_pad.axes[i] = static_cast<std::int16_t>(axes[i]);
+                step_target = play.control_field() + count;
+            }
+        } else {
+            reply(play, false, "unknown command");
+        }
+        return true;
+    }
+
+private:
+    void reply(const retcomm::hub::PlaySession& play, bool ok, const std::string& payload = {}) {
+        socket.reply((ok ? "ok " : "error ") + std::to_string(play.control_field()) + ' ' +
+                  std::to_string(payload.size()) + '\n' + payload);
+    }
+
+    retcomm::hub::GameControlSocket socket;
+    rcore_pad step_pad{};
+    std::uint64_t step_target = 0;
+    bool started = false;
+    bool closing = false;
+};
+
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
     retcomm::hub::PlaySession play;
     const bool packaged = !d.args.package.empty();
@@ -18579,6 +18689,8 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     }
     const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
+    DirectGameControl control;
+    if (!control.start(session)) return 1;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
@@ -18614,6 +18726,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
             }
         }
         play.tick(window);
+        running = control.poll(play) && running;
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
@@ -18837,6 +18950,13 @@ int main(int argc, char** argv) {
     // back into the logical 1280x800 this UI is written against.
     SDL_WindowFlags window_flags =
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    #if defined(RETCOMM_HUB_HAVE_PLAY)
+    const char* hide_control_window = std::getenv("RETCOMM_GAME_CONTROL_HIDDEN");
+    if (direct.active && direct.boot && !direct.args.rom.empty() &&
+        std::getenv("RETCOMM_GAME_CONTROL_PORT") && hide_control_window &&
+        std::strcmp(hide_control_window, "1") == 0)
+        window_flags |= SDL_WINDOW_HIDDEN;
+    #endif
     #if defined(__ANDROID__)
     // Immersive: targetSdk 35+ draws edge-to-edge, so a windowed hub would sit
     // under the status and navigation bars.
