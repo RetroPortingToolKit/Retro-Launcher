@@ -19128,7 +19128,8 @@ int main(int argc, char** argv) {
     // back into the logical 1280x800 this UI is written against.
     SDL_WindowFlags window_flags =
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (SDL_getenv("RETRO_STORY_REVIEW_DIR") && SDL_getenv("RETRO_STORY_REVIEW_HIDDEN"))
+    if (direct.active && direct.boot && SDL_getenv("RETCOMM_DIRECT_SCENARIO_DIR") &&
+        SDL_getenv("RETCOMM_DIRECT_SCENARIO_HIDDEN"))
         window_flags |= SDL_WINDOW_HIDDEN;
     #if defined(RETCOMM_HUB_HAVE_PLAY)
     const char* hide_control_window = std::getenv("RETCOMM_GAME_CONTROL_HIDDEN");

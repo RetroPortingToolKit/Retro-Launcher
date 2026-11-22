@@ -188,7 +188,7 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
         // No audio device is not fatal: pacing falls back to 60 Hz.
         SDL_Log("retro-hub: no audio (%s); the game runs silent", SDL_GetError());
     }
-    if (const char* directory = SDL_getenv("RETRO_STORY_REVIEW_DIR"); directory && *directory) {
+    if (const char* directory = SDL_getenv("RETCOMM_DIRECT_SCENARIO_DIR"); directory && *directory) {
         review_dir_ = corelink::utf8_path(directory);
         review_first_picture_ = true;
         review_paused_ = false;

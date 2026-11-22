@@ -4,6 +4,8 @@ Set `RETCOMM_GAME_CONTROL_PORT` when starting a Direct `--boot` session to enabl
 
 For unattended checks, set `RETCOMM_GAME_CONTROL_HIDDEN=1` to keep the launcher's window hidden. Use `SDL_AUDIODRIVER=dummy` and a test-owned `RETCOMM_HOME` for muted, isolated runs.
 
+A local scenario selector can set `RETCOMM_DIRECT_SCENARIO_DIR` to an isolated directory. The session uses its `saves` directory and loads `boot.rstate` when present. It pauses after the first picture and reports its state in `status.txt`. A selector can send `play`, `pause`, or `quit` through `command.txt`. Set `RETCOMM_DIRECT_SCENARIO_HIDDEN` for unattended validation.
+
 Connect to `127.0.0.1` using one local client. Send one ASCII command per line and read its entire reply before sending the next command. A reply is `ok FIELD LENGTH\n` or `error FIELD LENGTH\n`, followed by exactly `LENGTH` bytes. `FIELD` is the number of completed core advances since launch.
 
 | Command | Result |
