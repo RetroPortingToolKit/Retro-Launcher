@@ -188,6 +188,18 @@ bool PlaySession::start(const PlayArgs& args, const fs::path& runner, const fs::
         // No audio device is not fatal: pacing falls back to 60 Hz.
         SDL_Log("retro-hub: no audio (%s); the game runs silent", SDL_GetError());
     }
+    if (const char* directory = SDL_getenv("RETRO_STORY_REVIEW_DIR"); directory && *directory) {
+        review_dir_ = corelink::utf8_path(directory);
+        review_first_picture_ = true;
+        review_paused_ = false;
+        review_pause_ack_ = false;
+        spec.save_dir = review_dir_ / "saves";
+        states_dir_ = spec.save_dir / "states";
+        replays_dir_ = spec.save_dir / "replays";
+        std::error_code ec;
+        const auto seed = review_dir_ / "boot.rstate";
+        if (fs::is_regular_file(seed, ec)) spec.load_state = seed;
+    }
     launch_spec_=spec;
     return link_.start(spec, error);
 }
@@ -629,6 +641,42 @@ void PlaySession::upload_frame() {
     }
 }
 
+void PlaySession::service_review() {
+    if (review_dir_.empty() || link_.state() != corelink::LinkState::Ready) return;
+    if (review_first_picture_ && control_ready()) {
+        review_first_picture_ = false;
+        review_paused_ = true;
+        review_pause_ack_ = true;
+    }
+    if (review_pause_ack_ && link_.can_grant()) {
+        std::ofstream(review_dir_ / "status.txt") << "paused " << link_.frames_done() << '\n';
+        review_pause_ack_ = false;
+    }
+    if (review_first_picture_) return;
+    const auto command_path = review_dir_ / "command.txt";
+    std::string command;
+    {
+        std::ifstream command_file(command_path);
+        if (!std::getline(command_file, command)) return;
+    }
+    std::error_code ec;
+    fs::remove(command_path, ec);
+    if (ec) return;
+    if (command == "quit") {
+        review_paused_ = true;
+        finished_ = true;
+        return;
+    }
+    if (command == "pause") {
+        review_paused_ = true;
+        review_pause_ack_ = true;
+    } else if (command == "play") {
+        review_paused_ = false;
+        review_pause_ack_ = false;
+        std::ofstream(review_dir_ / "status.txt") << "playing " << link_.frames_done() << '\n';
+    }
+}
+
 void PlaySession::tick(SDL_Window* window) {
     // Physical drawable pixels before Picture's aspect letterbox. Sample after
     // events, before any grant (including turbo), rather than last frame's UI.
@@ -638,6 +686,7 @@ void PlaySession::tick(SDL_Window* window) {
     presentation_width_ = width > 0 && height > 0 ? static_cast<std::uint32_t>(width) : 0;
     presentation_height_ = width > 0 && height > 0 ? static_cast<std::uint32_t>(height) : 0;
     link_.pump(0);
+    service_review();
     const bool ready = link_.state() == corelink::LinkState::Ready;
     if (ready) poll_host_combos();
     if (ready && vru_.seat >= 0) service_vru();
@@ -668,6 +717,26 @@ void PlaySession::tick(SDL_Window* window) {
         link_.persist_saves();
         last_persist_ns_ = now;
     }
+}
+
+bool PlaySession::control_grant(const rcore_pad (&pads)[RCORE_MAX_SEATS]) {
+    if (!paused() || !link_.can_grant()) return false;
+#if defined(RETCOMM_LINK_PRESENTATION_SIZE)
+    return link_.grant(pads, presentation_width_, presentation_height_);
+#else
+    return link_.grant(pads);
+#endif
+}
+
+std::string PlaySession::control_picture() {
+    std::uint32_t width = 0, height = 0;
+    const auto pixels = picture_.snapshot(width, height);
+    if (pixels.empty()) return {};
+    auto ppm = "P6\n" + std::to_string(width) + ' ' + std::to_string(height) + "\n255\n";
+    ppm.reserve(ppm.size() + std::size_t(width) * height * 3);
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4)
+        ppm.append(reinterpret_cast<const char*>(pixels.data() + i), 3);
+    return ppm;
 }
 
 void PlaySession::draw() {
@@ -831,6 +900,15 @@ void PlaySession::draw_browser_tabs() {
 
 void PlaySession::draw_overlay() {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    if (link_.netplay_waiting()) {
+        ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 24.f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(480.f, disp.x * 0.9f), 0.f), ImGuiCond_Always);
+        ImGui::Begin("##play_netplay_waiting", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::TextWrapped("Waiting for the other player to reconnect");
+        ImGui::End();
+    }
     std::vector<retro::overlay::Layer> layers = osd_.layers(SDL_GetTicksNS());
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     if (!diagnostics_recording_ && link_.replay_status().state==corelink::ReplayState::Recording) {
@@ -1403,7 +1481,8 @@ void PlaySession::shutdown() {
                 static_cast<unsigned long long>(gpu_stats.pictures),
                 static_cast<unsigned long long>(gpu_stats.releases),
                 static_cast<unsigned long long>(gpu_stats.refused));
-    if (link_.state() != corelink::LinkState::Idle) link_.stop();
+    if (link_.state() != corelink::LinkState::Idle)
+        link_.stop(review_dir_.empty() ? 3000 : -1);
     finish_replay_preview();
     if (audio_) {
         SDL_DestroyAudioStream(audio_);

@@ -111,7 +111,7 @@ private:
 
     mutable std::mutex mu_;
     Status st_;
-    int sock_ = -1;
+    std::uintptr_t sock_ = ~std::uintptr_t{0};
     std::atomic<bool> stop_{false};
     std::thread worker_, responder_;
     std::mutex inbox_mu_;

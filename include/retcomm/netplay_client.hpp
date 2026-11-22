@@ -88,6 +88,7 @@ struct Snapshot {
     // Room
     bool in_room = false, is_host = false, all_ready = false;
     std::string lobby_id, room_name;
+    std::string host_player_id;
     int local_slot = -1, player_count = 0, max_slots = 0;
     long long session_id = 0;
     std::string host_endpoint;  // the host's advertised UDP address (lobby_update)

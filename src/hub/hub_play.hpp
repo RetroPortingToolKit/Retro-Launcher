@@ -118,6 +118,14 @@ public:
     bool finished() const { return finished_; }
     void shutdown();
 
+    std::uint64_t control_field() const { return link_.frames_done(); }
+    std::uint64_t control_granted() const { return link_.frames_granted(); }
+    bool control_ready() const { return link_.state() == corelink::LinkState::Ready && !picture_.empty(); }
+    bool control_paused() const { return paused(); }
+    void control_pause() { set_paused(true); }
+    bool control_grant(const rcore_pad (&pads)[RCORE_MAX_SEATS]);
+    std::string control_picture();
+
 private:
     void fill_pads(rcore_pad pads[RCORE_MAX_SEATS]);
     void grant(std::uint64_t now);
@@ -134,7 +142,8 @@ private:
     void upload_frame();
     void set_paused(bool paused);
     // A match never pauses: every peer runs on (recomp-ai-rules NETPLAY.md §6).
-    bool paused() const { return !netplay_ && menu_open_; }
+    bool paused() const { return !netplay_ && (menu_open_ || review_paused_); }
+    void service_review();
     void sync_pause();
     void set_volume(int percent);
     void set_show_fps(bool on);
@@ -158,6 +167,10 @@ private:
 
     void draw_replay_ended();
     corelink::LaunchSpec launch_spec_;
+    fs::path review_dir_;
+    bool review_first_picture_ = false;
+    bool review_paused_ = false;
+    bool review_pause_ack_ = false;
     fs::path replays_dir_, replay_play_;
     std::optional<bool> recording_request_;
     bool diagnostics_pending_ = false;

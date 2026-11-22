@@ -6,6 +6,7 @@
 #include "hub/hub_touch.hpp"
 #if defined(RETCOMM_HUB_HAVE_PLAY)
 #include "hub/hub_play.hpp"
+#include "hub/hub_game_control_socket.hpp"
 #include "hub/hub_title.hpp"
 #include "hub/hub_vru.hpp"
 #include "hub/hub_vru_mic.hpp"
@@ -97,6 +98,8 @@ constexpr bool kLocalBuild = true;
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <charconv>
+#include <sstream>
 #include <cerrno>
 #include <filesystem>
 #include <map>
@@ -17699,6 +17702,84 @@ bool start_direct_session(retcomm::hub::PlaySession& play, const DirectHome& h,
     return true;
 }
 
+void set_mod_profile(std::vector<std::string>& env, const fs::path& profile) {
+    constexpr char prefix[] = "RETRO_TITLE_STATE_DIR=";
+    env.erase(std::remove_if(env.begin(), env.end(), [&](const auto& item) {
+        return item.rfind(prefix, 0) == 0;
+    }), env.end());
+    env.push_back(prefix + retro::corelink::path_utf8(profile));
+}
+
+retcomm::hub::NetplayModPlan resolve_direct_mod_plan(const fs::path& runner,
+                                                    const retcomm::hub::PlayArgs& args,
+                                                    const fs::path& title_dir,
+                                                    const fs::path& state_dir,
+                                                    const fs::path& reports) {
+    using retro::corelink::path_utf8;
+    if (runner.empty()) return {{}, "No usable runner was found to check gameplay mods."};
+    if (args.rom.empty()) return {{}, "Choose the game's ROM before hosting a match."};
+    const fs::path work = reports / std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::error_code ec;
+    if (!fs::create_directories(work, ec)) {
+        return {{}, "Could not create the gameplay mod check directory."};
+    }
+    const auto saved_choices = (state_dir.empty() ? title_dir : state_dir) / "mods.toml";
+    const auto choices = work / "mods.toml";
+    if (fs::exists(saved_choices, ec)) fs::copy_file(saved_choices, choices, ec);
+    if (ec) return {{}, "Could not read the saved gameplay mod choices. " + ec.message()};
+    const auto match_setting = read_toml_section(title_dir / "game.toml", "netplay.mod_options");
+    if (!match_setting.empty()) {
+        const auto package = match_setting.find("package");
+        const auto setting = match_setting.find("setting");
+        if (package == match_setting.end() || package->second.empty() || setting == match_setting.end()) {
+            return {{}, "The title's match mod setting needs a package and an option value."};
+        }
+        const std::map<std::string, std::string> overrides = {{package->second, setting->second}};
+        std::string error;
+        if (!retcomm::hub::stage_room_mod_options(retcomm::scan_game_mods(title_dir, {}, work), overrides, &error)) {
+            return {{}, std::move(error)};
+        }
+    }
+    retro::corelink::SpawnSpec spec;
+    spec.args = {path_utf8(runner), "--resolve-mod-plan", "--core", path_utf8(args.core),
+                 "--rom", args.rom, "--title-dir", path_utf8(title_dir), "--out", path_utf8(work)};
+    if (!args.package.empty()) {
+        spec.args.insert(spec.args.end(), {"--package", path_utf8(args.package)});
+    }
+    if (const auto base = args.options.find(retcomm::kRomhackOption); base != args.options.end()) {
+        spec.args.insert(spec.args.end(), {"--opt", base->first + "=" + base->second});
+    }
+    spec.env = args.env;
+    set_mod_profile(spec.env, work);
+    spec.log = work / "runner.log";
+    std::string why;
+    const auto code = retro::corelink::run_to_completion(spec, -1, &why);
+    if (!code) return {{}, "Could not check gameplay mods. " + why};
+    if (*code == 0) {
+        std::ifstream log(spec.log);
+        std::string line;
+        const std::string prefix = "mod-plan\t1\t";
+        while (std::getline(log, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind(prefix, 0) != 0) continue;
+            const std::string plan = line.substr(prefix.size());
+            if (retcomm::hub::valid_room_mod_plan(plan)) {
+                auto mods = retcomm::selected_n64_match_mods(retcomm::scan_game_mods(title_dir, {}, work));
+                if (mods.empty() != plan.empty()) {
+                    return {{}, "The verified gameplay plan differs from the saved mod choices."};
+                }
+                log.close();
+                fs::remove(spec.log, ec);
+                fs::remove(choices, ec);
+                fs::remove(work, ec);
+                return {plan, {}, std::move(mods)};
+            }
+            break;
+        }
+    }
+    return {{}, "Could not verify gameplay mods. See " + path_utf8(spec.log)};
+}
+
 // The lobby identity of this exact build: the title's version plus the core's
 // and the package's sha256, so only players who can simulate identically see
 // each other (recomp-ai-rules NETPLAY.md §4). Worked out once per run.
@@ -17716,6 +17797,49 @@ void prepare_net_scope(DirectHome& h, HubModel& hub) {
     sc.pin = version + "+c" + core_sha.substr(0, 10) +
              (pkg_sha.empty() ? std::string() : ".p" + pkg_sha.substr(0, 10));
     sc.max_slots = 4;
+    const auto netplay = read_toml_section(h.title_dir / "game.toml", "netplay");
+    const auto recover_connection = netplay.find("recover_connection");
+    sc.recover_connection = recover_connection != netplay.end() && recover_connection->second == "true";
+    const auto match_mods = netplay.find("gameplay_mods");
+    if (match_mods != netplay.end() && match_mods->second == "true") {
+        sc.resolve_mod_plan = [&h, &hub] {
+            retcomm::hub::PlayArgs args = h.d.args;
+            apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
+            return std::async(std::launch::async,
+                [paths = hub.paths, exe_dir = hub.exe_dir, title_dir = h.title_dir, state_dir = h.mods_state_dir,
+                 key = h.title_key, args = std::move(args)] {
+                    const auto runner = retcomm::resolve_runner(paths, exe_dir);
+                    return resolve_direct_mod_plan(runner.path, args, title_dir, state_dir,
+                                                   paths.data_dir / "netplay" / key / "mod-plan");
+                });
+        };
+    }
+    const auto max_players = netplay.find("max_players");
+    if (max_players != netplay.end() && max_players->second.size() == 1 &&
+        max_players->second[0] >= '2' && max_players->second[0] <= '8') {
+        sc.max_slots = max_players->second[0] - '0';
+    }
+    const auto eeprom = netplay.find("eeprom_bytes");
+    if (eeprom != netplay.end() && (eeprom->second == "512" || eeprom->second == "2048")) {
+        sc.eeprom_bytes = eeprom->second == "512" ? 512 : 2048;
+        const auto writeback = netplay.find("eeprom_writeback");
+        sc.eeprom_writeback = writeback != netplay.end() && writeback->second == "true";
+        sc.read_eeprom = [&h, &hub, size = sc.eeprom_bytes](std::string* data, std::string* error) {
+            retcomm::hub::PlayArgs args = h.d.args;
+            apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, h.platform, h.title_key);
+            const fs::path file = session_save_dir(hub.paths.data_dir, h.title_key, h.title_dir, args) / "eeprom.sav";
+            std::error_code ec;
+            data->assign(size, '\xff');
+            if (!fs::exists(file, ec) && !ec) return true;
+            std::ifstream stream(file, std::ios::binary);
+            if (ec || !stream.read(data->data(), static_cast<std::streamsize>(size)) ||
+                stream.peek() != std::char_traits<char>::eof() || stream.bad()) {
+                *error = "The campaign save could not be read as a complete cartridge save.";
+                return false;
+            }
+            return true;
+        };
+    }
     sc.tpak_supported = h.tpak_supported;
     sc.room_choices = [&h, &hub] {
         retcomm::hub::PlayArgs args = h.d.args;
@@ -18241,10 +18365,8 @@ DirectAction draw_direct_overlay(DirectHome& h, HubModel& hub, const Theme& th, 
     return act;
 }
 
-// A match: the player's session, settled for every peer alike -- a fresh save
-// sandbox per match (every peer starts from blank cartridge saves), only the
-// options that do not change the simulation, no Transfer Pak until the pak
-// exchange exists, and the runner's --net-* flags.
+// A match runs in its own save and mod profile. The room supplies negotiated
+// gameplay settings and any initial cartridge or Transfer Pak bytes.
 bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, const HubModel& hub,
                        const retcomm::hub::NetplayLaunch& l, std::string* why) {
     const retcomm::ResolvedRunner rr = retcomm::resolve_runner(hub.paths, hub.exe_dir);
@@ -18255,6 +18377,10 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
     if (rr.netplay == 0) {
         *why = "The " + rr.source + " runner at " + rr.path.string() +
                " was built without netplay ('netplay 1' in --version).";
+        return false;
+    }
+    if (l.slots > h.net_scope.max_slots) {
+        *why = "This game cannot use that many player seats.";
         return false;
     }
     std::string err;
@@ -18302,11 +18428,51 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = err;
         return false;
     }
+    if (h.net_scope.recover_connection)
+        args.net_args.push_back("--net-recover-connection");
+    std::string argv;
+    for (const auto& a : args.net_args) argv += " " + a;
     const fs::path base = hub.paths.data_dir / "netplay" / h.title_key /
                           ("session-" + std::to_string(l.session_id));
     std::error_code ec;
     fs::remove_all(base / "saves", ec);
     fs::create_directories(base / "saves", ec);
+    if (ec) {
+        *why = "Could not create the match save directory. " + ec.message();
+        return false;
+    }
+    if (h.net_scope.resolve_mod_plan) {
+        std::string selection;
+        const auto installed = retcomm::scan_game_mods(h.title_dir, {}, h.mods_state_dir);
+        if (!retcomm::n64_match_mods_toml(installed, l.gameplay_mods, &selection, why)) return false;
+        std::ofstream out(base / "mods.toml", std::ios::binary | std::ios::trunc);
+        out << selection;
+        out.close();
+        if (!out) {
+            *why = "Could not write the match's gameplay mod profile.";
+            return false;
+        }
+        set_mod_profile(args.env, base);
+    }
+    if (h.net_scope.eeprom_bytes) {
+        if (l.eeprom.size() != h.net_scope.eeprom_bytes) {
+            *why = "The host's campaign save is missing or incomplete.";
+            return false;
+        }
+        std::ofstream out(base / "saves" / "eeprom.sav", std::ios::binary | std::ios::trunc);
+        out.write(l.eeprom.data(), static_cast<std::streamsize>(l.eeprom.size()));
+        out.close();
+        if (!out) {
+            *why = "Could not stage the host's campaign save for the match.";
+            return false;
+        }
+        if (l.host && h.net_scope.eeprom_writeback) {
+            const fs::path campaign = session_save_dir(hub.paths.data_dir, h.title_key, h.title_dir, args) /
+                                      "eeprom.sav";
+            args.net_args.insert(args.net_args.end(),
+                {"--net-confirmed-eeprom", retro::corelink::path_utf8(campaign)});
+        }
+    }
     // Transfer Pak lobbies: every seat's cartridge and a copy of the save the
     // room exchanged. The copies are the match's; nobody's real save is
     // written (host-authoritative, NETPLAY.md §3).
@@ -18329,8 +18495,6 @@ bool start_net_session(retcomm::hub::PlaySession& play, const DirectHome& h, con
         *why = "Cannot start the match: " + err;
         return false;
     }
-    std::string argv;
-    for (const auto& a : args.net_args) argv += " " + a;
     std::fprintf(stderr, "retro-hub: netplay match %u, seat %d of %d:%s\n", l.session_id,
                  l.seat + 1, l.slots, argv.c_str());
     return true;
@@ -18544,6 +18708,130 @@ int run_direct_home(SDL_Window* window, UiScale& ui, const Theme& th, const Dire
     return h.restart ? kDirectRestart : 0;
 }
 
+// Optional tool access to the local Direct game session.
+class DirectGameControl {
+public:
+    bool start(const fs::path& session) {
+        const char* value = std::getenv("RETCOMM_GAME_CONTROL_PORT");
+        if (!value) return true;
+        unsigned requested = 0;
+        const char* end = value + std::strlen(value);
+        const auto [parsed, error] = std::from_chars(value, end, requested);
+        if (error == std::errc{} && parsed == end && requested <= 65535) {
+            if (const auto port = socket.listen(static_cast<std::uint16_t>(requested))) {
+                std::error_code ec;
+                fs::create_directories(session, ec);
+                std::ofstream port_file(session / "game-control-port");
+                port_file << *port << '\n';
+                port_file.close();
+                if (!port_file) {
+                    std::fprintf(stderr, "retro-hub: cannot record the local game control port\n");
+                    return false;
+                }
+                std::fprintf(stderr, "retro-hub: game control listening on 127.0.0.1:%u\n",
+                             static_cast<unsigned>(*port));
+                return true;
+            }
+        }
+        std::fprintf(stderr, "retro-hub: cannot start local game control\n");
+        return false;
+    }
+
+    bool poll(retcomm::hub::PlaySession& play) {
+        if (!socket.enabled()) return true;
+        if (!started && play.control_ready()) {
+            play.control_pause();
+            started = true;
+        }
+        socket.poll();
+        if (closing) return socket.reply_pending();
+        if (!socket.connected()) {
+            step_target = 0;
+            return true;
+        }
+        if (step_target) {
+            if (!play.control_ready() || !play.control_paused()) {
+                reply(play, false, "game is not paused and ready");
+            } else if (play.control_field() >= step_target) {
+                reply(play, true);
+            } else {
+                if (play.control_granted() < step_target) play.control_grant(step_pads);
+                return true;
+            }
+            step_target = 0;
+        }
+        auto request = socket.request();
+        if (!request) return true;
+        std::istringstream fields(*request);
+        std::string operation, extra;
+        fields >> operation;
+        if (operation == "close" && !(fields >> extra)) {
+            closing = true;
+            reply(play, true);
+        } else if (operation == "status" && !(fields >> extra)) {
+            const char* status = started && play.control_ready() && play.control_granted() == play.control_field() ?
+                (play.control_paused() ? "paused" : "playing") : "loading";
+            reply(play, true, status);
+        } else if (!started || !play.control_ready() || play.control_granted() != play.control_field()) {
+            reply(play, false, "game is not ready");
+        } else if (operation == "capture" && !(fields >> extra)) {
+            const auto image = play.control_picture();
+            if (image.empty()) reply(play, false, "no picture");
+            else reply(play, true, image);
+        } else if (operation == "step" || operation == "step-pads") {
+            const bool multiple = operation == "step-pads";
+            unsigned count = 0, seats = 1;
+            if (!(fields >> count) || (multiple && !(fields >> seats)) ||
+                count < 1 || count > 10000 || seats < 1 || seats > RCORE_MAX_SEATS ||
+                !read_step_pads(fields, seats) || (fields >> extra)) {
+                reply(play, false, multiple ? "usage: step-pads frames seats [buttons lx ly rx ry] per seat"
+                                            : "usage: step frames buttons lx ly rx ry");
+            } else if (!play.control_paused()) {
+                reply(play, false, "pause the game first");
+            } else {
+                step_target = play.control_field() + count;
+            }
+        } else {
+            reply(play, false, "unknown command");
+        }
+        return true;
+    }
+
+private:
+    bool read_step_pads(std::istream& fields, unsigned seats) {
+        for (auto& pad : step_pads) {
+            pad = {};
+            pad.struct_size = sizeof(rcore_pad);
+        }
+        for (unsigned seat = 0; seat < seats; ++seat) {
+            unsigned buttons = 0;
+            std::array<int, 4> axes{};
+            if (!(fields >> buttons >> axes[0] >> axes[1] >> axes[2] >> axes[3]) ||
+                buttons > 0xffff ||
+                std::any_of(axes.begin(), axes.end(), [](int v) { return v < -32768 || v > 32767; })) {
+                return false;
+            }
+            auto& pad = step_pads[seat];
+            pad.connected = 1;
+            pad.buttons = buttons;
+            for (std::size_t i = 0; i < axes.size(); ++i)
+                pad.axes[i] = static_cast<std::int16_t>(axes[i]);
+        }
+        return true;
+    }
+
+    void reply(const retcomm::hub::PlaySession& play, bool ok, const std::string& payload = {}) {
+        socket.reply((ok ? "ok " : "error ") + std::to_string(play.control_field()) + ' ' +
+                  std::to_string(payload.size()) + '\n' + payload);
+    }
+
+    retcomm::hub::GameControlSocket socket;
+    rcore_pad step_pads[RCORE_MAX_SEATS]{};
+    std::uint64_t step_target = 0;
+    bool started = false;
+    bool closing = false;
+};
+
 int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const HubModel& hub) {
     retcomm::hub::PlaySession play;
     const bool packaged = !d.args.package.empty();
@@ -18579,6 +18867,8 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
     }
     const fs::path runner = rr.path;
     const fs::path session = hub.paths.data_dir / "sessions" / stem;
+    DirectGameControl control;
+    if (!control.start(session)) return 1;
     // The same bindings and option values the home page sets up.
     retcomm::hub::PlayArgs args = d.args;
     apply_player_settings(args, hub.paths.data_dir, hub.exe_dir, rcore_manifest_platform(d.args.core), stem);
@@ -18614,6 +18904,7 @@ int run_direct_play(SDL_Window* window, UiScale& ui, const DirectPlay& d, const 
             }
         }
         play.tick(window);
+        running = control.poll(play) && running;
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         retcomm::hub::overlay::pad_nav_frame(pad_capture_active());
@@ -18837,6 +19128,15 @@ int main(int argc, char** argv) {
     // back into the logical 1280x800 this UI is written against.
     SDL_WindowFlags window_flags =
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (SDL_getenv("RETRO_STORY_REVIEW_DIR") && SDL_getenv("RETRO_STORY_REVIEW_HIDDEN"))
+        window_flags |= SDL_WINDOW_HIDDEN;
+    #if defined(RETCOMM_HUB_HAVE_PLAY)
+    const char* hide_control_window = std::getenv("RETCOMM_GAME_CONTROL_HIDDEN");
+    if (direct.active && direct.boot && !direct.args.rom.empty() &&
+        std::getenv("RETCOMM_GAME_CONTROL_PORT") && hide_control_window &&
+        std::strcmp(hide_control_window, "1") == 0)
+        window_flags |= SDL_WINDOW_HIDDEN;
+    #endif
     #if defined(__ANDROID__)
     // Immersive: targetSdk 35+ draws edge-to-edge, so a windowed hub would sit
     // under the status and navigation bars.

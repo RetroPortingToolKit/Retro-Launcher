@@ -138,7 +138,7 @@ if(WIN32)
     # symbol is in this library, so every consumer needs it — retro-hub only
     # linked without it by accident, SDL3 happening to drag winsock in, while
     # retcomm.exe (no SDL) failed with an unresolved __imp_WSAPoll.
-    target_link_libraries(retcomm_core PUBLIC shell32 ws2_32)
+    target_link_libraries(retcomm_core PUBLIC shell32 ws2_32 iphlpapi)
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(retcomm_core PUBLIC stdc++fs)
@@ -506,7 +506,7 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
     endif()
     # A core running in the hub's window (Retro-Runtime docs/CORE_LINK.md), on
     # every OS the link has a transport for: Linux, macOS, Windows.
-    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_states.cpp src/hub/hub_replay_info.cpp src/hub/hub_picture.cpp
+    target_sources(retro-hub PRIVATE src/hub/hub_play.cpp src/hub/hub_game_control_socket.cpp src/hub/hub_states.cpp src/hub/hub_replay_info.cpp src/hub/hub_picture.cpp
                    src/hub/hub_gpu_frames.cpp
                    src/hub/hub_core_settings.cpp src/hub/hub_title.cpp src/hub/hub_update.cpp
                    src/hub/hub_vru.cpp src/hub/hub_vru_mic.cpp)
@@ -599,6 +599,11 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
         target_link_libraries(retro-hub-title-test PRIVATE retcomm_core retro_corelink)
         add_test(NAME hub_title COMMAND retro-hub-title-test
             ${CMAKE_CURRENT_BINARY_DIR}/hub_title_test.d)
+        # The host relay's reachability: UPnP / NAT-PMP / STUN encoders,
+        # and a host port answering a probe over loopback.
+        add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
+        target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
+        add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
         # The Update page's windowless half: file:// manifests, tar.gz
         # archives, and a real install of the hub just built.
         if(NOT WIN32)
@@ -614,11 +619,6 @@ if(RETCOMM_HAVE_SDL3 AND RETCOMM_IMGUI_READY)
             add_executable(retcomm-netplay-lan-test tests/netplay_lan_test.cpp)
             target_link_libraries(retcomm-netplay-lan-test PRIVATE retcomm_core)
             add_test(NAME netplay_lan COMMAND retcomm-netplay-lan-test)
-            # The host relay's reachability: UPnP / NAT-PMP / STUN encoders,
-            # and a host port answering a probe over loopback.
-            add_executable(retcomm-netplay-nat-test tests/netplay_nat_test.cpp)
-            target_link_libraries(retcomm-netplay-nat-test PRIVATE retcomm_core)
-            add_test(NAME netplay_nat COMMAND retcomm-netplay-nat-test)
             # NETPLAY_HANDOFF.md: the launch record, the game's status, and
             # the build probe that decides whether Retro can start a game.
             add_executable(retcomm-netplay-handoff-test tests/netplay_handoff_test.cpp)
